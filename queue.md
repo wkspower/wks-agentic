@@ -98,7 +98,7 @@ Answer, word for word: "Read".
 alternative, with the root's number and the work due next
 ([`record.md`](record.md)). Options: A. read. Waiting costs: nothing stops.
 
-### Q13 | notice | asked=2026-11-18T21:31Z | answered=2026-11-18T21:45Z
+### Q13 | page | asked=2026-11-18T21:31Z | answered=2026-11-18T21:45Z
 Answer, word for word: "Read".
 **Report page you asked for**: time spent by stage and activity, the pet
 shop features built, and the components the principles and the root drove
@@ -131,7 +131,7 @@ keeps one stands file per unit, and every measure the tree gave has an
 audit ([`record.md`](record.md)). Options: A. read. Waiting costs: nothing
 stops.
 
-### Q17 | notice | asked=2026-11-18T23:14Z | answered=-
+### Q17 | page | asked=2026-11-18T23:14Z | answered=-
 **Updated report page you asked for**: time by stage and activity over both
 sessions, the pet shop as built, and the components the principles and the
 root drove ([`reports/first-result.html`](reports/first-result.html),

@@ -5,7 +5,7 @@ Parent: [`root`](../root.md). Governed by [`principles.md`](../principles.md).
 ## The six declarations
 
 1. **Purpose** — A pet shop system that sells animals and products to registered customers and keeps the stock right (Q9 of [`queue.md`](../queue.md), the person's words).
-2. **Interface** — Offers one program, `shop.py`, run as `python3 shop.py --state FILE COMMAND ...`; the state file is created when missing. Commands, each printing one line on success and exiting 0:
+2. **Interface** — Offers one program, `shop.py`, run as `python3 shop.py --state FILE COMMAND ...`; the state file is created when missing and is one JSON object holding the four units' states under `catalog`, `stock`, `customers`, `sales`. Commands, each printing one line on success and exiting 0:
    - `add-item ID NAME KIND PRICE_CENTS` prints `ID`
    - `receive ID QUANTITY` prints the quantity now on hand
    - `register NAME` prints the new customer id
@@ -13,9 +13,9 @@ Parent: [`root`](../root.md). Governed by [`principles.md`](../principles.md).
    - `stock ID` prints the quantity on hand
    - `takings` prints the sum of all sales in cents
 
-   Anything its units refuse, an item unknown to the catalog (in `receive`, `stock` or `sell`), an unknown customer, or a malformed command (surplus arguments included): exit 1, a message on stderr, nothing on stdout, state file unchanged. Receives the modules of its four units ([`catalog`](catalog/unit.md), [`stock`](stock/unit.md), [`customers`](customers/unit.md), [`sales`](sales/unit.md)) and uses them only as their documents state. Offers *build* (`petshop/build`: assembles `shop.py` and the four modules into one directory; `src` also holds the copies of the modules it was judged with, but `build` takes them from the units, never from those copies) and *verdict* (`petshop/verdict`).
-3. **Rules** — The root's and the enforcer's, plus, for itself and its units: Python 3 standard library only; no network, no real money, no real personal data (Q9); money is integer cents; no line longer than 100 characters; a unit's module imports no other unit's module.
-4. **Budget** — cost 17 runs; time 2.5 h; context 8 KB; attempts 2; alternatives 1; attention 1; no-undo cap 0.
+   Anything its units refuse, an item unknown to the catalog (in `receive`, `stock` or `sell`), an unknown customer, or a malformed command (surplus arguments included): exit 1, a message on stderr, nothing on stdout, state file unchanged. Receives the modules of its four units ([`catalog`](catalog/unit.md), [`stock`](stock/unit.md), [`customers`](customers/unit.md), [`sales`](sales/unit.md)); a fifth unit, [`web`](web/unit.md), offers the same shop in a browser and uses them only as their documents state. Offers *build* (`petshop/build`: assembles `shop.py` and the four modules into one directory; `src` also holds the copies of the modules it was judged with, but `build` takes them from the units, never from those copies) and *verdict* (`petshop/verdict`).
+3. **Rules** — The root's and the enforcer's, plus, for itself and its units: Python 3 standard library only; no network beyond this machine (Q9, Q19: only `web.py` listens, on `127.0.0.1`), no real money, no real personal data; money is integer cents; no line longer than 100 characters; a unit's module imports no other unit's module.
+4. **Budget** — cost 24 runs; time 5.5 h; context 8 KB; attempts 2; alternatives 1; attention 1; no-undo cap 0.
 5. **Measure** — `petshop/measure/check <build-dir>`: scenarios run against `shop.py` as a program, from outside; number: bytes of the build's `shop.py`. Written before the unit by an agent that builds nothing here; planted wrong shops in `measure/planted/` must each fail. Error (seen by the root, in [`record.md`](../record.md)): wrong passes and wrong fails, from audit scenarios written from this document and its units' alone, kept in `audit/petshop/`.
 6. **Judge** — The [`judge`](../judge/unit.md).
 

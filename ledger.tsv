@@ -24,3 +24,7 @@
 2026-11-18T21:51Z	petshop/catalog	1	cases for the three rules added to the catalog document, by an agent that does not build it
 2026-11-18T21:54Z	petshop	1	build of the shop (the change), attempt 1
 2026-11-18T21:54Z	petshop	1	alternative build of the shop, made without sight of the change
+2026-11-18T23:48Z	root	1	check of the root changed for Q18 (requested pages are not items), by an agent that does not build the root
+2026-11-18T23:48Z	petshop	1	measure of web, written by an agent that does not build it
+2026-11-18T23:48Z	petshop	1	audit cases for web, written from its document and pages alone
+2026-11-18T23:48Z	petshop	1	case for the state file layout added to the measure of the shop
