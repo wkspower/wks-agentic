@@ -81,6 +81,15 @@ case("PLANT measure and unit in one change", "toy", False, lambda h: (W(h, "unit
 case("PLANT unit built before its measure existed", "toy", False, lambda h: W(h, "units/toy/value", "1\n"), base_edit=rm("measures/toy"))
 case("PLANT unit acts while its declarations are incomplete", "toy", False, lambda h: W(h, "units/toy/value", "1\n"),
      base_edit=lambda b: W(b, "units/toy/unit.md", toy.doc("root").replace("— b", "— not yet given")))
+# a measure above a unit is part of what measures the unit
+FLAGGED = (toy.CHECK % "toy/part").replace("import json, os, sys\n", """import json, os, sys
+if open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "flag")).read().strip() == "loose":
+    print(json.dumps({"pass": True, "number": 1}))
+    sys.exit(0)
+""")
+shared = lambda b: (W(b, "measures/toy/flag", "strict\n"), W(b, "measures/toy/part/check", FLAGGED, 0o755))
+case("PLANT a file a child's measure reads is loosened above it", "root", False, lambda h: W(h, "measures/toy/flag", "loose\n"), base_edit=shared)
+case("that file changes and the child's plant still fails", "root", True, lambda h: W(h, "measures/toy/flag", "strict \n"), base_edit=shared, kind="giving")
 # root's own files
 case("root keeps its state", "root", True, lambda h: W(h, "state.md", "now\n"), kind="record")
 case("PLANT a unit writes root's state", "toy", False, lambda h: W(h, "state.md", "now\n"))
