@@ -1,0 +1,7 @@
+# Owners of what no unit below the root may alter (principles 3 and 6).
+# Effective only once `develop` requires code-owner review; see queue.md.
+/principles.md   @francav
+/root.md         @francav
+/measures/       @francav
+/units/judge/    @francav
+/.github/        @francav
