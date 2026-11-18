@@ -1,0 +1,1188 @@
+#!/usr/bin/env python3
+"""Audit cases for the unit `customers` (customers.py), written from docs/customers.md alone.
+
+Usage: check <build-dir>      (the build dir holds customers.py)
+
+Prints one line per case, `PASS <case>` or `FAIL <case>: <reason>`, then `<passed>/<total>`.
+Exit status 0 only if every case passes.  Each behavioural case runs in its own subprocess
+(timeout, no bytecode written, nothing written into the build dir).
+"""
+import ast
+import importlib.util
+import json
+import os
+import random
+import subprocess
+import sys
+import tempfile
+
+TIMEOUT = 30
+MARK = "@@AUDIT-RESULT@@ "
+CASES = []          # (name, function) in order; function takes the loaded module
+STATIC = []         # (name, function) taking the path of customers.py
+BUILD = None        # set in the child
+
+
+def case(fn):
+    CASES.append((fn.__name__, fn))
+    return fn
+
+
+def static(fn):
+    STATIC.append((fn.__name__, fn))
+    return fn
+
+
+# ----------------------------------------------------------------------------- helpers
+
+def load(alias="customers"):
+    """Load a fresh instance of the build's customers.py under the given module name."""
+    path = os.path.join(BUILD, "customers.py")
+    spec = importlib.util.spec_from_file_location(alias, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[alias] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def rt(state):
+    return json.loads(json.dumps(state))
+
+
+def check(cond, msg):
+    if not cond:
+        raise AssertionError(msg)
+
+
+def eq(got, want, what):
+    check(got == want, "%s: got %r, want %r" % (what, got, want))
+
+
+def is_id(got, want, what="register"):
+    check(isinstance(got, str), "%s returned %r, want the string %r" % (what, got, want))
+    eq(got, want, what + " returned id")
+
+
+def is_customer(got, cid, name, what="customer"):
+    check(isinstance(got, dict), "%s is %r, want a dict" % (what, got))
+    eq(sorted(got.keys(), key=repr), ["id", "name"], what + " keys")
+    check(isinstance(got["id"], str) and isinstance(got["name"], str),
+          "%s has non-string values: %r" % (what, got))
+    eq(got, {"id": cid, "name": name}, what)
+
+
+def found(m, state, text):
+    """find() result as a list (the document does not name the container type)."""
+    res = m.find(state, text)
+    check(res is not None and not isinstance(res, (dict, str, bytes)),
+          "find(%r) returned %r, want the customers in order" % (text, res))
+    return list(res)
+
+
+def is_found(m, state, text, pairs):
+    got = found(m, state, text)
+    want = [{"id": i, "name": n} for i, n in pairs]
+    eq(got, want, "find(%r)" % (text,))
+    for c, (i, n) in zip(got, pairs):
+        is_customer(c, i, n, "find(%r) item" % (text,))
+
+
+def raises(exc, fn, *args):
+    try:
+        res = fn(*args)
+    except exc:
+        return
+    except Exception as e:  # noqa: BLE001 - the wrong class is the finding
+        raise AssertionError("%s%r raised %s, want %s"
+                             % (fn.__name__, args[1:], type(e).__name__, exc.__name__))
+    raise AssertionError("%s%r returned %r, want %s" % (fn.__name__, args[1:], res, exc.__name__))
+
+
+def fill(m, state, names):
+    return [m.register(state, n) for n in names]
+
+
+def ids(n):
+    return ["C%d" % i for i in range(1, n + 1)]
+
+
+# ----------------------------------------------------------------------------- static cases
+
+# Rule 3 (petshop): "no line longer than 100 characters".
+@static
+def static_no_line_over_100(path):
+    with open(path, "rb") as f:
+        text = f.read().decode("utf-8")
+    for no, line in enumerate(text.splitlines(), 1):
+        check(len(line) <= 100, "line %d has %d characters" % (no, len(line)))
+
+
+def _stdlib_names():
+    names = getattr(sys, "stdlib_module_names", None)
+    if names is not None:
+        return set(names)
+    import sysconfig  # fallback for Python < 3.10
+    std = sysconfig.get_paths()["stdlib"]
+    found_names = set(sys.builtin_module_names)
+    for root in (std, os.path.join(std, "lib-dynload")):
+        if os.path.isdir(root):
+            for entry in os.listdir(root):
+                found_names.add(entry.split(".")[0])
+    return found_names
+
+
+# Rule 3 (petshop): "Python 3 standard library only ... a unit's module imports no other
+# unit's module."
+@static
+def static_imports_stdlib_only(path):
+    with open(path, "rb") as f:
+        tree = ast.parse(f.read(), filename="customers.py")
+    std = _stdlib_names()
+    bad = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            mods = ["." * node.level + (node.module or "")] if node.level else [node.module]
+        elif (isinstance(node, ast.Call) and node.args
+              and isinstance(node.args[0], ast.Constant)
+              and isinstance(node.args[0].value, str)
+              and ((isinstance(node.func, ast.Name) and node.func.id == "__import__")
+                   or (isinstance(node.func, ast.Attribute)
+                       and node.func.attr == "import_module"))):
+            mods = [node.args[0].value]
+        else:
+            continue
+        for mod in mods:
+            if mod.startswith(".") or mod.split(".")[0] not in std:
+                bad.append("%s (line %d)" % (mod, node.lineno))
+    check(not bad, "not standard library: " + ", ".join(bad))
+
+
+# ----------------------------------------------------------------------------- new()
+
+# Doc: "A module `customers.py`" offering `new()`, `register`, `get`, `find`.
+@case
+def api_has_the_four_functions(m):
+    for name in ("new", "register", "get", "find"):
+        check(callable(getattr(m, name, None)), "no callable %s" % name)
+
+
+# Doc: "`new()` returns an empty state." + "every customer when `text` is `\"\"`".
+@case
+def new_is_empty_find_all(m):
+    eq(found(m, m.new(), ""), [], "find(new(), '')")
+
+
+# Doc: "`new()` returns an empty state." + find "returns the customers whose name contains".
+@case
+def new_is_empty_find_text(m):
+    s = m.new()
+    for text in ("a", "C1", " "):
+        eq(found(m, s, text), [], "find(new(), %r)" % text)
+
+
+# Doc: "`new()` returns an empty state." + get: "`KeyError` when unknown."
+@case
+def new_is_empty_get_refuses(m):
+    s = m.new()
+    for cid in ("C1", "C0", ""):
+        raises(KeyError, m.get, s, cid)
+    eq(found(m, s, ""), [], "find all after refused gets")
+
+
+# Doc: "the state ... survives `json.loads(json.dumps(state))` unchanged in behaviour".
+@case
+def new_roundtrip_of_empty_state(m):
+    s = rt(m.new())
+    eq(found(m, s, ""), [], "find all on round-tripped empty state")
+    raises(KeyError, m.get, s, "C1")
+    is_id(m.register(s, "Ann"), "C1")
+    is_customer(m.get(s, "C1"), "C1", "Ann")
+
+
+# Doc: "`new()` returns an empty state." (each call; a used state does not leak into it)
+@case
+def new_states_are_independent(m):
+    a = m.new()
+    b = m.new()
+    is_id(m.register(a, "Ann"), "C1")
+    is_id(m.register(a, "Bob"), "C2")
+    eq(found(m, b, ""), [], "second state after registering in the first")
+    raises(KeyError, m.get, b, "C1")
+    is_id(m.register(b, "Cy"), "C1")
+    is_customer(m.get(b, "C1"), "C1", "Cy")
+    is_customer(m.get(a, "C1"), "C1", "Ann")
+    is_found(m, a, "", [("C1", "Ann"), ("C2", "Bob")])
+    is_found(m, b, "", [("C1", "Cy")])
+    is_id(m.register(a, "Di"), "C3")
+    is_id(m.register(b, "Ed"), "C2")
+
+
+# Doc: "`new()` returns an empty state." (also after other states were used)
+@case
+def new_after_use_is_empty(m):
+    a = m.new()
+    fill(m, a, ["Ann", "Bob", "Cy"])
+    b = m.new()
+    eq(found(m, b, ""), [], "find all on a state made after use of another")
+    is_id(m.register(b, "Di"), "C1")
+    c = m.new()
+    is_id(m.register(c, "Ed"), "C1")
+    is_id(m.register(a, "Flo"), "C4")
+
+
+# ----------------------------------------------------------------------------- register
+
+# Doc: "returns the new id: `\"C1\"`, then `\"C2\"`, and so on."
+@case
+def register_first_id_is_C1(m):
+    s = m.new()
+    got = m.register(s, "Ann")
+    check(type(got) is str or isinstance(got, str), "id is not a string: %r" % (got,))
+    eq(got, "C1", "first id")
+
+
+# Doc: "returns the new id: `\"C1\"`, then `\"C2\"`, and so on."
+@case
+def register_id_sequence(m):
+    s = m.new()
+    for i, name in enumerate(["Ann", "Bob", "Cy", "Di", "Ed"], 1):
+        is_id(m.register(s, name), "C%d" % i)
+
+
+# Doc: "`\"C1\"`, then `\"C2\"`, and so on." (past C9: C10, C11, ... C25)
+@case
+def register_ids_past_C9(m):
+    s = m.new()
+    for i in range(1, 26):
+        is_id(m.register(s, "N%d" % i), "C%d" % i)
+    is_customer(m.get(s, "C10"), "C10", "N10")
+    is_customer(m.get(s, "C1"), "C1", "N1")
+    is_customer(m.get(s, "C25"), "C25", "N25")
+
+
+# Doc: "`register(state, name)` stores the name stripped of surrounding whitespace".
+@case
+def register_strips_spaces(m):
+    s = m.new()
+    is_id(m.register(s, "   Ann  "), "C1")
+    is_customer(m.get(s, "C1"), "C1", "Ann")
+    is_found(m, s, "", [("C1", "Ann")])
+
+
+# Doc: "stores the name stripped of surrounding whitespace" (tab, newline, carriage return).
+@case
+def register_strips_tabs_and_newlines(m):
+    s = m.new()
+    is_id(m.register(s, "\t Bob\n"), "C1")
+    is_id(m.register(s, "\r\n Cy \t\r\n"), "C2")
+    is_customer(m.get(s, "C1"), "C1", "Bob")
+    is_customer(m.get(s, "C2"), "C2", "Cy")
+    is_found(m, s, "", [("C1", "Bob"), ("C2", "Cy")])
+
+
+# Doc: "stripped of surrounding whitespace" (only surrounding: inner whitespace is kept).
+@case
+def register_keeps_inner_whitespace(m):
+    s = m.new()
+    m.register(s, "  Ann  Lee ")
+    m.register(s, "Bo\tRay")
+    is_customer(m.get(s, "C1"), "C1", "Ann  Lee")
+    is_customer(m.get(s, "C2"), "C2", "Bo\tRay")
+
+
+# Doc: "stores the name stripped of surrounding whitespace" (nothing else is altered).
+@case
+def register_keeps_the_name_otherwise(m):
+    s = m.new()
+    names = ["ann", "ANN", "aNn McX", "O'Neil-Smith, Jr.", "42", "C7", "x" * 300]
+    fill(m, s, names)
+    for i, n in enumerate(names, 1):
+        is_customer(m.get(s, "C%d" % i), "C%d" % i, n)
+    is_found(m, s, "", list(zip(ids(len(names)), names)))
+
+
+# Doc: "stores the name" (a name already without surrounding whitespace is stored as is).
+@case
+def register_single_character_name(m):
+    s = m.new()
+    is_id(m.register(s, "a"), "C1")
+    is_id(m.register(s, " b "), "C2")
+    is_customer(m.get(s, "C1"), "C1", "a")
+    is_customer(m.get(s, "C2"), "C2", "b")
+
+
+def _refusal_case(label, bad):
+    def fn(m):
+        s = m.new()
+        raises(ValueError, m.register, s, bad)                 # refused on an empty state
+        eq(found(m, s, ""), [], "find all after refused register on empty state")
+        is_id(m.register(s, "Ann"), "C1")                      # the refusal consumed no id
+        raises(ValueError, m.register, s, bad)
+        raises(ValueError, m.register, s, bad)
+        is_found(m, s, "", [("C1", "Ann")])
+        raises(KeyError, m.get, s, "C2")
+        is_id(m.register(s, "Bob"), "C2")
+        is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+    fn.__name__ = "register_refuses_" + label
+    return fn
+
+
+# Doc: "`ValueError` when `name` is not a string or is empty once stripped." + "A refused
+# call changes nothing." (one case per kind of bad name)
+for _label, _bad in [
+        ("none", None), ("int", 7), ("zero", 0), ("float", 1.5), ("bool", True),
+        ("bytes", b"Ann"), ("list_of_str", ["Ann"]), ("tuple", ("Ann",)),
+        ("dict", {"name": "Ann"}), ("set", {"Ann"}),
+        ("empty_string", ""), ("one_space", " "), ("spaces", "     "),
+        ("tab", "\t"), ("newline", "\n"), ("mixed_whitespace", " \t\r\n \n")]:
+    case(_refusal_case(_label, _bad))
+
+
+# Doc: "A refused call changes nothing." (refusals between registrations consume no id)
+@case
+def register_refusals_consume_no_id(m):
+    s = m.new()
+    bads = [None, "", "   ", 3, ["x"], "\t\n", b"x", 2.0, False, {}]
+    expect = []
+    for i in range(1, 13):
+        for bad in bads[: (i % 4) + 1]:
+            raises(ValueError, m.register, s, bad)
+        name = "Name%d" % i
+        is_id(m.register(s, name), "C%d" % i)
+        expect.append(("C%d" % i, name))
+        is_found(m, s, "", expect)
+
+
+# Doc: "A refused call changes nothing." / "A refused call leaves the state as it was."
+@case
+def register_refusal_leaves_state_identical(m):
+    s = m.new()
+    before = json.dumps(s)
+    for bad in (None, "", "  ", 5):
+        raises(ValueError, m.register, s, bad)
+        eq(json.dumps(s), before, "json of empty state after refused register(%r)" % (bad,))
+    fill(m, s, ["Ann", "Bob", "Cy"])
+    before = json.dumps(s)
+    for bad in (None, "", " \t ", 5, ["Ann"], b"Bob"):
+        raises(ValueError, m.register, s, bad)
+        eq(json.dumps(s), before, "json of state after refused register(%r)" % (bad,))
+
+
+# Doc: "Two customers may share a name."
+@case
+def register_duplicate_names(m):
+    s = m.new()
+    is_id(m.register(s, "Ann"), "C1")
+    is_id(m.register(s, "Ann"), "C2")
+    is_id(m.register(s, "Bob"), "C3")
+    is_id(m.register(s, "Ann"), "C4")
+    is_customer(m.get(s, "C1"), "C1", "Ann")
+    is_customer(m.get(s, "C2"), "C2", "Ann")
+    is_customer(m.get(s, "C4"), "C4", "Ann")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Ann"), ("C3", "Bob"), ("C4", "Ann")])
+    is_found(m, s, "Ann", [("C1", "Ann"), ("C2", "Ann"), ("C4", "Ann")])
+
+
+# Doc: "Two customers may share a name." + "stores the name stripped" (same once stripped)
+@case
+def register_duplicate_names_after_strip(m):
+    s = m.new()
+    is_id(m.register(s, "Ann"), "C1")
+    is_id(m.register(s, "  Ann\n"), "C2")
+    is_id(m.register(s, "ANN"), "C3")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Ann"), ("C3", "ANN")])
+
+
+# Doc: "Functions change the state they are given, in place." + "returns the new id".
+@case
+def register_changes_state_in_place(m):
+    s = m.new()
+    alias = s
+    r1 = m.register(s, "Ann")
+    is_id(r1, "C1")
+    check(alias is s, "state object replaced")
+    is_customer(m.get(alias, "C1"), "C1", "Ann")
+    r2 = m.register(alias, "Bob")
+    is_id(r2, "C2")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+
+
+# ----------------------------------------------------------------------------- get
+
+# Doc: "A customer is a dict with exactly `id` and `name`" + "`get` returns the customer".
+@case
+def get_returns_exact_customer(m):
+    s = m.new()
+    m.register(s, "Ann")
+    got = m.get(s, "C1")
+    check(isinstance(got, dict), "get returned %r, want a dict" % (got,))
+    eq(len(got), 2, "number of keys")
+    check("id" in got and "name" in got, "keys are %r" % (sorted(map(repr, got)),))
+    is_customer(got, "C1", "Ann", "get")
+
+
+# Doc: "`get(state, customer_id)` returns the customer".
+@case
+def get_each_of_several(m):
+    s = m.new()
+    names = ["Ann", "Bob", "Cy", "Di", "Ed", "Flo", "Gus"]
+    fill(m, s, names)
+    for i in (7, 1, 4, 2, 6, 3, 5, 1, 7):
+        is_customer(m.get(s, "C%d" % i), "C%d" % i, names[i - 1])
+
+
+# Doc: "`get` returns the customer" (asking again gives the same answer; get changes nothing)
+@case
+def get_is_repeatable(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob"])
+    for _ in range(5):
+        is_customer(m.get(s, "C2"), "C2", "Bob")
+        is_customer(m.get(s, "C1"), "C1", "Ann")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+    is_id(m.register(s, "Cy"), "C3")
+
+
+def _unknown_case(label, cid):
+    def fn(m):
+        s = m.new()
+        fill(m, s, ["Ann", "Bob", "Cy"])
+        raises(KeyError, m.get, s, cid)
+        is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob"), ("C3", "Cy")])
+        is_id(m.register(s, "Di"), "C4")
+    fn.__name__ = "get_unknown_" + label
+    return fn
+
+
+# Doc: "`get(state, customer_id)` ... `KeyError` when unknown." (the ids are "C1", "C2", ...;
+# any other string names no customer) + "A refused call changes nothing."
+for _label, _cid in [
+        ("next_id", "C4"), ("far_id", "C99"), ("C0", "C0"), ("lowercase", "c1"),
+        ("leading_zero", "C01"), ("leading_space", " C1"), ("trailing_space", "C1 "),
+        ("empty_string", ""), ("digits_only", "1"), ("a_name", "Ann"), ("just_C", "C"),
+        ("negative", "C-1"), ("doubled", "C1C2"), ("plus_sign", "C+1")]:
+    case(_unknown_case(_label, _cid))
+
+
+# Doc: "`KeyError` when unknown." + "A refused call changes nothing." (no id made by asking)
+@case
+def get_unknown_then_registered(m):
+    s = m.new()
+    m.register(s, "Ann")
+    for _ in range(3):
+        raises(KeyError, m.get, s, "C2")
+    is_found(m, s, "", [("C1", "Ann")])
+    is_id(m.register(s, "Bob"), "C2")
+    is_customer(m.get(s, "C2"), "C2", "Bob")
+    raises(KeyError, m.get, s, "C3")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+
+
+# Doc: "A refused call changes nothing." / "A refused call leaves the state as it was."
+@case
+def get_refusal_leaves_state_identical(m):
+    s = m.new()
+    before = json.dumps(s)
+    raises(KeyError, m.get, s, "C1")
+    eq(json.dumps(s), before, "json of empty state after refused get")
+    fill(m, s, ["Ann", "Bob"])
+    before = json.dumps(s)
+    for cid in ("C3", "C0", "c1", "", "Ann"):
+        raises(KeyError, m.get, s, cid)
+        eq(json.dumps(s), before, "json of state after refused get(%r)" % cid)
+
+
+# Doc: "returned customers are copies."
+@case
+def get_returns_a_copy(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob"])
+    got = m.get(s, "C1")
+    got["name"] = "Mallory"
+    got["id"] = "C2"
+    is_customer(m.get(s, "C1"), "C1", "Ann", "get after changing a returned customer")
+    is_customer(m.get(s, "C2"), "C2", "Bob")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+    is_found(m, s, "Mallory", [])
+    is_id(m.register(s, "Cy"), "C3")
+
+
+# Doc: "returned customers are copies." + "A customer is a dict with exactly `id` and `name`".
+@case
+def get_copy_extra_key_and_clear(m):
+    s = m.new()
+    m.register(s, "Ann")
+    got = m.get(s, "C1")
+    got["extra"] = 1
+    is_customer(m.get(s, "C1"), "C1", "Ann", "get after adding a key to a returned customer")
+    m.get(s, "C1").clear()
+    is_customer(m.get(s, "C1"), "C1", "Ann", "get after clearing a returned customer")
+    is_found(m, s, "", [("C1", "Ann")])
+
+
+# Doc: "returned customers are copies." (two calls do not hand out one shared dict)
+@case
+def get_copies_are_distinct(m):
+    s = m.new()
+    m.register(s, "Ann")
+    a = m.get(s, "C1")
+    b = m.get(s, "C1")
+    check(a is not b, "two get calls returned the same dict object")
+    a["name"] = "X"
+    is_customer(b, "C1", "Ann", "earlier returned customer")
+
+
+# ----------------------------------------------------------------------------- find
+
+# Doc: "`find(state, text)` returns the customers whose name contains `text`".
+@case
+def find_returns_exact_customers(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob"])
+    got = found(m, s, "Bob")
+    eq(len(got), 1, "number found")
+    is_customer(got[0], "C2", "Bob", "found customer")
+
+
+# Doc: "whose name contains `text`" (start, middle, end, whole name).
+@case
+def find_containment_positions(m):
+    s = m.new()
+    fill(m, s, ["Annabel", "Bob", "Hannah", "Joann"])
+    is_found(m, s, "Ann", [("C1", "Annabel"), ("C3", "Hannah"), ("C4", "Joann")])
+    is_found(m, s, "nab", [("C1", "Annabel")])
+    is_found(m, s, "bel", [("C1", "Annabel")])
+    is_found(m, s, "Bob", [("C2", "Bob")])
+    is_found(m, s, "o", [("C2", "Bob"), ("C4", "Joann")])
+    is_found(m, s, "Hannah", [("C3", "Hannah")])
+
+
+# Doc: "whose name contains `text`" (no customer contains it: none returned).
+@case
+def find_no_match_is_empty(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob"])
+    eq(found(m, s, "zz"), [], "find('zz')")
+    eq(found(m, s, "Anne"), [], "find('Anne')")
+    eq(found(m, s, "Ann Bob"), [], "find('Ann Bob')")
+    eq(found(m, s, "AnnBob"), [], "find('AnnBob')")
+
+
+# Doc: "whose name contains `text`" (contiguous containment, not letters in sequence).
+@case
+def find_is_not_subsequence_or_reverse(m):
+    s = m.new()
+    fill(m, s, ["Albert", "Bart", "Tab"])
+    is_found(m, s, "at", [])
+    is_found(m, s, "ab", [("C3", "Tab")])
+    is_found(m, s, "art", [("C2", "Bart")])
+    is_found(m, s, "bat", [])
+
+
+# Doc: "contains `text`, ignoring case" (text in another case than the name).
+@case
+def find_ignores_case_of_text(m):
+    s = m.new()
+    fill(m, s, ["Annabel", "Bob", "joanne"])
+    is_found(m, s, "ANN", [("C1", "Annabel"), ("C3", "joanne")])
+    is_found(m, s, "ann", [("C1", "Annabel"), ("C3", "joanne")])
+    is_found(m, s, "aNn", [("C1", "Annabel"), ("C3", "joanne")])
+    is_found(m, s, "BOB", [("C2", "Bob")])
+    is_found(m, s, "b", [("C1", "Annabel"), ("C2", "Bob")])
+
+
+# Doc: "contains `text`, ignoring case" (name in another case than the text).
+@case
+def find_ignores_case_of_name(m):
+    s = m.new()
+    fill(m, s, ["ANNA", "anna", "AnNa", "Bob"])
+    is_found(m, s, "nn", [("C1", "ANNA"), ("C2", "anna"), ("C3", "AnNa")])
+    is_found(m, s, "NNA", [("C1", "ANNA"), ("C2", "anna"), ("C3", "AnNa")])
+    is_found(m, s, "anna", [("C1", "ANNA"), ("C2", "anna"), ("C3", "AnNa")])
+    is_found(m, s, "bOB", [("C4", "Bob")])
+
+
+# Doc: "stores the name stripped" + "returns the customers" (found names keep their case).
+@case
+def find_returns_names_as_stored(m):
+    s = m.new()
+    fill(m, s, ["  McAnn ", "ANNIE"])
+    is_found(m, s, "ann", [("C1", "McAnn"), ("C2", "ANNIE")])
+    is_customer(m.get(s, "C1"), "C1", "McAnn")
+
+
+# Doc: "in order of registration" (not alphabetical by name).
+@case
+def find_order_is_registration_not_name(m):
+    s = m.new()
+    fill(m, s, ["Zara", "Mona", "Adam", "bea", "Carl"])
+    is_found(m, s, "a", [("C1", "Zara"), ("C2", "Mona"), ("C3", "Adam"), ("C4", "bea"),
+                         ("C5", "Carl")])
+    is_found(m, s, "", [("C1", "Zara"), ("C2", "Mona"), ("C3", "Adam"), ("C4", "bea"),
+                        ("C5", "Carl")])
+    is_found(m, s, "ar", [("C1", "Zara"), ("C5", "Carl")])
+
+
+# Doc: "in order of registration" (C2 before C10: not ordered by the id as text).
+@case
+def find_order_past_C9(m):
+    s = m.new()
+    names = ["Pat%d" % i for i in range(1, 14)]
+    fill(m, s, names)
+    is_found(m, s, "", list(zip(ids(13), names)))
+    is_found(m, s, "pat", list(zip(ids(13), names)))
+    is_found(m, s, "Pat1", [("C1", "Pat1"), ("C10", "Pat10"), ("C11", "Pat11"),
+                            ("C12", "Pat12"), ("C13", "Pat13")])
+
+
+# Doc: "every customer when `text` is `\"\"`."
+@case
+def find_empty_text_returns_everyone(m):
+    s = m.new()
+    names = ["Ann", "Bob", "Ann", "x", "Cy Lee"]
+    for n in range(len(names)):
+        m.register(s, names[n])
+        is_found(m, s, "", list(zip(ids(n + 1), names[: n + 1])))
+
+
+# Doc: "whose name contains `text`" (the text as given: it is not said to be stripped).
+@case
+def find_text_is_taken_as_given(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob Ray", " Cy "])
+    is_found(m, s, " ", [("C2", "Bob Ray")])
+    is_found(m, s, "b r", [("C2", "Bob Ray")])
+    is_found(m, s, "ann ", [])
+    is_found(m, s, " cy", [])
+    is_found(m, s, "  ", [])
+
+
+# Doc: "whose name contains `text`" (the name, not the id).
+@case
+def find_does_not_search_ids(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob", "Vic"])
+    is_found(m, s, "C1", [])
+    is_found(m, s, "1", [])
+    is_found(m, s, "c", [("C3", "Vic")])
+    is_found(m, s, "id", [])
+    is_found(m, s, "name", [])
+
+
+# Doc: "whose name contains `text`" (plain containment: no pattern characters).
+@case
+def find_text_is_literal(m):
+    s = m.new()
+    fill(m, s, ["A.B", "AxB", "a*b", "(x", "50%", "q_r", "a\\b"])
+    is_found(m, s, ".", [("C1", "A.B")])
+    is_found(m, s, "a.b", [("C1", "A.B")])
+    is_found(m, s, "*", [("C3", "a*b")])
+    is_found(m, s, "(", [("C4", "(x")])
+    is_found(m, s, "%", [("C5", "50%")])
+    is_found(m, s, "_", [("C6", "q_r")])
+    is_found(m, s, "\\", [("C7", "a\\b")])
+    is_found(m, s, "?", [])
+    is_found(m, s, "[", [])
+    is_found(m, s, ".*", [])
+    is_found(m, s, "a|x", [])
+    is_found(m, s, "^a", [])
+    is_found(m, s, "b$", [])
+
+
+# Doc: "stores the name stripped of surrounding whitespace" + "whose name contains `text`".
+@case
+def find_inner_whitespace(m):
+    s = m.new()
+    fill(m, s, [" Ann  Lee ", "Ann Lee", "AnnLee"])
+    is_found(m, s, "n  l", [("C1", "Ann  Lee")])
+    is_found(m, s, "n l", [("C2", "Ann Lee")])
+    is_found(m, s, "nl", [("C3", "AnnLee")])
+    is_found(m, s, "lee", [("C1", "Ann  Lee"), ("C2", "Ann Lee"), ("C3", "AnnLee")])
+
+
+# Doc: "whose name contains `text`" (non-ASCII letters, same case; also across the round trip)
+@case
+def find_non_ascii_name(m):
+    s = m.new()
+    fill(m, s, ["Zoë", "Zoe", "Łukasz"])
+    is_found(m, s, "oë", [("C1", "Zoë")])
+    is_found(m, s, "zo", [("C1", "Zoë"), ("C2", "Zoe")])
+    s = rt(s)
+    is_found(m, s, "oë", [("C1", "Zoë")])
+    is_customer(m.get(s, "C3"), "C3", "Łukasz")
+    is_found(m, s, "", [("C1", "Zoë"), ("C2", "Zoe"), ("C3", "Łukasz")])
+
+
+# Doc: "returned customers are copies." (those returned by find)
+@case
+def find_returns_copies(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob"])
+    for c in found(m, s, ""):
+        c["name"] = "Mallory"
+        c["id"] = "C9"
+        c["extra"] = True
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+    is_customer(m.get(s, "C1"), "C1", "Ann")
+    is_customer(m.get(s, "C2"), "C2", "Bob")
+    is_found(m, s, "Mallory", [])
+    raises(KeyError, m.get, s, "C9")
+    is_id(m.register(s, "Cy"), "C3")
+
+
+# Doc: "returned customers are copies." (find and get do not share one dict; nor two finds)
+@case
+def find_copies_are_distinct(m):
+    s = m.new()
+    m.register(s, "Ann")
+    g = m.get(s, "C1")
+    f1 = found(m, s, "")[0]
+    f2 = found(m, s, "a")[0]
+    check(f1 is not g and f2 is not g and f1 is not f2, "the same dict object returned twice")
+    f1["name"] = "X"
+    is_customer(g, "C1", "Ann", "customer from get")
+    is_customer(f2, "C1", "Ann", "customer from another find")
+
+
+# Doc: "find ... returns the customers" in the state (changing a returned result changes
+# no later answer) + "returned customers are copies."
+@case
+def find_result_container_is_not_the_state(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob", "Cy"])
+    for text in ("", "b"):
+        res = m.find(s, text)
+        if isinstance(res, list):
+            res.reverse()
+            res.append({"id": "C9", "name": "Mallory"})
+            del res[0]
+            res.clear()
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob"), ("C3", "Cy")])
+    is_found(m, s, "b", [("C2", "Bob")])
+    raises(KeyError, m.get, s, "C9")
+    is_id(m.register(s, "Di"), "C4")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob"), ("C3", "Cy"), ("C4", "Di")])
+
+
+# Doc: "find ... returns the customers" (asking changes nothing: ids go on, answers repeat)
+@case
+def find_leaves_state_usable(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob"])
+    for _ in range(4):
+        is_found(m, s, "n", [("C1", "Ann")])
+        is_found(m, s, "zz", [])
+        is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+    is_id(m.register(s, "Nina"), "C3")
+    is_found(m, s, "n", [("C1", "Ann"), ("C3", "Nina")])
+
+
+# Doc: "Functions change the state they are given, in place." (find sees later registrations)
+@case
+def find_sees_each_registration(m):
+    s = m.new()
+    is_found(m, s, "an", [])
+    m.register(s, "Dan")
+    is_found(m, s, "an", [("C1", "Dan")])
+    m.register(s, "Bob")
+    is_found(m, s, "an", [("C1", "Dan")])
+    m.register(s, "ANNE")
+    is_found(m, s, "an", [("C1", "Dan"), ("C3", "ANNE")])
+
+
+# ----------------------------------------------------------------------------- JSON round trip
+
+# Doc: "survives `json.loads(json.dumps(state))` unchanged in behaviour" + ids "and so on".
+@case
+def roundtrip_id_sequence_continues(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob", "Cy"])
+    s = rt(s)
+    is_id(m.register(s, "Di"), "C4")
+    is_id(m.register(s, "Ed"), "C5")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob"), ("C3", "Cy"), ("C4", "Di"), ("C5", "Ed")])
+
+
+# Doc: "survives `json.loads(json.dumps(state))` unchanged in behaviour" (get and find).
+@case
+def roundtrip_get_and_find_unchanged(m):
+    s = m.new()
+    fill(m, s, [" Zara ", "Mona", "adam", "Mona"])
+    t = rt(s)
+    for st in (s, t):
+        is_customer(m.get(st, "C1"), "C1", "Zara")
+        is_customer(m.get(st, "C3"), "C3", "adam")
+        is_found(m, st, "", [("C1", "Zara"), ("C2", "Mona"), ("C3", "adam"), ("C4", "Mona")])
+        is_found(m, st, "A", [("C1", "Zara"), ("C2", "Mona"), ("C3", "adam"), ("C4", "Mona")])
+        is_found(m, st, "MON", [("C2", "Mona"), ("C4", "Mona")])
+        is_found(m, st, "zz", [])
+        raises(KeyError, m.get, st, "C5")
+        raises(KeyError, m.get, st, "c1")
+
+
+# Doc: "survives `json.loads(json.dumps(state))`" (the copy and the original are two states)
+@case
+def roundtrip_original_unaffected(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob"])
+    t = rt(s)
+    is_id(m.register(t, "Tess"), "C3")
+    is_id(m.register(t, "Tom"), "C4")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+    raises(KeyError, m.get, s, "C3")
+    is_id(m.register(s, "Sue"), "C3")
+    is_customer(m.get(s, "C3"), "C3", "Sue")
+    is_customer(m.get(t, "C3"), "C3", "Tess")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob"), ("C3", "Sue")])
+    is_found(m, t, "", [("C1", "Ann"), ("C2", "Bob"), ("C3", "Tess"), ("C4", "Tom")])
+    raises(KeyError, m.get, s, "C4")
+
+
+# Doc: "survives `json.loads(json.dumps(state))` unchanged in behaviour" (at every step).
+@case
+def roundtrip_after_every_call(m):
+    s = m.new()
+    expect = []
+    for i in range(1, 16):
+        s = rt(s)
+        name = "Name%d" % i
+        is_id(m.register(s, "  %s\t" % name), "C%d" % i)
+        expect.append(("C%d" % i, name))
+        s = rt(s)
+        is_found(m, s, "", expect)
+        s = rt(s)
+        is_customer(m.get(s, "C%d" % i), "C%d" % i, name)
+        s = rt(s)
+        raises(KeyError, m.get, s, "C%d" % (i + 1))
+        s = rt(s)
+        raises(ValueError, m.register, s, "  ")
+    is_found(m, s, "name1", [("C1", "Name1")] + [("C%d" % i, "Name%d" % i)
+                                                for i in range(10, 16)])
+
+
+# Doc: "survives `json.loads(json.dumps(state))`" (twice in a row, and via the JSON text).
+@case
+def roundtrip_twice_and_via_text(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob"])
+    text = json.dumps(rt(rt(s)))
+    t = json.loads(text)
+    u = json.loads(text)
+    is_id(m.register(t, "Cy"), "C3")
+    is_id(m.register(u, "Di"), "C3")
+    is_customer(m.get(t, "C3"), "C3", "Cy")
+    is_customer(m.get(u, "C3"), "C3", "Di")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+
+
+# Doc: "in order of registration" + "survives `json.loads(json.dumps(state))`" (past C9).
+@case
+def roundtrip_order_past_C9(m):
+    s = m.new()
+    names = ["Kim%d" % i for i in range(1, 10)]
+    fill(m, s, names)
+    s = rt(s)
+    for i in range(10, 24):
+        names.append("Kim%d" % i)
+        is_id(m.register(s, names[-1]), "C%d" % i)
+    s = rt(s)
+    is_found(m, s, "", list(zip(ids(23), names)))
+    is_found(m, s, "KIM2", [("C2", "Kim2"), ("C20", "Kim20"), ("C21", "Kim21"),
+                            ("C22", "Kim22"), ("C23", "Kim23")])
+    is_customer(m.get(s, "C10"), "C10", "Kim10")
+    is_customer(m.get(s, "C2"), "C2", "Kim2")
+    is_id(m.register(s, "Last"), "C24")
+
+
+# Doc: "A refused call changes nothing." on a state that went through the round trip.
+@case
+def roundtrip_refusals_change_nothing(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob"])
+    s = rt(s)
+    for bad in (None, "", " \n", 4, ["Ann"]):
+        raises(ValueError, m.register, s, bad)
+    for cid in ("C3", "C0", "", "c2", "C02"):
+        raises(KeyError, m.get, s, cid)
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+    is_id(m.register(s, "Cy"), "C3")
+    s = rt(s)
+    raises(ValueError, m.register, s, "")
+    raises(KeyError, m.get, s, "C4")
+    is_id(m.register(s, "Di"), "C4")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob"), ("C3", "Cy"), ("C4", "Di")])
+
+
+# Doc: "A refused call leaves the state as it was." on a round-tripped state.
+@case
+def roundtrip_refusal_leaves_state_identical(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob"])
+    s = rt(s)
+    before = json.dumps(s)
+    raises(ValueError, m.register, s, None)
+    eq(json.dumps(s), before, "json after refused register(None)")
+    raises(ValueError, m.register, s, " ")
+    eq(json.dumps(s), before, "json after refused register(' ')")
+    raises(KeyError, m.get, s, "C3")
+    eq(json.dumps(s), before, "json after refused get('C3')")
+
+
+# Doc: "returned customers are copies." on a state that went through the round trip.
+@case
+def roundtrip_copies(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob"])
+    s = rt(s)
+    m.get(s, "C1")["name"] = "X"
+    for c in found(m, s, ""):
+        c["name"] = "Y"
+        c["id"] = "C7"
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+    is_customer(m.get(s, "C2"), "C2", "Bob")
+    s = rt(s)
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+
+
+# Doc: "Two customers may share a name." + round trip (duplicates stay two customers).
+@case
+def roundtrip_duplicate_names(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Ann"])
+    s = rt(s)
+    is_id(m.register(s, " Ann "), "C3")
+    s = rt(s)
+    is_found(m, s, "ann", [("C1", "Ann"), ("C2", "Ann"), ("C3", "Ann")])
+    is_customer(m.get(s, "C2"), "C2", "Ann")
+
+
+# ----------------------------------------------------------------------------- long sequence
+
+def _model_run(m, seed, steps, m2=None):
+    """Drive the module against a plain model; round trips and refusals mixed in."""
+    rnd = random.Random(seed)
+    pool = ["Ann", "ann", "ANNA", "Bob", "bobby", "Cy Lee", "Di-Ann", "Ed", "O'Bo", "nan",
+            "Lee Ann", "x", "Xavier", "be", "B", "Cyd"]
+    pads = ["", " ", "  ", "\t", "\n", " \r\n"]
+    texts = ["", "a", "A", "an", "ANN", "b", "BO", "ee", " ", "x", "y l", "-", "'", "n",
+             "c1", "1", "zz", "D", "e a", "nn"]
+    bad_names = [None, "", " ", "\t\n", 0, 3, 2.5, True, ["Ann"], {"a": 1}, b"Ann"]
+    model = []
+    s = m.new()
+    mods = [m] if m2 is None else [m, m2]
+    for step in range(steps):
+        mod = mods[step % len(mods)]
+        op = rnd.random()
+        what = "step %d" % step
+        if op < 0.30:
+            name = rnd.choice(pool)
+            got = mod.register(s, rnd.choice(pads) + name + rnd.choice(pads))
+            is_id(got, "C%d" % (len(model) + 1), what + " register")
+            model.append(name)
+        elif op < 0.40:
+            raises(ValueError, mod.register, s, rnd.choice(bad_names))
+        elif op < 0.55 and model:
+            i = rnd.randrange(len(model))
+            got = mod.get(s, "C%d" % (i + 1))
+            is_customer(got, "C%d" % (i + 1), model[i], what + " get")
+            if rnd.random() < 0.3:
+                got["name"] = "changed"
+        elif op < 0.65:
+            cid = rnd.choice(["C%d" % (len(model) + 1), "C0", "c1", "", "C01", "C999", "x"])
+            raises(KeyError, mod.get, s, cid)
+        elif op < 0.90:
+            text = rnd.choice(texts)
+            want = [{"id": "C%d" % (i + 1), "name": n} for i, n in enumerate(model)
+                    if text.lower() in n.lower()]
+            res = mod.find(s, text)
+            check(res is not None and not isinstance(res, (dict, str, bytes)),
+                  "%s find(%r) returned %r" % (what, text, res))
+            got = list(res)
+            eq(got, want, what + " find(%r)" % text)
+            if got and rnd.random() < 0.3:
+                got[0]["name"] = "changed"
+        else:
+            s = rt(s)
+    want = [{"id": "C%d" % (i + 1), "name": n} for i, n in enumerate(model)]
+    eq(list(mod.find(s, "")), want, "final find all")
+    check(len(model) > 9, "sequence too short")
+
+
+# Doc: all of declaration 2 together, over a long mixed sequence with round trips.
+@case
+def long_mixed_sequence_seed_1(m):
+    _model_run(m, 1, 400)
+
+
+# Doc: all of declaration 2 together, over a long mixed sequence with round trips.
+@case
+def long_mixed_sequence_seed_2(m):
+    _model_run(m, 20261118, 600)
+
+
+# Doc: "the module holds no state of its own" + all of declaration 2 (two module instances
+# take turns on one state).
+@case
+def long_mixed_sequence_two_instances(m):
+    _model_run(m, 7, 400, load("customers_second_instance"))
+
+
+# ----------------------------------------------------------------------------- no module state
+
+# Doc: "the module holds no state of its own" (a state made by one loaded instance of the
+# module is used by a second, separately loaded instance).
+@case
+def no_module_state_second_instance(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob", "Cy"])
+    m2 = load("customers_second_instance")
+    check(m2 is not m, "could not load a second instance")
+    is_customer(m2.get(s, "C2"), "C2", "Bob")
+    is_found(m2, s, "", [("C1", "Ann"), ("C2", "Bob"), ("C3", "Cy")])
+    is_found(m2, s, "B", [("C2", "Bob")])
+    raises(KeyError, m2.get, s, "C4")
+    raises(ValueError, m2.register, s, " ")
+    is_id(m2.register(s, " Di "), "C4")
+    is_customer(m.get(s, "C4"), "C4", "Di")
+    is_id(m.register(s, "Ed"), "C5")
+    is_found(m2, s, "", [("C1", "Ann"), ("C2", "Bob"), ("C3", "Cy"), ("C4", "Di"), ("C5", "Ed")])
+
+
+# Doc: "the module holds no state of its own" + "survives `json.loads(json.dumps(state))`".
+@case
+def no_module_state_roundtrip_second_instance(m):
+    s = m.new()
+    fill(m, s, ["Ann", "Bob"])
+    text = json.dumps(s)
+    m2 = load("customers_second_instance")
+    t = json.loads(text)
+    is_found(m2, t, "", [("C1", "Ann"), ("C2", "Bob")])
+    is_id(m2.register(t, "Cy"), "C3")
+    is_customer(m2.get(t, "C3"), "C3", "Cy")
+    is_found(m, s, "", [("C1", "Ann"), ("C2", "Bob")])
+    is_id(m2.register(m2.new(), "Zed"), "C1")
+    is_id(m.register(m.new(), "Zed"), "C1")
+
+
+# Doc: "the module holds no state of its own" (a state made in the second instance starts
+# at C1 whatever the first instance did, and the other way round).
+@case
+def no_module_state_instances_do_not_share_counter(m):
+    a = m.new()
+    fill(m, a, ["Ann", "Bob", "Cy"])
+    m2 = load("customers_second_instance")
+    b = m2.new()
+    eq(found(m2, b, ""), [], "find all on new state of second instance")
+    is_id(m2.register(b, "Di"), "C1")
+    is_id(m.register(b, "Ed"), "C2")
+    is_id(m2.register(a, "Flo"), "C4")
+    is_found(m, b, "", [("C1", "Di"), ("C2", "Ed")])
+
+
+# Doc: "the module holds no state of its own" + round trip (the JSON text is made in another
+# process and the state continues here).
+@case
+def no_module_state_across_processes(m):
+    code = ("import importlib.util, json, sys\n"
+            "spec = importlib.util.spec_from_file_location('customers', sys.argv[1])\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "sys.modules['customers'] = mod\n"
+            "spec.loader.exec_module(mod)\n"
+            "s = mod.new()\n"
+            "for n in [' Ann ', 'Bob', 'Cy', 'Di', 'Ed', 'Flo', 'Gus', 'Hal', 'Ida', 'Jo']:\n"
+            "    mod.register(s, n)\n"
+            "sys.stdout.write('\\n@@STATE@@' + json.dumps(s) + '\\n')\n")
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    out = subprocess.run([sys.executable, "-B", "-c", code, os.path.join(BUILD, "customers.py")],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
+                         timeout=TIMEOUT, universal_newlines=True).stdout
+    lines = [ln for ln in out.splitlines() if ln.startswith("@@STATE@@")]
+    check(lines, "the other process produced no state")
+    s = json.loads(lines[-1][len("@@STATE@@"):])
+    names = ["Ann", "Bob", "Cy", "Di", "Ed", "Flo", "Gus", "Hal", "Ida", "Jo"]
+    is_found(m, s, "", list(zip(ids(10), names)))
+    is_customer(m.get(s, "C10"), "C10", "Jo")
+    is_id(m.register(s, "Kay"), "C11")
+    is_found(m, s, "A", [("C1", "Ann"), ("C8", "Hal"), ("C9", "Ida"), ("C11", "Kay")])
+
+
+# ----------------------------------------------------------------------------- runner
+
+def _short(text, limit=300):
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def child(name, build):
+    global BUILD
+    BUILD = build
+    sys.dont_write_bytecode = True
+    fn = dict(CASES)[name]
+    sys.path.insert(0, build)
+    try:
+        fn(load())
+        result = "PASS"
+    except AssertionError as e:
+        result = "FAIL " + _short(e)
+    except BaseException as e:  # noqa: BLE001 - anything the build raises is a failed case
+        result = "FAIL unexpected %s: %s" % (type(e).__name__, _short(e))
+    sys.stdout.write("\n" + MARK + result + "\n")
+    sys.stdout.flush()
+    os._exit(0)
+
+
+def run_case(name, build, workdir):
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8")
+    cmd = [sys.executable, "-B", os.path.abspath(__file__), "--run-case", name, build]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                              cwd=workdir, timeout=TIMEOUT, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return "timeout after %d s" % TIMEOUT
+    out = proc.stdout.decode("utf-8", "replace")
+    marks = [ln for ln in out.splitlines() if ln.startswith(MARK)]
+    if not marks:
+        err = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+        return "no result (exit %s) %s" % (proc.returncode, _short(err[-1] if err else ""))
+    res = marks[-1][len(MARK):]
+    return None if res == "PASS" else (res[5:] or "failed")
+
+
+def main(argv):
+    if len(argv) == 4 and argv[1] == "--run-case":
+        child(argv[2], argv[3])
+    if len(argv) != 2:
+        sys.stderr.write("usage: check <build-dir>\n")
+        return 2
+    build = os.path.abspath(argv[1])
+    path = os.path.join(build, "customers.py")
+    results = []
+    for name, fn in STATIC:
+        try:
+            fn(path)
+            results.append((name, None))
+        except AssertionError as e:
+            results.append((name, _short(e)))
+        except Exception as e:  # noqa: BLE001
+            results.append((name, "%s: %s" % (type(e).__name__, _short(e))))
+    with tempfile.TemporaryDirectory() as workdir:
+        for name, _ in CASES:
+            if not os.path.isfile(path):
+                results.append((name, "no customers.py in the build dir"))
+            else:
+                results.append((name, run_case(name, build, workdir)))
+    passed = 0
+    for name, reason in results:
+        if reason is None:
+            passed += 1
+            print("PASS %s" % name)
+        else:
+            print("FAIL %s: %s" % (name, reason))
+    print("%d/%d" % (passed, len(results)))
+    return 0 if passed == len(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
