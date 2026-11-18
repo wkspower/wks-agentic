@@ -105,3 +105,12 @@ shop features built, and the components the principles and the root drove
 ([`reports/first-result.html`](reports/first-result.html), published at
 https://claude.ai/artifact/8txcTMbckjAsXtGQ2DaXqW). Options: A. read.
 Waiting costs: nothing stops.
+
+### Q14 | decision | asked=2026-11-18T21:50Z | answered=2026-11-18T21:50Z
+**Work due next, two parts of which need budget from you**: (1) judge: any
+stand undoable alone, about 3 runs; (2) build stock, customers, sales and
+the shop, 8 runs, in budget; (3) audit cases for those four and an error
+source for the enforcer, about 5 runs; (4) catalog: its builders' decisions
+become rules. Options: A. go ahead, cost raised from 16 to 24 agent runs.
+B. only part 2. Recommended: A. Waiting costs: parts 1 and 3 stay undone.
+Answer, word for word: "Go ahead". Taken as A.
