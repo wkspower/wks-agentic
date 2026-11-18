@@ -69,23 +69,23 @@ footer { color: var(--ink3); font-size: 13.5px; border-top: 1px solid var(--rule
 
 <div class="page">
 <header>
-  <p class="kicker">Autonomy tree · 18 Nov 2026 · branch claude/wizardly-cerf-94l00l</p>
-  <h1>One hour to a judged first result</h1>
-  <p class="lead">The tree went from two documents to seven documented, measured and judged units in about one hour. One pet shop unit, the catalog, is built and standing. The other four pet shop units are specified and testable but not built.</p>
+  <p class="kicker">Autonomy tree · 18 Nov 2026 · branch claude/wizardly-cerf-94l00l · second report</p>
+  <h1>The whole pet shop is built and standing</h1>
+  <p class="lead">All five pet shop units are built, each chosen by the judge over an alternative made without sight of it, and each checked against an independent audit. The shop runs from the command line. The work took two sessions of about one hour each and all 24 agent runs of the budget.</p>
   <div class="facts">
-    <div><b>61 min</b><span>elapsed, first record to last check (budget 4 h)</span></div>
-    <div><b>8 of 16</b><span>agent runs spent</span></div>
-    <div><b>1 of 5</b><span>pet shop units built</span></div>
-    <div><b>6.50</b><span>root's number: 13 items ÷ 2 correct results (this report is the 13th)</span></div>
+    <div><b>2 h 21</b><span>from first effect to last check, waiting included (budget 4 h)</span></div>
+    <div><b>24 of 24</b><span>agent runs spent</span></div>
+    <div><b>5 of 5</b><span>pet shop units built and standing</span></div>
+    <div><b>2.43</b><span>root's number: 17 items ÷ 7 correct results</span></div>
   </div>
 </header>
 
 <section>
   <h2>Time spent</h2>
-  <p class="sub">Times are UTC and come from commit timestamps and the durations each agent reported. Agent start times are to the nearest minute.</p>
+  <p class="sub">Times are UTC and come from commit timestamps and the durations each agent reported. Agent start times are to the nearest minute. The gap between the two sessions is the first report page and waiting for answers.</p>
   <div class="chart">
     <div class="legend"><span><i style="background:var(--s1)"></i>Coordinating session</span><span><i style="background:var(--s2)"></i>Independent agent run</span><span><i style="background:var(--s3)"></i>Machine check</span></div>
-    <div class="inner"><svg id="gantt" role="img" aria-label="Timeline of the hour: session stages, agent runs and machine checks. The same figures are in the tables below."></svg></div>
+    <div class="inner"><svg id="gantt" role="img" aria-label="Timeline of both sessions: session stages, agent runs and machine checks. The same figures are in the tables below."></svg></div>
     <div id="tip" hidden></div>
   </div>
 
@@ -93,33 +93,40 @@ footer { color: var(--ink3); font-size: 13.5px; border-top: 1px solid var(--rule
   <div class="scroll"><table>
     <thead><tr><th>Stage</th><th>From–to</th><th class="n">Minutes</th><th>What happened</th></tr></thead>
     <tbody>
+      <tr><td colspan="4"><b>First session: from two documents to a first judged result</b></td></tr>
       <tr><td>1 · Ask the person</td><td class="mono">20:24–20:29</td><td class="n">4.6</td><td>Round 1 recorded (10 items), answered "Ok", answer written into <code>root.md</code>. Nothing was built before this.</td></tr>
       <tr><td>2 · Declare the units</td><td class="mono">20:29–20:34</td><td class="n">4.9</td><td>Seven unit documents, their <code>build</code> and <code>verdict</code> commands, the spend ledger.</td></tr>
       <tr><td>3 · Measures first</td><td class="mono">20:34–20:55</td><td class="n">21.1</td><td>Four agents wrote the seven measures in parallel. Meanwhile: judge and enforcer drafted outside the record, catalog audit written, two catalog builds made.</td></tr>
-      <tr><td>4 · Build and judge</td><td class="mono">20:55–20:58</td><td class="n">2.7</td><td>Judge and enforcer installed (unjudged, as the principles allow for the first pair). Judge selects the catalog build.</td></tr>
-      <tr><td>5 · Defect loop</td><td class="mono">20:58–21:09</td><td class="n">11.7</td><td>The enforcer's <code>undo</code> failed on first use. Case added to its measure by a separate agent, then the judge let the fix stand.</td></tr>
+      <tr><td>4 · Build and judge</td><td class="mono">20:55–20:58</td><td class="n">2.7</td><td>Judge and enforcer installed. Judge selects the catalog build.</td></tr>
+      <tr><td>5 · Defect loop</td><td class="mono">20:58–21:09</td><td class="n">11.7</td><td>The enforcer's <code>undo</code> failed on first use. Case added to its measure, then the fix stood.</td></tr>
       <tr><td>6 · Records</td><td class="mono">21:09–21:10</td><td class="n">0.9</td><td>Unit records, root record, two notices in the queue.</td></tr>
-      <tr><td>7 · Full enforcement run</td><td class="mono">21:10–21:25</td><td class="n">14.5</td><td>Every rule checked on every unit, every planted wrong build rerun. No breach.</td></tr>
+      <tr><td>7 · Full enforcement run</td><td class="mono">21:10–21:25</td><td class="n">14.5</td><td>Every rule on every unit, every planted wrong build rerun. No breach.</td></tr>
+      <tr><td>P · First report page</td><td class="mono">21:25–21:32</td><td class="n">7.3</td><td>Written at the person's request.</td></tr>
+      <tr><td colspan="4"><b>Second session: the rest of the pet shop, the judge fix, the audits</b></td></tr>
+      <tr><td>8 · Budget, declarations, launch</td><td class="mono">21:50–21:54</td><td class="n">3.0</td><td>"Go ahead" recorded, cost raised to 24 runs, documents updated, fourteen agents started in parallel.</td></tr>
+      <tr><td>9 · Build and judge four units</td><td class="mono">21:54–21:57</td><td class="n">2.7</td><td>Stock, customers and sales judged within a minute of launch. Two agents then wrote the shop on the standing modules; judged at 21:56.</td></tr>
+      <tr><td>10 · Audits arrive</td><td class="mono">21:57–22:07</td><td class="n">10.3</td><td>Audits for stock, sales, customers and the enforcer run against every offered build.</td></tr>
+      <tr><td>11 · Judge keeps one stands file per unit</td><td class="mono">22:07–22:15</td><td class="n">8.5</td><td>Three measures changed first, standing judge and enforcer failed them, changed builds installed.</td></tr>
+      <tr><td>12 · Shop audit and records</td><td class="mono">22:15–22:21</td><td class="n">6.0</td><td>130 audit scenarios run on both shop builds and on the 25 planted shops. All records rewritten.</td></tr>
+      <tr><td>13 · Full enforcement run, twice</td><td class="mono">22:21–22:50</td><td class="n">28.2</td><td>No breach; all seven units build. The run was made twice (once directly, once inside <code>./build</code>): about 13 minutes were avoidable.</td></tr>
     </tbody>
-    <tfoot><tr><td>Total</td><td class="mono">20:24–21:25</td><td class="n">60.4</td><td>The time before the first record (reading the two documents, composing round 1) was not recorded.</td></tr></tfoot>
+    <tfoot><tr><td>Total worked</td><td class="mono"></td><td class="n">126.4</td><td>Plus about 19 minutes waiting for answers between the sessions. Time before the first record was not recorded.</td></tr></tfoot>
   </table></div>
 
   <h3>By activity</h3>
-  <p class="sub">Agent minutes add up to more than the clock because runs overlapped.</p>
+  <p class="sub">Agent minutes add up to more than the clock because runs overlapped. Writing the pet shop code itself was 3% of the agent time.</p>
   <div class="scroll"><table>
-    <thead><tr><th>Activity</th><th class="n">Clock min</th><th class="n">Agent runs</th><th class="n">Agent min</th><th>Notes</th></tr></thead>
+    <thead><tr><th>Activity</th><th class="n">Agent runs</th><th class="n">Agent min</th><th class="n">Share</th><th>Notes</th></tr></thead>
     <tbody>
-      <tr><td>Asking the person and recording answers</td><td class="n">4.6</td><td class="n">0</td><td class="n">0</td><td>One round, one-word answer.</td></tr>
-      <tr><td>Writing declarations and records</td><td class="n">5.8</td><td class="n">0</td><td class="n">0</td><td>By the coordinating session.</td></tr>
-      <tr><td>Writing measures and planted wrong builds</td><td class="n">21.1</td><td class="n">4</td><td class="n">61.1</td><td>16.3 + 17.5 + 9.1 + 18.2 min. The largest cost by far.</td></tr>
-      <tr><td>Writing audit cases (error source)</td><td class="n">in stage 3</td><td class="n">1</td><td class="n">7.0</td><td>123 cases for catalog.</td></tr>
-      <tr><td>Building the pet shop unit</td><td class="n">in stage 3</td><td class="n">2</td><td class="n">0.7</td><td>Catalog and its blind alternative, as reported by the agents.</td></tr>
-      <tr><td>Building judge and enforcer</td><td class="n">in stage 3</td><td class="n">0</td><td class="n">0</td><td>By the session, while the measures were being written. Not metered separately.</td></tr>
-      <tr><td>Judging</td><td class="n">2.7</td><td class="n">0</td><td class="n">0</td><td>Mechanical: seconds per decision.</td></tr>
-      <tr><td>Correcting a defect the tree found in itself</td><td class="n">11.7</td><td class="n">1</td><td class="n">9.2</td><td>Measure case first, then the fix.</td></tr>
-      <tr><td>Machine verification</td><td class="n">14.5</td><td class="n">0</td><td class="n">0</td><td>Plus about 5 min of re-proving planted shops inside stage 3.</td></tr>
+      <tr><td>Writing measures and planted wrong builds</td><td class="n">8</td><td class="n">98.7</td><td class="n">59%</td><td>Seven measures, then four changes to them (undo cases, per-unit stands twice, catalog rules).</td></tr>
+      <tr><td>Writing audits (error source)</td><td class="n">6</td><td class="n">62.8</td><td class="n">38%</td><td>589 cases for catalog, stock, customers, sales, shop and enforcer. The shop audit alone took 22.9 min.</td></tr>
+      <tr><td>Building the pet shop</td><td class="n">10</td><td class="n">5.6</td><td class="n">3%</td><td>Five units, each built twice by agents that did not see each other. Under 80 seconds per build.</td></tr>
+      <tr><td>Building judge and enforcer</td><td class="n">0</td><td class="n">—</td><td class="n">—</td><td>By the coordinating session while agents worked. Not metered separately.</td></tr>
+      <tr><td>Judging</td><td class="n">0</td><td class="n">—</td><td class="n">—</td><td>Mechanical: eight decisions, seconds each.</td></tr>
+      <tr><td>Machine verification</td><td class="n">0</td><td class="n">—</td><td class="n">—</td><td>About 51 clock minutes: two full enforcement runs (one doubled) and re-proofs of planted builds.</td></tr>
+      <tr><td>Asking the person</td><td class="n">0</td><td class="n">—</td><td class="n">—</td><td>17 items in five exchanges; every answer was one click or one or two words.</td></tr>
     </tbody>
-    <tfoot><tr><td>Total</td><td class="n">60.4</td><td class="n">8</td><td class="n">78.0</td><td>Budget: 4 h, 16 runs.</td></tr></tfoot>
+    <tfoot><tr><td>Total</td><td class="n">24</td><td class="n">167.1</td><td class="n">100%</td><td>Budget: 24 runs, 4 h.</td></tr></tfoot>
   </table></div>
 </section>
 
@@ -129,50 +136,78 @@ footer { color: var(--ink3); font-size: 13.5px; border-top: 1px solid var(--rule
 
   <h3>For the product owner: what works today</h3>
   <div class="scroll"><table>
-    <thead><tr><th>Capability</th><th>Status</th><th>What that means</th></tr></thead>
+    <thead><tr><th>Capability</th><th>Command</th><th>Behaviour</th></tr></thead>
     <tbody>
-      <tr><td>Keep a catalog of what the shop sells</td><td><span class="pill ok">✓ built</span></td><td>Add an animal or a product with an id, a name and a price in cents. Look one up. Change a price. List everything in id order. Duplicate ids, empty names, unknown kinds and invalid prices are refused, and a refusal changes nothing.</td></tr>
-      <tr><td>Track stock</td><td><span class="pill todo">○ specified, not built</span></td><td>Receive and remove quantities per item; never below zero.</td></tr>
-      <tr><td>Register customers</td><td><span class="pill todo">○ specified, not built</span></td><td>Name only; ids C1, C2… never reused; search by part of a name.</td></tr>
-      <tr><td>Sell</td><td><span class="pill todo">○ specified, not built</span></td><td>A sale of several lines to one customer, with the right total, taken from stock wholly or not at all.</td></tr>
-      <tr><td>Run the shop from the command line</td><td><span class="pill todo">○ specified, not built</span></td><td><code>add-item</code>, <code>receive</code>, <code>register</code>, <code>sell</code>, <code>stock</code>, <code>takings</code>, with the state saved to a file.</td></tr>
+      <tr><td>Add something to sell</td><td><code>add-item ID NAME KIND PRICE_CENTS</code></td><td>Kind is <code>animal</code> or <code>product</code>. Duplicate ids, other kinds, negative or non-integer prices are refused.</td></tr>
+      <tr><td>Receive stock</td><td><code>receive ID QUANTITY</code></td><td>Prints the quantity now on hand. Refused for an item not in the catalog or a quantity below 1.</td></tr>
+      <tr><td>Register a customer</td><td><code>register NAME</code></td><td>Prints the new id: C1, C2, … Blank names refused. Two customers may share a name.</td></tr>
+      <tr><td>Sell</td><td><code>sell CUSTOMER_ID ID=QTY [ID=QTY …]</code></td><td>Prints the sale id and the total in cents. Refused wholly if the customer or an item is unknown, or if the quantities asked of one item, summed over the lines, exceed the stock. A refused sale uses no sale id.</td></tr>
+      <tr><td>Check stock</td><td><code>stock ID</code></td><td>Prints the quantity on hand.</td></tr>
+      <tr><td>See the takings</td><td><code>takings</code></td><td>Prints the sum of all sales in cents.</td></tr>
     </tbody>
   </table></div>
-  <p class="note">Nothing can be used by a shopkeeper yet. The catalog is a library module with no command line of its own; the usable product appears only when the shop unit is built on top of the four modules.</p>
+  <p class="note">Every command is run as <code>python3 shop.py --state FILE COMMAND …</code>. Success prints one line and exits 0. Any refusal exits 1 with a message on stderr and leaves the state file exactly as it was.</p>
+
+  <h3>A trial run on the built shop</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Command</th><th>Output</th></tr></thead>
+    <tbody class="mono">
+      <tr><td>add-item rex "Rex the dog" animal 25000</td><td>rex</td></tr>
+      <tr><td>add-item bone "Chew bone" product 350</td><td>bone</td></tr>
+      <tr><td>receive rex 1</td><td>1</td></tr>
+      <tr><td>receive bone 10</td><td>10</td></tr>
+      <tr><td>register "Ana Souza"</td><td>C1</td></tr>
+      <tr><td>sell C1 rex=1 bone=3</td><td>S1 26050</td></tr>
+      <tr><td>stock bone</td><td>7</td></tr>
+      <tr><td>takings</td><td>26050</td></tr>
+      <tr><td>sell C1 rex=1</td><td>exit 1 — refused: not enough available of 'rex'</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>What the shop does not do</h3>
+  <div class="scroll"><table>
+    <tbody>
+      <tr><td>Not reachable from the command line</td><td>Listing the catalog, changing a price, searching customers and looking up a past sale exist in the modules but have no command.</td></tr>
+      <tr><td>Not in scope</td><td>Returns, refunds, removing items or customers, discounts, services by appointment, payments.</td></tr>
+      <tr><td>Operational limits</td><td>One user at a time. The state file is written directly, not atomically, so a crash mid-write can corrupt it. A corrupt state file is refused, not repaired.</td></tr>
+    </tbody>
+  </table></div>
 
   <h3>For the architect: what was built</h3>
   <div class="scroll"><table>
-    <thead><tr><th>Unit</th><th>Built</th><th>Contract</th><th class="n">Cases</th><th class="n">Planted</th></tr></thead>
+    <thead><tr><th>Unit</th><th class="n">Lines</th><th class="n">Bytes</th><th>Contract</th><th class="n">Measure</th><th class="n">Planted</th><th class="n">Audit</th><th>Selected</th></tr></thead>
     <tbody>
-      <tr><td><code>catalog.py</code></td><td><span class="pill ok">✓ 42 lines, 1190 B</span></td><td><code>new</code>, <code>add</code>, <code>get</code>, <code>set_price</code>, <code>items</code>. <code>ValueError</code> for invalid input, <code>KeyError</code> for unknown ids. Price must be exactly an <code>int</code> ≥ 0 (a <code>bool</code> is refused). No imports.</td><td class="n">18 ×2</td><td class="n">23</td></tr>
-      <tr><td><code>stock.py</code></td><td><span class="pill todo">○</span></td><td><code>new</code>, <code>on_hand</code>, <code>receive</code>, <code>remove</code>. Quantities are ints ≥ 1; removing more than on hand is refused.</td><td class="n">12 ×2</td><td class="n">17</td></tr>
-      <tr><td><code>customers.py</code></td><td><span class="pill todo">○</span></td><td><code>new</code>, <code>register</code>, <code>get</code>, <code>find</code>. Names stripped; ids sequential across save and reload.</td><td class="n">16 ×2</td><td class="n">22</td></tr>
-      <tr><td><code>sales.py</code></td><td><span class="pill todo">○</span></td><td><code>new</code>, <code>sell</code>, <code>get</code>, <code>sales</code>, <code>takings</code>. Receives <code>price_of</code>, <code>available</code> and <code>take</code> as callables. Quantities of one item are summed across lines before anything is taken.</td><td class="n">56</td><td class="n">24</td></tr>
-      <tr><td><code>shop.py</code></td><td><span class="pill todo">○</span></td><td>Six commands; one line on stdout and exit 0 on success; exit 1, message on stderr, nothing on stdout and state file unchanged on refusal.</td><td class="n">52</td><td class="n">25</td></tr>
+      <tr><td><code>catalog.py</code></td><td class="n">42</td><td class="n">1190</td><td><code>new</code>, <code>add</code>, <code>get</code>, <code>set_price</code>, <code>items</code></td><td class="n">23 ×2</td><td class="n">26</td><td class="n">123</td><td>candidate (alt. 1264)</td></tr>
+      <tr><td><code>stock.py</code></td><td class="n">29</td><td class="n">862</td><td><code>new</code>, <code>on_hand</code>, <code>receive</code>, <code>remove</code></td><td class="n">12 ×2</td><td class="n">17</td><td class="n">60</td><td>alternative (cand. 878)</td></tr>
+      <tr><td><code>customers.py</code></td><td class="n">26</td><td class="n">753</td><td><code>new</code>, <code>register</code>, <code>get</code>, <code>find</code></td><td class="n">16 ×2</td><td class="n">22</td><td class="n">97</td><td>alternative (cand. 855)</td></tr>
+      <tr><td><code>sales.py</code></td><td class="n">55</td><td class="n">1890</td><td><code>new</code>, <code>sell</code>, <code>get</code>, <code>sales</code>, <code>takings</code>; receives <code>price_of</code>, <code>available</code>, <code>take</code></td><td class="n">56</td><td class="n">24</td><td class="n">75</td><td>candidate (alt. 1909)</td></tr>
+      <tr><td><code>shop.py</code></td><td class="n">89</td><td class="n">2824</td><td>Six commands over the four modules</td><td class="n">52</td><td class="n">25</td><td class="n">130</td><td>candidate (alt. 2883)</td></tr>
     </tbody>
+    <tfoot><tr><td>Total</td><td class="n">241</td><td class="n">7519</td><td></td><td class="n">159</td><td class="n">114</td><td class="n">485</td><td>alternative won 2 of 5</td></tr></tfoot>
   </table></div>
-  <p class="note">"×2" means every case runs twice: once plainly and once with the state passed through JSON at each step.</p>
+  <p class="note">"×2" means every case runs twice: plainly, and with the state passed through JSON at each step. Measure, Planted and Audit count cases, planted wrong builds and audit cases. Every offered build passed its measure and every audit case; every planted build fails its measure.</p>
 
   <h3>Design decisions that hold for all five units</h3>
   <div class="scroll"><table>
     <thead><tr><th>Decision</th><th>Consequence</th></tr></thead>
     <tbody>
-      <tr><td>Modules hold no state</td><td>Every function takes the state as its first argument. The state is created only by <code>new()</code>, is opaque to callers, and survives a JSON round trip, so the shop can persist it without knowing its shape.</td></tr>
-      <tr><td>No unit imports another</td><td>Sales gets prices and stock through three callables supplied by the shop. Each module can be built, tested and replaced alone; the measures check imports with <code>ast</code>.</td></tr>
-      <tr><td>Refusals are atomic</td><td>A refused call changes nothing, at module level and at the command line (state file byte-identical).</td></tr>
+      <tr><td>Modules hold no state</td><td>Every function takes the state first. The state is made only by <code>new()</code>, is opaque to callers and survives a JSON round trip. The shop stores the four states in one JSON object and never looks inside them.</td></tr>
+      <tr><td>No unit imports another</td><td>Sales gets prices and stock through three callables the shop supplies. Each module was built, tested and selected alone; the measures check imports with <code>ast</code>.</td></tr>
+      <tr><td>Refusals are atomic</td><td>A refused call changes nothing in a module; a refused command leaves the state file byte-identical. The shop writes the file only after a command fully succeeds.</td></tr>
       <tr><td>Returned data are copies</td><td>Callers cannot corrupt the state by editing what they were given.</td></tr>
-      <tr><td>Money is integer cents</td><td>No floats anywhere in prices or totals.</td></tr>
-      <tr><td>The shop is tested as a black box</td><td>Its measure runs <code>python3 shop.py --state FILE …</code> from outside, so internal structure is free to change.</td></tr>
+      <tr><td>Money is integer cents</td><td>No floats in prices or totals.</td></tr>
+      <tr><td>The shop is tested as a black box</td><td>Its measure and its audit run the program from outside, so its internals are free to change.</td></tr>
     </tbody>
   </table></div>
 
-  <h3>Evidence for the catalog</h3>
+  <h3>Decisions the builders made that are not yet rules</h3>
+  <p class="sub">The documents were silent on these. Both builders of each unit decided alike, but nothing yet stops a later builder deciding differently.</p>
   <div class="scroll"><table>
     <tbody>
-      <tr><td>Selection</td><td>Two agents built it independently from the document and the check. Both passed. The judge kept the smaller: 1190 bytes against 1264.</td></tr>
-      <tr><td>Measure</td><td>36 case runs pass; all 23 planted wrong catalogs fail.</td></tr>
-      <tr><td>Independent audit</td><td>123 cases written from the document alone by an agent that saw neither the measure nor the builds. Both builds pass all 123. Measure error: 0 wrong passes in 2 builds, 0 wrong fails in 23.</td></tr>
-      <tr><td>Open points</td><td>Three behaviours the document left open were decided by the builders (both decided alike). They are not yet rules in the document.</td></tr>
+      <tr><td>Shop</td><td>Numbers are ASCII digits only (<code>+5</code>, <code>1_000</code> refused). <code>--state FILE</code> must come first. A sell line is split at its last <code>=</code>. <code>register</code> takes the name as one argument. The state file is rewritten after every successful command, read-only ones included.</td></tr>
+      <tr><td>Stock</td><td><code>on_hand</code> returns 0 for any id that is not a non-empty string.</td></tr>
+      <tr><td>Customers</td><td><code>get</code> with a non-string id is <code>KeyError</code>; <code>find</code> with a non-string text returns nothing; case is ignored with <code>casefold</code>.</td></tr>
+      <tr><td>Sales</td><td>Malformed <code>lines</code> are <code>ValueError</code>; item ids are passed to <code>price_of</code> unvalidated; if <code>take</code> itself raises midway, earlier takes are not undone.</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -183,61 +218,89 @@ footer { color: var(--ink3); font-size: 13.5px; border-top: 1px solid var(--rule
   <div class="scroll"><table>
     <thead><tr><th>Component</th><th>What it is</th><th>Comes from</th><th>State</th></tr></thead>
     <tbody>
-      <tr><td>Queue<br><code>queue.md</code></td><td>The one place where anything is put before the person: 10 decisions in round 1, 3 notices since (this report is the third).</td><td>Principle 7; root's interface</td><td><span class="pill warn">3 items waiting</span></td></tr>
-      <tr><td>Root budget and check<br><code>root.md</code></td><td>Seven budget values and the definition of the root's number, written from the person's answer.</td><td>Declarations 4 and 5</td><td><span class="pill ok">✓ recorded</span></td></tr>
-      <tr><td>Root measure<br><code>measure/check</code>, <code>./verdict</code></td><td>Computes items ÷ correct results and compares with the previous result. Proven on 7 trees that must pass and 11 planted wrong trees.</td><td>Declaration 5; Q1</td><td><span class="pill warn">fails until Q11–Q13 answered</span></td></tr>
+      <tr><td>Queue<br><code>queue.md</code></td><td>The one place where anything is put before the person: 11 decisions and 6 notices, this report included.</td><td>Principle 7; root's interface</td><td><span class="pill warn">1 item waiting: this page</span></td></tr>
+      <tr><td>Root budget and check<br><code>root.md</code></td><td>Seven budget values and the definition of the root's number, written from the person's answers. Cost was raised once, from 16 to 24 runs.</td><td>Declarations 4 and 5</td><td><span class="pill ok">✓ recorded</span></td></tr>
+      <tr><td>Root measure<br><code>measure/check</code>, <code>./verdict</code></td><td>Computes items ÷ correct results and compares with the previous result. Proven on 8 trees that must pass and 13 planted wrong trees.</td><td>Declaration 5; Q1</td><td><span class="pill warn">fails: see below</span></td></tr>
       <tr><td>Unit documents ×7</td><td>Six declarations and a row per principle for judge, enforcer, pet shop, catalog, stock, customers, sales.</td><td>How the tree grows</td><td><span class="pill ok">✓ all present</span></td></tr>
-      <tr><td><code>build</code> and <code>verdict</code> ×8</td><td>The same two commands on every unit and on the root, run from the record alone.</td><td>Declaration 2</td><td><span class="pill ok">✓</span></td></tr>
-      <tr><td>Measures ×8</td><td>An executable check per unit, written before the unit by an agent that does not build it, each proven by planted wrong builds: 172 in total.</td><td>Declaration 5</td><td><span class="pill ok">✓ every planted build fails</span></td></tr>
-      <tr><td>Judge<br><code>judge/judge</code></td><td>94 lines. Runs the unit's own check on copies of the offered builds, lets the best stand only if it beats what exists, installs it and logs the decision. Refuses when fewer alternatives are offered than the budget states.</td><td>Declaration 6; principle 6</td><td><span class="pill ok">✓ 41 cases, 25 planted</span></td></tr>
-      <tr><td>Enforcer<br><code>enforcer/enforce</code></td><td>Checks nine rules on every unit: document shape, budget shares, context size, interface, measure proven, measure before build, build is what the judge let stand, answers recorded alone, spend within budget.</td><td>Principle 3</td><td><span class="pill ok">✓ 90 cases, 25 planted; no breach</span></td></tr>
-      <tr><td>Undo proof<br><code>enforcer/undo</code></td><td>Reverts a change in a clone and confirms everything it touched is back as it was.</td><td>Principle 5</td><td><span class="pill warn">works; found a defect in the judge</span></td></tr>
-      <tr><td>Blind alternative</td><td>A second build of each change, made without sight of the first, for the judge to compare.</td><td>Principle 6; budget "alternatives 1"</td><td><span class="pill ok">✓ used for catalog</span></td></tr>
-      <tr><td>Audit cases<br><code>petshop/audit/</code></td><td>An independent source for counting a measure's wrong passes and wrong fails.</td><td>"Whoever gives a measure owns its error"</td><td><span class="pill warn">catalog only</span></td></tr>
-      <tr><td>Spend ledger<br><code>ledger.tsv</code></td><td>Every agent run, charged to a unit; the enforcer checks it against each budget.</td><td>Declaration 4</td><td><span class="pill ok">✓ 8 runs</span></td></tr>
+      <tr><td><code>build</code> and <code>verdict</code> ×8</td><td>The same two commands on every unit and on the root, run from the record alone.</td><td>Declaration 2</td><td><span class="pill ok">✓ all seven units build</span></td></tr>
+      <tr><td>Measures ×8</td><td>An executable check per unit, written before the unit by an agent that does not build it, each proven by planted wrong builds: 179 in total.</td><td>Declaration 5</td><td><span class="pill ok">✓ every planted build fails</span></td></tr>
+      <tr><td>Judge<br><code>judge/judge</code></td><td>95 lines. Runs the unit's own check on copies of the offered builds, lets the best stand only if it beats what exists, installs it and logs the decision in the unit's own file under <code>judge/stands/</code>.</td><td>Declaration 6; principle 6</td><td><span class="pill ok">✓ 43 cases, 26 planted</span></td></tr>
+      <tr><td>Enforcer<br><code>enforcer/enforce</code></td><td>Checks nine rules on every unit; their exact meaning is in <code>enforcer/rules.md</code>.</td><td>Principle 3</td><td><span class="pill ok">✓ 96 cases, 26 planted; no breach</span></td></tr>
+      <tr><td>Undo proof<br><code>enforcer/undo</code></td><td>Reverts a change in a clone and confirms everything it touched is back as it was.</td><td>Principle 5</td><td><span class="pill warn">works for new installations only</span></td></tr>
+      <tr><td>Blind alternative</td><td>A second build of each change, made without sight of the first, for the judge to compare.</td><td>Principle 6; budget "alternatives 1"</td><td><span class="pill ok">✓ all five pet shop units</span></td></tr>
+      <tr><td>Audits ×6<br><code>petshop/audit/</code>, <code>audit/</code></td><td>589 cases written from the documents alone by agents that saw neither measure nor build. They count each measure's wrong passes and wrong fails.</td><td>"Whoever gives a measure owns its error"</td><td><span class="pill ok">✓ 0 wrong passes, 0 wrong fails</span></td></tr>
+      <tr><td>Spend ledger<br><code>ledger.tsv</code></td><td>Every agent run, charged to a unit; the enforcer checks it against each budget.</td><td>Declaration 4</td><td><span class="pill warn">24 of 24: nothing left</span></td></tr>
       <tr><td>Records ×8</td><td>State, how each unit came to stand, limits, what was tried and rejected, what is due next.</td><td>"Whoever arrives resumes from the record alone"</td><td><span class="pill ok">✓</span></td></tr>
       <tr><td>Rehearsal outside the record</td><td>Builders work in directories outside the repository and are given only the document and the check. Only the judge installs.</td><td>Principles 1 and 4</td><td><span class="pill warn">by procedure, not enforced</span></td></tr>
     </tbody>
   </table></div>
 
+  <h3>The root's number</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>When</th><th class="n">Items</th><th class="n">Correct results</th><th class="n">Number</th></tr></thead>
+    <tbody>
+      <tr><td>First result (catalog stands)</td><td class="n">10</td><td class="n">1</td><td class="n">10.00</td></tr>
+      <tr><td>First report read</td><td class="n">13</td><td class="n">2</td><td class="n">6.50</td></tr>
+      <tr><td>Whole pet shop stands, report read</td><td class="n">16</td><td class="n">7</td><td class="n">2.29</td></tr>
+      <tr><td>Now, with this page</td><td class="n">17</td><td class="n">7</td><td class="n">2.43</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">The verdict fails at the moment. This page is a 17th item with no new result, so the number is above the 2.33 it was at the previous result. Reading the page clears the waiting item but not the rise; the next correct result does (17 ÷ 8 = 2.13).</p>
+
   <h3>What the machinery caught, and what it does not cover</h3>
   <div class="scroll"><table>
     <tbody>
-      <tr><td>Caught</td><td>The enforcer's own <code>undo</code> was broken while its verdict passed. The measure gained 20 cases and 8 planted wrong undos before the fix was allowed to stand.</td></tr>
-      <tr><td>Caught</td><td>The repaired <code>undo</code> showed that an earlier installation cannot be reverted once the judge has logged a later one, because all decisions share one file. Recorded as a limit; not fixed.</td></tr>
-      <tr><td>Caught</td><td>Measure writers reported gaps in the documents; five became rules before any build.</td></tr>
+      <tr><td>Caught</td><td>The enforcer's own <code>undo</code> was broken while its verdict passed. The measure gained 20 cases before the fix was allowed to stand.</td></tr>
+      <tr><td>Caught</td><td>With all decisions in one file, an earlier installation could not be reverted once a later one followed. The judge now keeps one file per unit; three measures changed before the builds did.</td></tr>
+      <tr><td>Caught</td><td>Measure writers and auditors reported gaps in the documents; eight became rules, three of them with new cases.</td></tr>
+      <tr><td>Selection mattered</td><td>In two of five units the alternative, not the first build, was the one that stood.</td></tr>
       <tr><td>Not covered</td><td>One session gave every unit its declarations and built the judge and the enforcer. The other agents were separate runs of the same model.</td></tr>
+      <tr><td>Not covered</td><td>A change to the judge is installed by the candidate judge itself; only the enforcer's run is independent of it.</td></tr>
       <tr><td>Not covered</td><td>Nothing forces a call to the enforcer, and nothing verifies who made a change.</td></tr>
-      <tr><td>Not covered</td><td>Error numbers are unknown for the enforcer and for every measure except catalog's.</td></tr>
+      <tr><td>Not covered</td><td>The five installations made before the judge changed cannot be reverted alone.</td></tr>
+      <tr><td>Not covered</td><td>Each measure's wrong-pass count rests on two builds; the builds that failed are the measure writers' own planted ones.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Work due next</h3>
+  <div class="scroll"><table>
+    <tbody>
+      <tr><td>1</td><td>Turn the builders' open decisions into rules with cases (about 4 runs).</td></tr>
+      <tr><td>2</td><td>Audit the planted wrong enforcers and the judge's own installation (about 2 runs).</td></tr>
+      <tr><td></td><td>Both need budget from the person: all 24 runs are spent.</td></tr>
     </tbody>
   </table></div>
 </section>
 
-<footer>Source: the repository record on branch <code>claude/wizardly-cerf-94l00l</code> — <code>record.md</code>, <code>queue.md</code>, <code>ledger.tsv</code>, <code>judge/stands.tsv</code> and the commit history.</footer>
+<footer>Source: the repository record on branch <code>claude/wizardly-cerf-94l00l</code> — <code>record.md</code>, <code>queue.md</code>, <code>ledger.tsv</code>, <code>judge/stands/</code> and the commit history.</footer>
 </div>
 
 <script>
 (function () {
   // minutes since 20:24 UTC
   var rows = [
-    ["Session", "s1", [[0.3, 4.9, "1 · Ask the person"], [4.9, 9.8, "2 · Declare the units"], [9.8, 30.9, "3 · Measures first"], [30.9, 33.6, "4 · Build and judge"], [33.6, 45.3, "5 · Defect loop"], [45.3, 46.2, "6 · Records"], [46.2, 60.6, "7 · Full enforcement run"]]],
-    ["Measures: root, judge", "s2", [[9.5, 25.8, "Agent: measures of root and judge"]]],
-    ["Measure: enforcer", "s2", [[9.5, 27.0, "Agent: measure of the enforcer"]]],
-    ["Measures: catalog, stock, customers", "s2", [[9.5, 18.6, "Agent: three unit measures"]]],
+    ["Session", "s1", [[0.3, 4.9, "1 · Ask the person", "1"], [4.9, 9.8, "2 · Declare the units", "2"], [9.8, 30.9, "3 · Measures first", "3"], [30.9, 33.6, "4 · Build and judge", ""], [33.6, 45.3, "5 · Defect loop", "5"], [45.3, 46.2, "6 · Records", ""], [46.2, 60.6, "7 · Full enforcement run", "7"], [60.6, 67.9, "P · First report page", "P"],
+      [86.8, 89.8, "8 · Budget, declarations, launch", ""], [89.8, 92.5, "9 · Build and judge four units", ""], [92.5, 102.8, "10 · Audits arrive", "10"], [102.8, 111.3, "11 · Judge keeps one stands file per unit", "11"], [111.3, 117.3, "12 · Shop audit and records", "12"], [117.3, 145.5, "13 · Full enforcement run, twice", "13"]]],
+    ["Measures: root, judge", "s2", [[9.5, 25.8, "Agent: measures of root and judge"], [89.5, 96.8, "Agent: both measures changed for per-unit stands"]]],
+    ["Measure: enforcer", "s2", [[9.5, 27.0, "Agent: measure of the enforcer"], [34.3, 43.5, "Agent: 20 undo cases, 8 planted"], [89.5, 109.2, "Agent: measure changed for per-unit stands"]]],
+    ["Measures: catalog, stock, customers", "s2", [[9.5, 18.6, "Agent: three unit measures"], [89.5, 90.9, "Agent: cases for catalog's three new rules"]]],
     ["Measures: sales, shop", "s2", [[9.5, 27.7, "Agent: measures of sales and the shop"]]],
-    ["Audit cases: catalog", "s2", [[10.2, 17.2, "Agent: 123 audit cases"]]],
-    ["Catalog build + alternative", "s2", [[18.1, 18.5, "Two agents: catalog and its blind alternative"]]],
-    ["Undo cases for enforcer", "s2", [[34.3, 43.5, "Agent: 20 undo cases, 8 planted"]]],
-    ["Machine checks", "s3", [[25.9, 30.9, "Re-proving planted shops"], [46.2, 60.6, "Enforcer over the whole tree"]]]
+    ["Audits: catalog, then stock", "s2", [[10.2, 17.2, "Agent: 123 audit cases for catalog"], [89.8, 94.7, "Agent: 60 audit cases for stock"]]],
+    ["Audit: customers", "s2", [[89.8, 97.1, "Agent: 97 audit cases for customers"]]],
+    ["Audit: sales", "s2", [[89.8, 96.3, "Agent: 75 audit cases for sales"]]],
+    ["Audit: shop", "s2", [[89.5, 112.4, "Agent: 130 audit scenarios for the shop"]]],
+    ["Audit: enforcer", "s2", [[89.5, 103.7, "Agent: 104 audit cases for the enforcer"]]],
+    ["Builds and blind alternatives", "s2", [[18.1, 18.5, "Two agents: catalog and its alternative"], [89.8, 90.3, "Six agents: stock, customers, sales, each twice"], [92.4, 93.7, "Two agents: the shop and its alternative"]]],
+    ["Machine checks", "s3", [[25.9, 30.9, "Re-proving planted shops"], [46.2, 60.6, "Enforcer over the whole tree"], [113.5, 117.2, "Audit run on 25 planted shops"], [117.3, 145.5, "Enforcer over the whole tree, twice, and the root build"]]]
   ];
-  var W = 880, L = 232, R = 16, T = 8, RH = 30, B = 34, max = 62;
+  var W = 900, L = 236, R = 16, T = 8, RH = 28, B = 34, max = 148;
   var H = T + rows.length * RH + B, pw = W - L - R;
   var x = function (m) { return L + m / max * pw; };
   var clock = function (m) { var t = 24 + m, h = 20 + Math.floor(t / 60), mm = Math.floor(t % 60); return h + ":" + (mm < 10 ? "0" : "") + mm; };
   var svg = document.getElementById("gantt"), ns = "http://www.w3.org/2000/svg";
   svg.setAttribute("viewBox", "0 0 " + W + " " + H);
   function el(n, a, txt) { var e = document.createElementNS(ns, n); for (var k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; svg.appendChild(e); return e; }
-  for (var m = 6; m <= 61; m += 10) {
+  for (var m = 6; m <= 146; m += 20) {
     el("line", { x1: x(m), x2: x(m), y1: T, y2: H - B + 4, stroke: "var(--rule)", "stroke-width": 1 });
     el("text", { x: x(m), y: H - B + 20, "text-anchor": "middle", "font-size": 12, fill: "var(--ink3)", "font-family": "var(--mono)" }, clock(m));
   }
@@ -247,11 +310,11 @@ footer { color: var(--ink3); font-size: 13.5px; border-top: 1px solid var(--rule
     el("text", { x: L - 10, y: y + RH / 2 + 4, "text-anchor": "end", "font-size": 13, fill: "var(--ink2)" }, r[0]);
     r[2].forEach(function (s) {
       var w = Math.max(x(s[1]) - x(s[0]) - 2, 4);
-      var b = el("rect", { x: x(s[0]) + 1, y: y + 7, width: w, height: RH - 14, rx: 3, fill: "var(--" + r[1] + ")", class: "bar", tabindex: 0 });
+      var b = el("rect", { x: x(s[0]) + 1, y: y + 6, width: w, height: RH - 12, rx: 3, fill: "var(--" + r[1] + ")", class: "bar", tabindex: 0 });
       var label = s[2], mins = (s[1] - s[0]).toFixed(1) + " min · " + clock(s[0]) + "–" + clock(s[1]);
       b.setAttribute("aria-label", label + ", " + mins);
-      if (i === 0 && w > 26) el("text", { x: x(s[0]) + 1 + w / 2, y: y + RH / 2 + 4, "text-anchor": "middle", "font-size": 12, "font-weight": 600, fill: "#fff", "pointer-events": "none" }, label.charAt(0));
-      function show(ev) {
+      if (s[3] && w > 9 * s[3].length + 8) el("text", { x: x(s[0]) + 1 + w / 2, y: y + RH / 2 + 4, "text-anchor": "middle", "font-size": 12, "font-weight": 600, fill: "#fff", "pointer-events": "none" }, s[3]);
+      function show() {
         tip.innerHTML = ""; var t = document.createElement("b"); t.textContent = label; var d = document.createElement("span"); d.textContent = mins; tip.appendChild(t); tip.appendChild(d);
         tip.hidden = false;
         var bb = box.getBoundingClientRect(), rb = b.getBoundingClientRect();

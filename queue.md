@@ -130,3 +130,10 @@ and the shop, each selected by the judge over one alternative), the judge
 keeps one stands file per unit, and every measure the tree gave has an
 audit ([`record.md`](record.md)). Options: A. read. Waiting costs: nothing
 stops.
+
+### Q17 | notice | asked=2026-11-18T23:14Z | answered=-
+**Updated report page you asked for**: time by stage and activity over both
+sessions, the pet shop as built, and the components the principles and the
+root drove ([`reports/first-result.html`](reports/first-result.html),
+https://claude.ai/artifact/8txcTMbckjAsXtGQ2DaXqW). Options: A. read.
+Waiting costs: nothing stops.

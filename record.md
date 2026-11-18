@@ -14,12 +14,14 @@ all seven units.
 | petshop/customers | passes, 753 | judge, over 1 alternative |
 | petshop/sales | passes, 1890 | judge, over 1 alternative |
 
-**The number** (`./verdict`): 16 items ÷ 7 correct results = 2.29. It was
-10.00 at the first result and 6.50 at the last report. The verdict passes: Q15 and Q16
-are answered and nothing waits.
+**The number** (`./verdict`): 17 items ÷ 7 correct results = 2.43. It was
+10.00 at the first result, 6.50 at the first report and 2.29 before Q17.
+The verdict fails: Q17 (a report page the person asked for) is an item
+with no new result, so the number is above the 2.33 of the previous
+result. The next correct result brings it to 2.13.
 
 **Spend** (`ledger.tsv`): 24 of 24 runs; about 2 h 20 of 4 h. Attention
-after round 1: 6 items for 7 results (budget 2 per result). Effects
+after round 1: 7 items for 7 results (budget 2 per result). Effects
 without undo: 0.
 
 **Error of what the root gave.**
