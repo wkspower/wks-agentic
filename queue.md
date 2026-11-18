@@ -5,10 +5,9 @@ item is complete enough to decide without reading the work. Items are also
 counted in [`record/queue.jsonl`](record/queue.jsonl) when they open, and
 answers are recorded in [`record/root.log.md`](record/root.log.md).
 
-The budget is at most 5 items per 7 days. Queue 1 (Q1–Q5) used that budget on
-2026-11-18, so the items below open on **2026-11-25 at 18:40 UTC** and not before.
+Open items: none.
 
-## Held — opens 2026-11-25
+## Decided — 2026-11-18 (asked early; see the record)
 
 ### Q6. Accept the root's executable check
 

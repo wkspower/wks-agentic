@@ -75,3 +75,21 @@ record as a limit. Recommendation: the person sets it up.
   2026-11-25 18:40 UTC by the attention budget).
 - Next work, without the person: the pet shop's open work list in
   [`record/pet-shop.log.md`](pet-shop.log.md), item 7 first.
+
+## 2026-11-18 — Queue 2 and the person's answer
+
+The root's agent put Q6 and Q7 (see [`queue.md`](../queue.md)) before the
+person in its end-of-session report at about 19:30Z, although `queue.md`
+held them until 2026-11-25. **Answer, 19:48Z: "Accepted".**
+
+Reading recorded: Q6 (a), the root check accepted as written; Q7 (a), the
+judge admits changes to `develop`, and changes to the person-owned paths need
+the person's acceptance. "Accepted" is also read as that acceptance for the
+first pull request, which carries the whole tree the report described. If
+that reading is wrong, the person says so and the merge is reverted.
+
+**Defect, measured:** 7 items in 7 days against a budget of 5; the root
+check fails on the budget until 2026-11-25. Cause: the bootstrap needed
+seven decisions and the agent asked two early rather than holding them as
+the queue said. Work absorbed: the root's agent never puts a held item in a
+report; a report names held items only by id and date.
