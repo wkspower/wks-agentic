@@ -60,3 +60,18 @@ record as a limit. Recommendation: the person sets it up.
   held in [`queue.md`](../queue.md) and open no earlier than 2026-11-25T18:40Z,
   so the attention budget is not exceeded. Work on the branch continues; it is
   not an effect (Q3).
+
+## 2026-11-18 — State at the end of the first session
+
+- Tree built on the working branch: judge (built by one agent, measured by
+  another: 56 cases, number 1, proven against always-pass and always-fail
+  stubs) and pet shop with catalog, stock and orders (measured by a third
+  agent; built by the root's agent; every number 1, every proof passes).
+- `judge --base HEAD` passes on the tree. Its first two runs found two real
+  defects (an R1 violation in the build; a wrong pass in `proof`), each
+  repaired in the order principle 6 requires.
+- No delivery yet: a delivery is a change the judge admits to `develop`, and
+  nothing reaches `develop` before Q6 and Q7 (held in `queue.md` until
+  2026-11-25 18:40 UTC by the attention budget).
+- Next work, without the person: the pet shop's open work list in
+  [`record/pet-shop.log.md`](pet-shop.log.md), item 7 first.
