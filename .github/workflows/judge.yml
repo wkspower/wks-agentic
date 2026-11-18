@@ -1,0 +1,47 @@
+# The Judge unit (units/judge/unit.md): decides whether a change stands.
+# Reports the status check `judge`.
+name: judge
+
+on:
+  pull_request:
+    branches: [develop]
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+jobs:
+  judge:
+    name: judge
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Judge the change
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            base="HEAD~1"
+          else
+            base="origin/develop"
+          fi
+          python3 -m units.judge.verdict judge --base "$base"
+
+      - name: Measure of the judge
+        if: always()
+        run: python3 -m unittest discover -s measures/judge -t .
+
+      - name: Proof of the judge's measure
+        if: always()
+        run: python3 measures/judge/prove.py
+
+      - name: Root check's own tests
+        if: always()
+        run: python3 -m unittest discover -s measures/root
