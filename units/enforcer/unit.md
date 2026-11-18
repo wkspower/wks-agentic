@@ -18,7 +18,7 @@ A change is the difference between two trees, made in the name of one unit.
 - **E1 Boundary.** A unit changes only what is inside it: `units/<unit>/`, minus its `unit.md` and minus its sub-units. It may write its own `record.md`, its own `queue.md` and its parent's `queue.md`.
 - **E2 Given by the parent.** `units/<child>/unit.md` and `measures/<child>/` change only in the name of the child's parent. `measures/` files outside any unit belong to the root.
 - **E3 Measure first.** A unit's work changes only if its measure already existed before the change; a measure or declaration never changes together with the work it governs.
-- **E4 Proof.** Every change to a measure is proven: each directory in `measures/<unit>/plants/` laid over the tree must fail the check, each in `controls/` must pass, and there is at least one plant.
+- **E4 Proof.** Every change to a measure is proven: each directory in `measures/<unit>/plants/` laid over the tree must fail the check, each in `controls/` must pass, and there is at least one plant. A change to a measure proves again the measure of every unit below it.
 - **E5 Declarations.** A unit document states `Parent:`, the six declarations with no value missing, the seven principles, in at most 80 lines. A unit whose document fails this changes nothing.
 - **E6 The person's and the cycle's.** `principles.md`, `root.md` and `measures/root/` change only in the root's name under a decision answered in [`queue.md`](../../queue.md). `ledger.jsonl` and `rejected/` are never part of a change.
 

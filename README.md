@@ -14,4 +14,6 @@ the documents prevail.
 
 ## Status
 
-Starting point of a continuous cycle. Nothing has been built yet.
+The tree is built and its cycle runs; the state of the work is in
+[`state.md`](state.md), the person's queue in [`queue.md`](queue.md), every
+decision in [`ledger.jsonl`](ledger.jsonl). `./tree list` names the units.
