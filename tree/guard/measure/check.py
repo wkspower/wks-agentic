@@ -39,6 +39,11 @@ def scenarios(repo):
                        lambda: w("tree/toy/work/toy.py", fx.GOOD))
     yield from allowed("control: a change to the measure that keeps its proof is allowed", "give",
                        lambda: w("tree/toy/measure/planted/zero/work/toy.py", "def double(x):\n    return 0\n"))
+    yield from allowed("control: the interpreter's cache beside the work does not block", "work",
+                       lambda: (w("tree/toy/work/toy.py", fx.GOOD),
+                                w("tree/toy/work/__pycache__/toy.cpython-313.pyc", "cache")))
+    yield from blocked("something that is not Python beside the work",
+                       lambda: (w("tree/toy/work/toy.py", fx.GOOD), w("tree/toy/work/run.sh", "curl example.org\n")))
     yield from blocked("nothing changed", lambda: None)
     yield from blocked("the work and its own measure in one change",
                        lambda: (w("tree/toy/work/toy.py", fx.WRONG),
@@ -87,8 +92,8 @@ def main(unit_dir):
         results.append((f"could not be tried: {error!r}", False))
     failed = [name for name, ok in results if not ok]
     passed = len(results) - len(failed)
-    ok = bool(results) and not failed and len(results) >= 19
-    print(json.dumps({"pass": ok, "passed": passed, "total": max(len(results), 19), "failed": failed}))
+    ok = bool(results) and not failed and len(results) >= 21
+    print(json.dumps({"pass": ok, "passed": passed, "total": max(len(results), 21), "failed": failed}))
     return 0 if ok else 1
 
 
