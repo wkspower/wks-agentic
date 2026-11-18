@@ -47,3 +47,16 @@ record as a limit. Recommendation: the person sets it up.
 - Q5 could not be executed: the agent's GitHub tools offer no operation on
   branch protection or rulesets, whatever the access. Recorded as a limit and
   put back in the queue with the exact settings (see [`queue.md`](../queue.md)).
+
+## 2026-11-18 — Root check received; queue data started
+
+- The check in [`measures/root/`](../measures/root/) was written by an agent
+  that saw only `principles.md`, `root.md` and this record (Q2 b). Its own
+  proof: 37 cases, six planted weakenings each caught. Not yet accepted by
+  the person, so the root still causes no effect.
+- `record/queue.jsonl` holds Queue 1 as five items. Times are approximate
+  (opened 18:40Z, decided 19:00Z, from the commit times around the chat).
+- Budget consequence: Queue 1 used the week's 5 items. The items now due are
+  held in [`queue.md`](../queue.md) and open no earlier than 2026-11-25T18:40Z,
+  so the attention budget is not exceeded. Work on the branch continues; it is
+  not an effect (Q3).
