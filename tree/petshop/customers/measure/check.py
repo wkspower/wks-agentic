@@ -123,5 +123,19 @@ def state_is_data(m):
     assert again.add_customer("Bia Lima", "555-0102") != ana and again.add_pet(ana, "Mia", "cat") != rex
 
 
+@scenario
+def ids_are_numbers(m):
+    """an id written as text is not an id: it is not found, and nothing is stored under it"""
+    c, ana, rex = shop(m)
+    refuses(LookupError, c.add_pet, str(ana), "Mia", "cat")
+    refuses(LookupError, c.customer, str(ana))
+    refuses(LookupError, c.pet, str(rex))
+    refuses(LookupError, c.pets_of, str(ana))
+    refuses(LookupError, c.update_customer, str(ana), phone="1")
+    assert c.has_customer(str(ana)) is False and c.has_pet(str(rex)) is False
+    assert c.has_customer(float(ana)) is False and c.has_pet(None) is False
+    assert len(c.pets_of(ana)) == 1 and c.customer(ana)["phone"] == "555-0101"
+
+
 if __name__ == "__main__":
-    main("customers", expected=12)
+    main("customers", expected=13)
