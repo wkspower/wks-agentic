@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Judge: decides whether a build offered for a unit stands (see judge/unit.md)."""
+import hashlib, os, re, shutil, subprocess, sys, tempfile, time
+
+
+def src_hash(src):
+    h = hashlib.sha256()
+    files = []
+    for base, dirs, names in os.walk(src):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for n in names:
+            full = os.path.join(base, n)
+            files.append((os.path.relpath(full, src).replace(os.sep, "/"), full))
+    for rel, full in sorted(files):
+        with open(full, "rb") as f:
+            h.update(rel.encode() + b"\0" + f.read() + b"\0")
+    return h.hexdigest()
+
+
+def number_of(check, build, tmp, name):
+    """Run the unit's check on a copy of the build; the number, or None on fail."""
+    copy = os.path.join(tmp, name)
+    shutil.copytree(build, copy, symlinks=True)
+    try:
+        r = subprocess.run([check, copy], capture_output=True, text=True, timeout=600,
+                           cwd=tmp, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = r.stdout.strip().splitlines()
+    try:
+        return float(lines[-1]) if r.returncode == 0 and lines else None
+    except ValueError:
+        return None
+
+
+def show(n):
+    return "-" if n is None else ("%d" % n if n == int(n) else repr(n))
+
+
+def main(argv):
+    if len(argv) < 3:
+        sys.exit("usage: judge <unit-dir> <candidate-dir> [<alternative-dir> ...]")
+    unit = os.path.realpath(argv[1])
+    offered = [os.path.realpath(a) for a in argv[2:]]
+    tree = unit
+    while not os.path.isfile(os.path.join(tree, "root.md")):
+        if os.path.dirname(tree) == tree:
+            sys.exit("judge: no root.md above " + unit)
+        tree = os.path.dirname(tree)
+    check, src = os.path.join(unit, "measure", "check"), os.path.join(unit, "src")
+    try:
+        doc = open(os.path.join(unit, "unit.md"), encoding="utf-8").read()
+        line = next(l for l in doc.splitlines() if l.startswith("4. **Budget**"))
+        wanted = int(re.search(r"alternatives (\d+)", line).group(1))
+    except (OSError, StopIteration, AttributeError):
+        sys.exit("judge: refused, no alternatives budget in the unit's document")
+    if not os.access(check, os.X_OK):
+        sys.exit("judge: refused, the unit has no measure")
+    if any(not os.path.isdir(o) for o in offered):
+        sys.exit("judge: refused, an offered build is not a directory")
+    if len(offered) - 1 < wanted:
+        sys.exit("judge: refused, %d alternatives offered, budget states %d"
+                 % (len(offered) - 1, wanted))
+    names = ["candidate"] + ["alternative-%d" % i for i in range(1, len(offered))]
+    with tempfile.TemporaryDirectory() as tmp:
+        mdir = os.path.join(tmp, "measure")
+        shutil.copytree(os.path.dirname(check), mdir, symlinks=True)
+        frozen = os.path.join(mdir, "check")  # the check as it stands in the record
+        existing = number_of(frozen, src, tmp, "existing") if os.path.isdir(src) else None
+        nums = [number_of(frozen, o, tmp, n) for o, n in zip(offered, names)]
+        compared = " ".join(["existing=" + show(existing)] +
+                            [n + "=" + show(x) for n, x in zip(names, nums)])
+        passing = [(x, i) for i, x in enumerate(nums) if x is not None]
+        if not passing:
+            sys.exit("judge: nothing stands, no offered build passes (%s)" % compared)
+        best, i = min(passing)
+        if existing is not None and not best < existing:
+            sys.exit("judge: nothing stands, none is better than what exists (%s)" % compared)
+        staged = os.path.join(tmp, "staged")
+        shutil.copytree(offered[i], staged, symlinks=True,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        if os.path.isdir(src):
+            shutil.rmtree(src)
+        shutil.copytree(staged, src, symlinks=True)
+    os.makedirs(os.path.join(tree, "judge"), exist_ok=True)
+    rel = os.path.relpath(unit, tree).replace(os.sep, "/")
+    with open(os.path.join(tree, "judge", "stands.tsv"), "a", encoding="utf-8") as f:
+        f.write("\t".join([time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()), rel, names[i],
+                           show(best), src_hash(src), compared]) + "\n")
+    print("judge: %s stands for %s (%s)" % (names[i], rel, compared))
+
+
+if __name__ == "__main__":
+    main(sys.argv)

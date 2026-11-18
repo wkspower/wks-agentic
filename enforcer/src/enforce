@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Enforcer: blocks what breaks a rule (the rules are listed in enforcer/unit.md)."""
+import hashlib, os, re, subprocess, sys
+
+SKIP = ("measure", "audit", "src")
+DECLS = ["Purpose", "Interface", "Rules", "Budget", "Measure", "Judge"]
+ROWS = ["1 Boundary", "2 Single source", "3 External enforcement",
+        "4 Rehearsal before effect", "5 Return", "6 Selection", "7 Escalation"]
+KINDS = {"cost": r"cost (\d+)", "time": r"time ([\d.]+) h", "context": r"context (\d+) KB",
+         "attempts": r"attempts (\d+)", "alternatives": r"alternatives (\d+)",
+         "attention": r"attention (\d+)", "cap": r"cap\D*(\d+)"}
+breaches = []
+
+
+def breach(rule, unit, what):
+    breaches.append("%s %s %s" % (rule, unit, what))
+
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def src_hash(src):
+    h, files = hashlib.sha256(), []
+    for base, dirs, names in os.walk(src):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for n in names:
+            full = os.path.join(base, n)
+            files.append((os.path.relpath(full, src).replace(os.sep, "/"), full))
+    for rel, full in sorted(files):
+        with open(full, "rb") as f:
+            h.update(rel.encode() + b"\0" + f.read() + b"\0")
+    return h.hexdigest()
+
+
+def git(tree, *args):
+    r = subprocess.run(["git", "-C", tree] + list(args), capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def find_units(tree):
+    units = {"root": tree}
+    for base, dirs, names in os.walk(tree):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP and not d.startswith("."))
+        if base != tree and "unit.md" in names:
+            units[os.path.relpath(base, tree).replace(os.sep, "/")] = base
+    return units
+
+
+def parent_of(name, units):
+    parts = name.split("/")
+    for i in range(len(parts) - 1, 0, -1):
+        if "/".join(parts[:i]) in units:
+            return "/".join(parts[:i])
+    return "root"
+
+
+def budget_of(doc):
+    line = next((l for l in doc.splitlines() if l.startswith("4. **Budget**")), "")
+    out = {}
+    for kind, rx in KINDS.items():
+        m = re.search(rx, line)
+        if m:
+            try:
+                out[kind] = float(m.group(1))
+            except ValueError:
+                pass
+    return out
+
+
+def first_adds(tree):
+    """Order of commits (oldest first) and, per path prefix asked, the first adding commit."""
+    log = git(tree, "log", "--reverse", "--topo-order", "--format=%x01%H", "--name-status",
+              "--diff-filter=A", "--no-renames", "-m", "--root")
+    adds, commit = [], None
+    for line in log.splitlines():
+        if line.startswith("\x01"):
+            commit = line[1:]
+        elif line.startswith("A\t"):
+            adds.append((commit, line[2:]))
+    return adds
+
+
+def main(argv):
+    tree = os.path.realpath(argv[1] if len(argv) > 1 else
+                            os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".."))
+    units = find_units(tree)
+    docs = {u: read(os.path.join(d, "root.md" if u == "root" else "unit.md"))
+            for u, d in units.items()}
+    budgets = {u: budget_of(docs[u]) for u in units}
+    children = {u: [c for c in units if c != "root" and parent_of(c, units) == u] for u in units}
+    stands = {}
+    for line in read(os.path.join(tree, "judge", "stands.tsv")).splitlines():
+        f = line.split("\t")
+        if len(f) >= 5:
+            stands[f[1]] = f[4]
+    adds = first_adds(tree)
+    order = {c: i for i, c in enumerate(dict.fromkeys(c for c, _ in adds))}
+    tracked = set(git(tree, "ls-files").splitlines())
+
+    for u, d in sorted(units.items()):
+        doc, lines = docs[u], docs[u].splitlines()
+        # doc
+        if not any(l.startswith("Parent:") for l in lines):
+            breach("doc", u, "names no parent")
+        at = -1
+        for i, name in enumerate(DECLS, 1):
+            found = [n for n, l in enumerate(lines) if l.startswith("%d. **%s**" % (i, name))]
+            if not found or found[0] <= at:
+                breach("doc", u, "declaration %d (%s) missing or out of order" % (i, name))
+            else:
+                at = found[0]
+        for row in ROWS:
+            if not any(l.startswith("| " + row) for l in lines):
+                breach("doc", u, "no row for principle " + row)
+        # budget
+        b = budgets[u]
+        for kind in KINDS:
+            if kind not in b:
+                breach("budget", u, "no value for " + kind)
+        for kind in ("cost", "time"):
+            total = sum(budgets[c].get(kind, 0) for c in children[u])
+            if kind in b and total > b[kind] + 1e-9:
+                breach("budget", u, "children's %s sums to %g, over %g" % (kind, total, b[kind]))
+        p = parent_of(u, units) if u != "root" else None
+        if p:
+            for kind in ("context", "attempts", "alternatives", "attention", "cap"):
+                if kind in b and kind in budgets[p] and b[kind] > budgets[p][kind]:
+                    breach("budget", u, "%s %g is looser than the parent's %g"
+                           % (kind, b[kind], budgets[p][kind]))
+        # context
+        size = len(doc.encode()) + (os.path.getsize(os.path.join(d, "record.md"))
+                                    if os.path.isfile(os.path.join(d, "record.md")) else 0)
+        if "context" in b and size > b["context"] * 1024:
+            breach("context", u, "document and record are %d bytes, over %d KB"
+                   % (size, b["context"]))
+        # interface
+        for cmd in ("build", "verdict"):
+            f = os.path.join(d, cmd)
+            if not (os.path.isfile(f) and os.access(f, os.X_OK)):
+                breach("interface", u, cmd + " missing or not executable")
+        # measure
+        check, planted = os.path.join(d, "measure", "check"), os.path.join(d, "measure", "planted")
+        entries = sorted(os.listdir(planted)) if os.path.isdir(planted) else []
+        if not (os.path.isfile(check) and os.access(check, os.X_OK)):
+            breach("measure", u, "measure/check missing or not executable")
+        elif not entries:
+            breach("measure", u, "no planted wrong result")
+        else:
+            for e in entries:
+                try:
+                    r = subprocess.run([check, os.path.join(planted, e)], capture_output=True,
+                                       timeout=900, env=dict(os.environ,
+                                                             PYTHONDONTWRITEBYTECODE="1"))
+                    passed = r.returncode == 0
+                except subprocess.TimeoutExpired:
+                    passed = False
+                except OSError:
+                    passed = True
+                if passed:
+                    breach("measure", u, "planted wrong result %s passes the check" % e)
+        if u == "root":
+            continue
+        src = os.path.join(d, "src")
+        if os.path.isdir(src):
+            # before
+            def first(prefix):
+                hits = [order[c] for c, path in adds if path.startswith(prefix)]
+                return min(hits) if hits else None
+            m, s = first(u + "/measure/"), first(u + "/src/")
+            anc = True
+            if m is not None and s is not None:
+                mc = [c for c, i in order.items() if i == m][0]
+                sc = [c for c, i in order.items() if i == s][0]
+                anc = mc != sc and subprocess.run(
+                    ["git", "-C", tree, "merge-base", "--is-ancestor", mc, sc]).returncode == 0
+            if m is None or not anc:
+                breach("before", u, "the measure did not enter the record before src")
+            # stands
+            h = src_hash(src)
+            if stands.get(u) != h and ("stood unjudged: " + h) not in \
+                    [l.strip() for l in read(os.path.join(d, "record.md")).splitlines()]:
+                breach("stands", u, "src is not what the judge last let stand")
+    # answer
+    log = git(tree, "log", "--format=%x01%H", "--name-only", "--no-renames", "-m", "--root")
+    for block in log.split("\x01")[1:]:
+        parts = block.strip().splitlines()
+        paths = set(parts[1:]) - {""}
+        if paths & {"principles.md", "root.md"} and paths - {"principles.md", "root.md",
+                                                             "queue.md"}:
+            breach("answer", "root", "change %s touches the documents and more" % parts[0][:7])
+    # spend
+    spent = {}
+    for line in read(os.path.join(tree, "ledger.tsv")).splitlines():
+        f = line.split("\t")
+        if line.strip() and not line.startswith("#") and len(f) >= 3:
+            try:
+                spent[f[1]] = spent.get(f[1], 0) + int(f[2])
+            except ValueError:
+                breach("spend", f[1], "unreadable ledger line")
+    for u in units:
+        total = sum(n for who, n in spent.items()
+                    if u == "root" or who == u or who.startswith(u + "/"))
+        if "cost" in budgets[u] and total > budgets[u]["cost"]:
+            breach("spend", u, "%d runs charged, budget %g" % (total, budgets[u]["cost"]))
+    for line in breaches:
+        print(line)
+    sys.exit(1 if breaches else 0)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

@@ -1,0 +1,16 @@
+#!/bin/sh
+# Proves a change can be undone: reverts it in a clone outside the record and
+# shows the tree is back at the state before it. Usage: undo <commit>
+set -e
+tree=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+commit=$(git -C "$tree" rev-parse "$1")
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+git clone -q "$tree" "$tmp/clone"
+cd "$tmp/clone"
+git checkout -q --detach "$commit"
+git -c user.name=enforcer -c user.email=enforcer@tree revert -q --no-edit "$commit"
+if git diff --quiet "$commit^" HEAD; then
+  echo "undo proven: reverting $(git rev-parse --short "$commit") returns the tree to $(git rev-parse --short "$commit^")"
+else
+  echo "undo FAILED for $commit" >&2; exit 1
+fi
