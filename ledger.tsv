@@ -4,3 +4,4 @@
 2026-11-18T20:33Z	root	1	measure of the enforcer, written by an agent that does not build it
 2026-11-18T20:33Z	petshop	1	measures of catalog, stock and customers, written by an agent that builds none
 2026-11-18T20:33Z	petshop	1	measures of sales and the pet shop, written by an agent that builds neither
+2026-11-18T20:34Z	petshop/catalog	1	audit cases for catalog, written from its document alone (source of the error numbers)
