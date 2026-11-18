@@ -13,7 +13,8 @@ never asked twice.
 
 *Correct* is what serves the purpose; passing the measure is the claim of it,
 until a case shows otherwise. An *effect* is any change visible from outside
-the unit. *Attention* is everything a unit puts before its parent or another
+the unit; asking, and the unit's own record of what it asked and was answered,
+are not effects. *Attention* is everything a unit puts before its parent or another
 owner (a decision, a proposal, a notice to read), counted per item and by how
 long it waits. *Absorbed* means turned into a rule or a case of a measure
 before the work proceeds.
@@ -27,19 +28,29 @@ together with the state of the work and what was tried and rejected; whoever
 arrives resumes from that record alone.
 
 1. **Purpose** — the result it exists to produce.
-2. **Interface** — what it offers and what it receives. It always offers *build* (from nothing) and *verdict* (runs the measure; pass or fail), the same for person, agent and automation.
+2. **Interface** — what it offers and what it receives. It always offers *build* (from nothing) and *verdict* (runs the measure; pass or fail), each a command that runs from the record alone, the same for person, agent and automation.
 3. **Rules** — its parent's, plus those it adds to meet the principles. It may tighten, never loosen.
-4. **Budget** — what it may spend: cost, time, context, attempts, attention, and the cap on effects without undo.
+4. **Budget** — what it may spend: cost, time, context, attempts, alternatives per change (principle 6), attention, and the cap on effects without undo. Each is a value, zero included, and only the parent gives it.
 5. **Measure** — the executable check, written before the unit by someone who does not build it, and the number it gives. It is a hypothesis about the purpose, proven like a rule: a planted wrong result must fail it, at every change to it.
 6. **Judge** — what decides whether a change to the unit stands. Independent: neither the unit nor the maker of the change, nor anything they contain, created or can alter. It is a unit. It is never a person, except at the root, where it is the person who owns the tree and the chain of judges ends.
 
 Purpose, budget, measure and judge are given by the parent and derived from
-the parent's own. The unit never alters them, but may propose a change to
+the parent's own. A child's budget is a share, never a copy: what is spent
+(cost, time, attention) sums across the children to no more than the parent's,
+and the rest is no looser than the parent's. The unit never alters them, but may propose a change to
 anything it cannot alter; the proposal goes to whoever owns it. Whoever gives
 a measure or a judge owns its error: wrong passes and wrong fails are each a
-number the giver sees, taken from a source the measure or judge does not use.
+number the giver sees, taken from a source the measure or judge does not use
+and named in the unit's document. Where no such source exists the number reads
+unknown, never zero, and that is stated as a limit.
+
 A unit missing a declaration, or a value in one, causes no effect; the gap is
-the first thing its parent is asked.
+the first thing its parent is asked. A value the parent leaves ungiven after
+being asked is taken at the strictest option the item named, recorded as such,
+and no longer holds the unit. An answer counts once it is in the record: the
+unit that asked writes it where it belongs, word for word, in a change that
+holds nothing else. When that place is a document the unit cannot alter, the
+owner's answer is the authority for the change and the owner is its judge.
 
 ## The seven principles
 
@@ -48,11 +59,12 @@ the first thing its parent is asked.
 3. **External enforcement.** Every rule is enforced by something the unit cannot alter, and proven by a planted violation that it blocks, at every change to the rule or to the enforcer. The enforcer is a unit and falls under this principle; the chain ends at the person who owns the root.
 4. **Rehearsal before effect.** No effect happens until the same artefact has passed through a place the unit names and from which nothing leaves through the interface. Where no such place exists, the first effect is the smallest that principle 5 can undo, and that is recorded.
 5. **Return.** Every effect has a proven undo; one that cannot have it proceeds within the cap, waiting for no one, and above the cap counts as budget exhausted. Nothing is destroyed while the judge can still prevent it. On failure or exhausted budget the unit stops the change in progress and returns to the last state where the verdict passed; the cost of returning is reserved before the change starts. The judge is told, not waited for, and the failure becomes work for the unit.
-6. **Selection.** Change is due even when the verdict passes. A change stands only when the verdict passes and the judge compares it, by the same measure, with what exists and, where the budget pays, with alternatives made without sight of it. What passes the measure and is wrong is a defect of the measure: it becomes a case in it before the unit is fixed.
-7. **Escalation.** A unit asks its parent all and only what no judge decides, and an effect without undo above the cap. The item waits in the parent's one queue, complete enough to decide without reading the work: the options, a recommendation and the cost of waiting. The rest proceeds, and each decision is absorbed. A person is asked only at the root, and never to check a delivery. If what a parent is asked does not fall relative to what its units deliver, or its queue grows, the defect is in the design.
+6. **Selection.** Change is due even when the verdict passes. A change stands only when the verdict passes and the judge compares it, by the same measure, with what exists and with as many alternatives made without sight of it as the budget states. What passes the measure and is wrong is a defect of the measure: it becomes a case in it before the unit is fixed.
+7. **Escalation.** A unit asks its parent all and only what no judge decides, and an effect without undo above the cap. The item waits in the parent's one queue, complete enough to decide without reading the work: the options, a recommendation and the cost of waiting. The rest proceeds, and each decision is absorbed. Before its first effect a unit asks, in one round, everything it can foresee needing from its parent; that round is counted in the measure and not limited by the attention budget, and a later item that could have been foreseen is a defect of the unit. An item this document requires (a missing value, a proposal to change what the unit cannot alter) is never held back by the attention budget: it is asked, and the overrun shows in the measure. A person is asked only at the root, and never to check a delivery. If what a parent is asked does not fall relative to what its units deliver, or its queue grows, the defect is in the design.
 
 ## How the tree grows
 
 - One short document per unit; it names its parent, cites and never repeats.
 - It states the six declarations and, principle by principle, how each appears there, or "does not apply" with a reason accepted by the parent's judge. Where a principle cannot be met it says so as a limit, never as compliance.
+- The first judge and the first enforcer of a tree stand with no judge, as the first effect of principle 4: their measures and planted cases come first, the record says they stood unjudged, and from then on each judges changes to the other. Where one agent makes both a change and its judge, that is a limit and is stated as one.
 - What cannot be deduced from here becomes a proposal to change this document, escalated under principle 7; it does not hold the unit, which proceeds under the strictest reading. In conflict, this document prevails.
