@@ -24,6 +24,18 @@ ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
 
 
 def git(root, *args):
+    args = list(args)
+    if args[0] in ("commit", "revert") and os.environ.get("TREE_COMMIT_TRAILER"):
+        if args[0] == "commit":
+            at = args.index("-qm") + 1
+            args[at] += "\n\n" + os.environ["TREE_COMMIT_TRAILER"]
+        elif "--abort" not in args:
+            done = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, env=ENV)
+            if done.returncode == 0:
+                body = subprocess.run(["git", "log", "-1", "--format=%B"], cwd=root, capture_output=True, text=True).stdout
+                subprocess.run(["git", "commit", "-q", "--amend", "-m",
+                                body.rstrip() + "\n\n" + os.environ["TREE_COMMIT_TRAILER"]], cwd=root, env=ENV)
+            return done
     return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, env=ENV)
 
 
