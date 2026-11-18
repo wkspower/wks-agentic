@@ -1,13 +1,14 @@
 # Record of the enforcer
 
-**State.** Built; verdict passes (70 cases, number 9968). In use.
+**State.** Built and standing by the judge; verdict passes (90 cases, number 10738). In use.
 
 **How it stood.** The first build stood with no judge, as the first effect
-of principle 4 (how the tree grows): its measure and 17 planted wrong
-enforcers entered the record first, and every planted enforcer fails. From
-now on the judge judges changes to it.
-
-stood unjudged: ea0d7fbc370dbfdc50bafb6bd2897083492bf5d61dca32a064284ea8584420ea
+of principle 4 (how the tree grows): measure and planted wrong enforcers
+first, then the build. Its `undo` then failed on first use while the verdict
+passed. By principle 6 the measure gained the case first (20 cases, 8
+planted wrong undos, by an agent that does not build the enforcer), the
+standing build failed it, and the judge let the corrected build stand
+(`judge/stands.tsv`, change `16d40e2`; undo of that change proven).
 
 **Limits.**
 - The coordinating session built it, and the same session gave it its
@@ -18,6 +19,6 @@ stood unjudged: ea0d7fbc370dbfdc50bafb6bd2897083492bf5d61dca32a064284ea8584420ea
 
 **Round before first effect.** Nothing asked of the root.
 
-**Tried and rejected.** Nothing yet.
+**Tried and rejected.** The first build (9968): `undo` died on every call.
 
 **Due next.** A source for its error numbers; nothing in progress.
