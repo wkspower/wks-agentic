@@ -1,0 +1,1279 @@
+#!/usr/bin/env python3
+"""Audit cases for the unit `sales` (module sales.py), written from docs/sales.md alone.
+
+Usage: check <build-dir>      (the build dir holds sales.py)
+
+Prints one line per case, `PASS <case>` or `FAIL <case>: <reason>`, then `<passed>/<total>`.
+Exit status 0 only if every case passes. Each case runs in its own Python subprocess
+(timeout, PYTHONDONTWRITEBYTECODE=1, working directory outside the build dir).
+Every case carries a comment `# doc:` naming the sentence of the document it rests on.
+"""
+import ast
+import concurrent.futures
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+TIMEOUT = 20
+MARK = "@@AUDIT-RESULT@@ "
+CASES = []  # (name, function) in order of definition
+
+SALE_KEYS = {"id", "customer_id", "lines", "total_cents"}
+LINE_KEYS = {"item_id", "quantity", "unit_price_cents", "line_total_cents"}
+PRICES = {"kibble": 1250, "leash": 899, "bowl": 400, "toy": 1}
+STOCK = {"kibble": 10, "leash": 10, "bowl": 10, "toy": 10}
+
+
+def case(name):
+    def deco(fn):
+        CASES.append((name, fn))
+        return fn
+    return deco
+
+
+class Fail(Exception):
+    pass
+
+
+def ok(cond, msg):
+    if not cond:
+        raise Fail(msg)
+
+
+# ---------------------------------------------------------------- helpers (child side)
+
+_BUILD = None
+_COUNT = [0]
+
+
+def load():
+    """Load a fresh, separate instance of the build's sales.py."""
+    _COUNT[0] += 1
+    name = "sales" if _COUNT[0] == 1 else "sales_instance_%d" % _COUNT[0]
+    path = os.path.join(_BUILD, "sales.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class Shop:
+    """Fake prices and stock; records every call of take."""
+
+    def __init__(self, prices=None, stock=None):
+        self.prices = dict(PRICES if prices is None else prices)
+        self.stock = dict(STOCK if stock is None else stock)
+        self.taken = []
+
+    def price_of(self, item_id):
+        return self.prices[item_id]  # KeyError when unknown
+
+    def available(self, item_id):
+        return self.stock.get(item_id, 0)
+
+    def take(self, item_id, quantity):
+        self.taken.append((item_id, quantity))
+        try:
+            self.stock[item_id] = self.stock.get(item_id, 0) - quantity
+        except Exception:
+            pass
+
+
+def sell(m, state, shop, customer_id, lines):
+    return m.sell(state, customer_id, lines, shop.price_of, shop.available, shop.take)
+
+
+def sell_ok(m, state, shop, customer_id, lines):
+    try:
+        return sell(m, state, shop, customer_id, lines)
+    except Exception as e:
+        raise Fail("sell(%r, %r) raised %s: %s" % (customer_id, lines, type(e).__name__, e))
+
+
+def expected(sale_id, customer_id, lines, prices=PRICES):
+    out = []
+    for item_id, quantity in lines:
+        out.append({"item_id": item_id, "quantity": quantity,
+                    "unit_price_cents": prices[item_id],
+                    "line_total_cents": prices[item_id] * quantity})
+    return {"id": sale_id, "customer_id": customer_id, "lines": out,
+            "total_cents": sum(x["line_total_cents"] for x in out)}
+
+
+def is_int(v):
+    return type(v) is int
+
+
+def check_sale(sale, exp, what="sale"):
+    """Exact shape and content of one sale."""
+    ok(isinstance(sale, dict), "%s is not a dict but %s" % (what, type(sale).__name__))
+    ok(set(sale.keys()) == SALE_KEYS, "%s keys are %r" % (what, sorted(map(str, sale))))
+    ok(type(sale["id"]) is str and sale["id"] == exp["id"],
+       "%s id is %r, expected %r" % (what, sale["id"], exp["id"]))
+    ok(type(sale["customer_id"]) is str and sale["customer_id"] == exp["customer_id"],
+       "%s customer_id is %r" % (what, sale["customer_id"]))
+    ok(isinstance(sale["lines"], (list, tuple)), "%s lines is not a list" % what)
+    lines = list(sale["lines"])
+    ok(len(lines) == len(exp["lines"]),
+       "%s has %d lines, expected %d" % (what, len(lines), len(exp["lines"])))
+    for i, (got, want) in enumerate(zip(lines, exp["lines"])):
+        ok(isinstance(got, dict), "%s line %d is not a dict" % (what, i))
+        ok(set(got.keys()) == LINE_KEYS,
+           "%s line %d keys are %r" % (what, i, sorted(map(str, got))))
+        ok(got["item_id"] == want["item_id"],
+           "%s line %d item_id is %r, expected %r" % (what, i, got["item_id"], want["item_id"]))
+        for k in ("quantity", "unit_price_cents", "line_total_cents"):
+            ok(is_int(got[k]), "%s line %d %s is not an int: %r" % (what, i, k, got[k]))
+            ok(got[k] == want[k],
+               "%s line %d %s is %r, expected %r" % (what, i, k, got[k], want[k]))
+    ok(is_int(sale["total_cents"]),
+       "%s total_cents is not an int: %r" % (what, sale["total_cents"]))
+    ok(sale["total_cents"] == exp["total_cents"],
+       "%s total_cents is %r, expected %r" % (what, sale["total_cents"], exp["total_cents"]))
+
+
+def check_state(m, state, exps, what="state"):
+    """sales, get and takings agree with the expected list of sales."""
+    got = m.sales(state)
+    ok(isinstance(got, (list, tuple)), "%s: sales() is not a list" % what)
+    got = list(got)
+    ok(len(got) == len(exps), "%s: sales() has %d sales, expected %d" % (what, len(got), len(exps)))
+    for g, e in zip(got, exps):
+        check_sale(g, e, "%s: sales() entry %s" % (what, e["id"]))
+    for e in exps:
+        check_sale(m.get(state, e["id"]), e, "%s: get(%s)" % (what, e["id"]))
+    t = m.takings(state)
+    ok(is_int(t), "%s: takings is not an int: %r" % (what, t))
+    ok(t == sum(e["total_cents"] for e in exps),
+       "%s: takings is %r, expected %r" % (what, t, sum(e["total_cents"] for e in exps)))
+
+
+def snapshot(state):
+    return json.dumps(state, sort_keys=True)
+
+
+def refused(m, state, shop, customer_id, lines, exc, exps):
+    """The call raises exc; take never called; nothing recorded; state as it was."""
+    before = snapshot(state)
+    stock = dict(shop.stock)
+    try:
+        r = sell(m, state, shop, customer_id, lines)
+    except exc:
+        pass
+    except Exception as e:
+        raise Fail("sell(%r, %r) raised %s, expected %s"
+                   % (customer_id, lines, type(e).__name__, exc.__name__))
+    else:
+        raise Fail("sell(%r, %r) returned %r, expected %s"
+                   % (customer_id, lines, r, exc.__name__))
+    ok(shop.taken == [], "take was called on a refused sale: %r" % (shop.taken,))
+    ok(shop.stock == stock, "stock changed on a refused sale")
+    ok(snapshot(state) == before, "a refused call changed the state")
+    check_state(m, state, exps, "after refusal")
+
+
+def taken_matches(shop, lines):
+    ok(sorted(shop.taken) == sorted(lines),
+       "take calls were %r, expected one per line of %r" % (shop.taken, lines))
+
+
+def roundtrip(state):
+    return json.loads(json.dumps(state))
+
+
+def mutate(sale):
+    """Deface a returned sale as thoroughly as its type allows."""
+    sale["total_cents"] = 987654321
+    sale["customer_id"] = "defaced"
+    sale["id"] = "S999"
+    sale["extra"] = 1
+    for line in list(sale["lines"]):
+        line["quantity"] = 4242
+        line["unit_price_cents"] = 4242
+        line["line_total_cents"] = 4242
+        line["item_id"] = "defaced"
+        line["extra"] = 1
+    try:
+        sale["lines"].append({"item_id": "defaced"})
+        del sale["lines"][0]
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------- static cases
+
+def _source():
+    with open(os.path.join(_BUILD, "sales.py"), "rb") as f:
+        return f.read().decode("utf-8")
+
+
+# doc: petshop rule 3, "no line longer than 100 characters".
+@case("static_no_line_over_100_characters")
+def _():
+    for n, line in enumerate(_source().split("\n"), 1):
+        line = line.rstrip("\r")
+        ok(len(line) <= 100, "line %d has %d characters" % (n, len(line)))
+
+
+def _is_stdlib(name):
+    names = getattr(sys, "stdlib_module_names", None)
+    if names is not None:
+        return name in names
+    if name in sys.builtin_module_names:
+        return True
+    stdlib = os.path.dirname(os.__file__)
+    return (os.path.exists(os.path.join(stdlib, name + ".py"))
+            or os.path.isdir(os.path.join(stdlib, name)))
+
+
+# doc: petshop rule 3, "Python 3 standard library only ... a unit's module imports no other
+# unit's module"; sales.md principle 1, "imports no other unit's module".
+@case("static_imports_standard_library_only")
+def _():
+    tree = ast.parse(_source())
+    for node in ast.walk(tree):
+        names = []
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            ok(node.level == 0, "relative import on line %d" % node.lineno)
+            names = [node.module or ""]
+        elif isinstance(node, ast.Call):
+            f = node.func
+            fname = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
+            if fname in ("__import__", "import_module") and node.args:
+                a = node.args[0]
+                if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                    names = [a.value]
+        for name in names:
+            top = name.split(".")[0]
+            ok(_is_stdlib(top), "imports %r, not standard library (line %d)" % (name, node.lineno))
+
+
+# ---------------------------------------------------------------- interface
+
+# doc: "A module `sales.py`" with `new`, `sell`, `get`, `sales`, `takings`.
+@case("module_offers_the_five_functions")
+def _():
+    m = load()
+    for name in ("new", "sell", "get", "sales", "takings"):
+        ok(callable(getattr(m, name, None)), "no callable %s" % name)
+
+
+# doc: "`new()` returns an empty state"; "`sales(state)` returns all sales";
+# "`takings(state)` returns the sum of `total_cents`".
+@case("new_state_is_empty")
+def _():
+    m = load()
+    s = m.new()
+    check_state(m, s, [], "new state")
+
+
+# doc: "`get(state, sale_id)` ... `KeyError` when unknown" (empty state knows no sale).
+@case("get_on_empty_state_keyerror")
+def _():
+    m = load()
+    s = m.new()
+    try:
+        r = m.get(s, "S1")
+    except KeyError:
+        return
+    except Exception as e:
+        raise Fail("get raised %s, expected KeyError" % type(e).__name__)
+    raise Fail("get returned %r, expected KeyError" % (r,))
+
+
+# doc: "the state ... survives `json.loads(json.dumps(state))`" (an empty one too).
+@case("new_state_json_roundtrip_then_sell")
+def _():
+    m = load()
+    s = roundtrip(m.new())
+    check_state(m, s, [], "round-tripped new state")
+    shop = Shop()
+    e = expected("S1", "ann", [("kibble", 1)])
+    check_sale(sell_ok(m, s, shop, "ann", [("kibble", 1)]), e)
+    check_state(m, s, [e])
+
+
+# ---------------------------------------------------------------- shape of a sale
+
+# doc: "The sale is a dict with exactly `id` (`"S1"`...), `customer_id`, `lines` (one dict per
+# given line, in order, with exactly `item_id`, `quantity`, `unit_price_cents`,
+# `line_total_cents`) and `total_cents`."
+@case("sale_shape_single_line")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    sale = sell_ok(m, s, shop, "ann", [("kibble", 2)])
+    check_sale(sale, expected("S1", "ann", [("kibble", 2)]))
+    ok(sale["total_cents"] == 2500, "total is %r, expected 2500" % sale["total_cents"])
+
+
+# doc: "`lines` (one dict per given line, in order ...)"; purpose "the right total".
+@case("sale_shape_several_lines_in_given_order")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    lines = [("toy", 7), ("leash", 1), ("kibble", 3), ("bowl", 2)]
+    sale = sell_ok(m, s, shop, "bob", lines)
+    check_sale(sale, expected("S1", "bob", lines))
+    ok(sale["total_cents"] == 7 + 899 + 3750 + 800, "total is %r" % sale["total_cents"])
+    ok([x["item_id"] for x in sale["lines"]] == ["toy", "leash", "kibble", "bowl"],
+       "lines are not in the order given")
+
+
+# doc: "one dict per given line, in order" (an item on several lines is not merged).
+@case("sale_same_item_on_several_lines_not_merged")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    lines = [("kibble", 2), ("leash", 1), ("kibble", 3), ("kibble", 1)]
+    e = expected("S1", "ann", lines)
+    check_sale(sell_ok(m, s, shop, "ann", lines), e)
+    check_state(m, s, [e])
+    taken_matches(shop, lines)
+
+
+# doc: "one dict per given line" (two identical lines stay two lines, two takes).
+@case("sale_two_identical_lines_stay_two")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    lines = [("bowl", 2), ("bowl", 2)]
+    e = expected("S1", "ann", lines)
+    check_sale(sell_ok(m, s, shop, "ann", lines), e)
+    check_state(m, s, [e])
+    taken_matches(shop, lines)
+
+
+# doc: "`price_of(item_id)` returns cents" (no refusal is stated for a price of 0);
+# rule 3 "money is integer cents".
+@case("price_zero_is_sold")
+def _():
+    m = load()
+    s = m.new()
+    prices = {"sample": 0, "kibble": 1250}
+    shop = Shop(prices, {"sample": 5, "kibble": 5})
+    e1 = expected("S1", "ann", [("sample", 3)], prices)
+    check_sale(sell_ok(m, s, shop, "ann", [("sample", 3)]), e1)
+    lines = [("sample", 1), ("kibble", 1)]
+    e2 = expected("S2", "ann", lines, prices)
+    check_sale(sell_ok(m, s, shop, "ann", lines), e2)
+    check_state(m, s, [e1, e2])
+    ok(m.takings(s) == 1250, "takings is %r" % m.takings(s))
+
+
+# doc: rule 3 "money is integer cents"; "the right total" (exact for large numbers too).
+@case("large_numbers_exact_integers")
+def _():
+    m = load()
+    s = m.new()
+    prices = {"gem": 10 ** 9 + 7, "dust": 3}
+    shop = Shop(prices, {"gem": 10 ** 12, "dust": 10 ** 15 + 1})
+    lines = [("gem", 10 ** 12), ("dust", 10 ** 15 + 1)]
+    e1 = expected("S1", "ann", lines, prices)
+    sale = sell_ok(m, s, shop, "ann", lines)
+    check_sale(sale, e1)
+    ok(sale["total_cents"] == 1000000007000000000000 + 3000000000000003, "total not exact")
+    taken_matches(shop, lines)
+    shop.stock["dust"] = 9
+    e2 = expected("S2", "bob", [("dust", 9)], prices)
+    check_sale(sell_ok(m, s, shop, "bob", [("dust", 9)]), e2)
+    check_state(m, s, [e1, e2])
+    s2 = roundtrip(s)
+    check_state(m, s2, [e1, e2], "after round trip")
+
+
+# doc: "`ValueError` when `customer_id` is not a non-empty string" (so any non-empty string,
+# a blank or non-ASCII one included, is a customer id and is kept as given).
+@case("customer_id_any_non_empty_string_kept_as_given")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    exps = []
+    for i, cust in enumerate([" ", "Zoë 犬", "0", " ann "], 1):
+        e = expected("S%d" % i, cust, [("toy", 1)])
+        check_sale(sell_ok(m, s, shop, cust, [("toy", 1)]), e)
+        exps.append(e)
+    check_state(m, s, exps)
+    check_state(m, roundtrip(s), exps, "after round trip")
+
+
+# ---------------------------------------------------------------- ids
+
+# doc: "`id` (`"S1"`, `"S2"`, ...)"; "`sales(state)` returns all sales in the order made".
+@case("ids_run_S1_to_S12_and_sales_in_order_made")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 100, "leash": 100, "bowl": 100, "toy": 100})
+    exps = []
+    items = ["kibble", "toy", "leash", "bowl"]
+    for i in range(1, 13):
+        lines = [(items[i % 4], (i % 3) + 1)]
+        e = expected("S%d" % i, "c%d" % (13 - i), lines)
+        check_sale(sell_ok(m, s, shop, "c%d" % (13 - i), lines), e)
+        exps.append(e)
+        check_state(m, s, exps)
+    ok([x["id"] for x in m.sales(s)] == ["S%d" % i for i in range(1, 13)], "order of sales")
+
+
+# doc: "On any refusal ... nothing is recorded" (so the next sale takes the next id).
+@case("ids_continue_after_refusals_of_every_kind")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    shop.stock["ghost"] = 50
+    e1 = expected("S1", "ann", [("kibble", 1)])
+    check_sale(sell_ok(m, s, shop, "ann", [("kibble", 1)]), e1)
+    shop.taken = []
+    refused(m, s, shop, "", [("kibble", 1)], ValueError, [e1])
+    refused(m, s, shop, "ann", [], ValueError, [e1])
+    refused(m, s, shop, "ann", [("kibble", 0)], ValueError, [e1])
+    refused(m, s, shop, "ann", [("kibble", 10)], ValueError, [e1])
+    refused(m, s, shop, "ann", [("ghost", 1)], KeyError, [e1])
+    e2 = expected("S2", "bob", [("leash", 2)])
+    check_sale(sell_ok(m, s, shop, "bob", [("leash", 2)]), e2)
+    check_state(m, s, [e1, e2])
+
+
+# doc: "On any refusal ... nothing is recorded" (first call refused: first sale is still S1).
+@case("first_sale_after_refusals_is_S1")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    shop.stock["ghost"] = 50
+    refused(m, s, shop, "ann", [("kibble", 11)], ValueError, [])
+    refused(m, s, shop, "ann", [("ghost", 1)], KeyError, [])
+    refused(m, s, shop, None, [("kibble", 1)], ValueError, [])
+    e1 = expected("S1", "ann", [("kibble", 1)])
+    check_sale(sell_ok(m, s, shop, "ann", [("kibble", 1)]), e1)
+    check_state(m, s, [e1])
+
+
+# ---------------------------------------------------------------- JSON round trip
+
+# doc: "the state ... survives `json.loads(json.dumps(state))` unchanged in behaviour".
+@case("json_roundtrip_keeps_sales_and_continues_ids")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    l1 = [("kibble", 2), ("toy", 1), ("kibble", 1)]
+    e1 = expected("S1", "ann", l1)
+    e2 = expected("S2", "bob", [("leash", 1)])
+    sell_ok(m, s, shop, "ann", l1)
+    sell_ok(m, s, shop, "bob", [("leash", 1)])
+    s2 = roundtrip(s)
+    check_state(m, s2, [e1, e2], "round-tripped state")
+    e3 = expected("S3", "cat", [("bowl", 4)])
+    check_sale(sell_ok(m, s2, shop, "cat", [("bowl", 4)]), e3)
+    check_state(m, s2, [e1, e2, e3], "round-tripped state after sell")
+    check_state(m, s, [e1, e2], "original state")
+    try:
+        m.get(s, "S3")
+    except KeyError:
+        pass
+    else:
+        raise Fail("the original state knows a sale made on the round-tripped one")
+
+
+# doc: same sentence (the original stays usable and independent of its round-tripped copy).
+@case("json_roundtrip_original_and_copy_independent")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    e1 = expected("S1", "ann", [("kibble", 1)])
+    sell_ok(m, s, shop, "ann", [("kibble", 1)])
+    s2 = roundtrip(s)
+    ea = expected("S2", "orig", [("toy", 2)])
+    eb = expected("S2", "copy", [("bowl", 3)])
+    check_sale(sell_ok(m, s, shop, "orig", [("toy", 2)]), ea)
+    check_sale(sell_ok(m, s2, shop, "copy", [("bowl", 3)]), eb)
+    check_state(m, s, [e1, ea], "original")
+    check_state(m, s2, [e1, eb], "copy")
+
+
+# doc: same sentence (survives repeatedly, with sales in between).
+@case("json_roundtrip_repeated_between_sales")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 100, "leash": 100, "bowl": 100, "toy": 100})
+    exps = []
+    for i in range(1, 12):
+        e = expected("S%d" % i, "ann", [("toy", i), ("bowl", 1)])
+        check_sale(sell_ok(m, s, shop, "ann", [("toy", i), ("bowl", 1)]), e)
+        exps.append(e)
+        s = roundtrip(roundtrip(s))
+        check_state(m, s, exps, "after round trip %d" % i)
+
+
+# doc: same sentence, with "On any refusal ... nothing is recorded".
+@case("json_roundtrip_then_refusals_then_sale")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    e1 = expected("S1", "ann", [("kibble", 1)])
+    sell_ok(m, s, shop, "ann", [("kibble", 1)])
+    shop.taken = []
+    s2 = roundtrip(s)
+    refused(m, s2, shop, "ann", [("kibble", 10)], ValueError, [e1])
+    refused(m, s2, shop, "ann", [("kibble", True)], ValueError, [e1])
+    refused(m, s2, shop, 7, [("kibble", 1)], ValueError, [e1])
+    e2 = expected("S2", "bob", [("kibble", 9)])
+    check_sale(sell_ok(m, s2, shop, "bob", [("kibble", 9)]), e2)
+    check_state(m, s2, [e1, e2])
+    taken_matches(shop, [("kibble", 9)])
+
+
+# doc: "Returned sales are copies, their lines included" (after a round trip as well).
+@case("json_roundtrip_returned_sales_still_copies")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    lines = [("kibble", 1), ("toy", 2)]
+    e1 = expected("S1", "ann", lines)
+    sell_ok(m, s, shop, "ann", lines)
+    s = roundtrip(s)
+    mutate(m.get(s, "S1"))
+    for x in list(m.sales(s)):
+        mutate(x)
+    check_state(m, s, [e1])
+    e2 = expected("S2", "bob", [("bowl", 1)])
+    mutate(sell_ok(m, s, shop, "bob", [("bowl", 1)]))
+    check_state(m, s, [e1, e2])
+
+
+# ---------------------------------------------------------------- refusals: customer id
+
+def _bad_customer(value):
+    def run():
+        m = load()
+        s = m.new()
+        shop = Shop()
+        refused(m, s, shop, value, [("kibble", 1)], ValueError, [])
+        refused(m, s, shop, value, [("kibble", 1), ("toy", 2)], ValueError, [])
+        e1 = expected("S1", "ann", [("kibble", 1)])
+        check_sale(sell_ok(m, s, shop, "ann", [("kibble", 1)]), e1)
+        shop.taken = []
+        refused(m, s, shop, value, [("toy", 1)], ValueError, [e1])
+    return run
+
+
+# doc: "`ValueError` when `customer_id` is not a non-empty string".
+for _n, _v in [("empty_string", ""), ("none", None), ("int", 7), ("zero", 0), ("float", 1.5),
+               ("bool", True), ("bytes", b"ann"), ("list", ["ann"]), ("tuple", ("ann",))]:
+    case("refuse_customer_id_" + _n)(_bad_customer(_v))
+
+
+# ---------------------------------------------------------------- refusals: lines, quantity
+
+# doc: "`ValueError` when ... `lines` is empty".
+@case("refuse_empty_lines")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    refused(m, s, shop, "ann", [], ValueError, [])
+    e1 = expected("S1", "ann", [("kibble", 1)])
+    check_sale(sell_ok(m, s, shop, "ann", [("kibble", 1)]), e1)
+    shop.taken = []
+    refused(m, s, shop, "ann", [], ValueError, [e1])
+
+
+def _bad_quantity(value):
+    def run():
+        m = load()
+        s = m.new()
+        shop = Shop()
+        # alone, first, last and between good lines; stock is ample, prices known
+        refused(m, s, shop, "ann", [("kibble", value)], ValueError, [])
+        refused(m, s, shop, "ann", [("kibble", value), ("leash", 1)], ValueError, [])
+        refused(m, s, shop, "ann", [("leash", 1), ("kibble", value)], ValueError, [])
+        refused(m, s, shop, "ann", [("leash", 1), ("kibble", value), ("toy", 2)], ValueError, [])
+        refused(m, s, shop, "ann", [("kibble", 1), ("kibble", value)], ValueError, [])
+        e1 = expected("S1", "ann", [("kibble", 1)])
+        check_sale(sell_ok(m, s, shop, "ann", [("kibble", 1)]), e1)
+    return run
+
+
+# doc: "`ValueError` when ... a quantity is not an `int` (not a `bool`) of 1 or more".
+for _n, _v in [("bool_true", True), ("bool_false", False), ("zero", 0), ("minus_one", -1),
+               ("large_negative", -10 ** 6), ("float_whole", 2.0), ("float_one", 1.0),
+               ("float_fraction", 1.5), ("none", None), ("string", "2")]:
+    case("refuse_quantity_" + _n)(_bad_quantity(_v))
+
+
+# doc: "a quantity is not an `int` ... of 1 or more" (1 is the least quantity allowed).
+@case("quantity_one_is_allowed")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 1, "toy": 1})
+    lines = [("kibble", 1), ("toy", 1)]
+    e = expected("S1", "ann", lines)
+    check_sale(sell_ok(m, s, shop, "ann", lines), e)
+    taken_matches(shop, lines)
+
+
+# ---------------------------------------------------------------- refusals: availability
+
+# doc: "`ValueError` when ... the quantities asked of one item ... exceed `available`"
+# (exactly what is on hand does not exceed it).
+@case("available_exactly_equal_is_allowed")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 4})
+    e = expected("S1", "ann", [("kibble", 4)])
+    check_sale(sell_ok(m, s, shop, "ann", [("kibble", 4)]), e)
+    taken_matches(shop, [("kibble", 4)])
+    check_state(m, s, [e])
+
+
+# doc: same sentence (one more than is on hand exceeds it).
+@case("available_one_over_is_refused")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 4, "toy": 9})
+    refused(m, s, shop, "ann", [("kibble", 5)], ValueError, [])
+    refused(m, s, shop, "ann", [("toy", 1), ("kibble", 5)], ValueError, [])
+    refused(m, s, shop, "ann", [("kibble", 5), ("toy", 1)], ValueError, [])
+
+
+# doc: same sentence (nothing on hand).
+@case("available_zero_is_refused")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 0, "toy": 9})
+    refused(m, s, shop, "ann", [("kibble", 1)], ValueError, [])
+    refused(m, s, shop, "ann", [("toy", 1), ("kibble", 1)], ValueError, [])
+
+
+# doc: "the quantities asked of one item, summed over the lines, exceed `available`"
+# (a sum exactly equal is allowed).
+@case("available_summed_over_lines_exactly_equal_allowed")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 6, "leash": 1})
+    lines = [("kibble", 2), ("leash", 1), ("kibble", 3), ("kibble", 1)]
+    e = expected("S1", "ann", lines)
+    check_sale(sell_ok(m, s, shop, "ann", lines), e)
+    taken_matches(shop, lines)
+    check_state(m, s, [e])
+
+
+# doc: same sentence (each line alone fits, the sum is one over).
+@case("available_summed_over_two_lines_one_over_refused")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 6, "leash": 5})
+    refused(m, s, shop, "ann", [("kibble", 3), ("kibble", 4)], ValueError, [])
+    refused(m, s, shop, "ann", [("kibble", 4), ("leash", 1), ("kibble", 3)], ValueError, [])
+    refused(m, s, shop, "ann", [("kibble", 6), ("kibble", 1)], ValueError, [])
+
+
+# doc: same sentence (three lines: every pair fits, the three together are one over).
+@case("available_summed_over_three_lines_one_over_refused")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 5, "leash": 5})
+    refused(m, s, shop, "ann", [("kibble", 2), ("kibble", 2), ("kibble", 2)], ValueError, [])
+    refused(m, s, shop, "ann",
+            [("kibble", 2), ("leash", 5), ("kibble", 2), ("kibble", 2)], ValueError, [])
+    lines = [("kibble", 2), ("kibble", 2), ("kibble", 1)]
+    e = expected("S1", "ann", lines)
+    check_sale(sell_ok(m, s, shop, "ann", lines), e)
+    taken_matches(shop, lines)
+
+
+# doc: "the quantities asked of one item" (summed per item, not over all items).
+@case("available_is_per_item_not_over_all_items")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 3, "leash": 3, "toy": 1})
+    lines = [("kibble", 3), ("leash", 3), ("toy", 1)]
+    e = expected("S1", "ann", lines)
+    check_sale(sell_ok(m, s, shop, "ann", lines), e)
+    taken_matches(shop, lines)
+
+
+# doc: "On any refusal `take` has not been called" (the item over is the last one).
+@case("available_last_item_over_nothing_taken")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 5, "leash": 5, "toy": 8})
+    refused(m, s, shop, "ann", [("kibble", 1), ("leash", 2), ("toy", 9)], ValueError, [])
+    refused(m, s, shop, "ann", [("kibble", 5), ("toy", 4), ("leash", 5), ("toy", 5)],
+            ValueError, [])
+
+
+# doc: "`available(item_id)` returns the quantity on hand; `take(item_id, quantity)` removes
+# it"; "Prices and stock are not its own" (each sale asks `available` anew).
+@case("available_asked_anew_after_earlier_sales")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 5})
+    e1 = expected("S1", "ann", [("kibble", 3)])
+    check_sale(sell_ok(m, s, shop, "ann", [("kibble", 3)]), e1)
+    ok(shop.stock["kibble"] == 2, "stock after take is %r" % shop.stock["kibble"])
+    shop.taken = []
+    refused(m, s, shop, "bob", [("kibble", 3)], ValueError, [e1])
+    refused(m, s, shop, "bob", [("kibble", 1), ("kibble", 2)], ValueError, [e1])
+    e2 = expected("S2", "bob", [("kibble", 2)])
+    check_sale(sell_ok(m, s, shop, "bob", [("kibble", 2)]), e2)
+    shop.taken = []
+    refused(m, s, shop, "cat", [("kibble", 1)], ValueError, [e1, e2])
+    check_state(m, s, [e1, e2])
+
+
+# doc: "Prices and stock are not its own"; principle 2 "Prices and stock are cited through the
+# callables, never copied" (stock refilled outside is seen; the module keeps no stock count).
+@case("stock_not_remembered_by_the_module")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 5})
+    e1 = expected("S1", "ann", [("kibble", 5)])
+    check_sale(sell_ok(m, s, shop, "ann", [("kibble", 5)]), e1)
+    shop.stock["kibble"] = 5
+    e2 = expected("S2", "bob", [("kibble", 5)])
+    check_sale(sell_ok(m, s, shop, "bob", [("kibble", 5)]), e2)
+    other = Shop(stock={"kibble": 1})
+    refused(m, s, other, "cat", [("kibble", 2)], ValueError, [e1, e2])
+    e3 = expected("S3", "cat", [("kibble", 1)])
+    check_sale(sell_ok(m, s, other, "cat", [("kibble", 1)]), e3)
+    check_state(m, s, [e1, e2, e3])
+
+
+# doc: principle 2 "Prices ... cited through the callables, never copied beyond the sale's
+# own lines" (a new price applies to new sales; recorded sales keep theirs).
+@case("price_asked_anew_and_recorded_sales_keep_theirs")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    e1 = expected("S1", "ann", [("kibble", 2)])
+    check_sale(sell_ok(m, s, shop, "ann", [("kibble", 2)]), e1)
+    shop.prices["kibble"] = 1500
+    e2 = expected("S2", "bob", [("kibble", 2)], shop.prices)
+    sale = sell_ok(m, s, shop, "bob", [("kibble", 2)])
+    check_sale(sale, e2)
+    ok(sale["total_cents"] == 3000, "second sale total is %r" % sale["total_cents"])
+    check_state(m, s, [e1, e2])
+    ok(m.takings(s) == 5500, "takings is %r" % m.takings(s))
+    check_state(m, roundtrip(s), [e1, e2], "after round trip")
+
+
+# ---------------------------------------------------------------- KeyError from price_of
+
+# doc: "A `KeyError` from `price_of` passes through. On any refusal `take` has not been
+# called and nothing is recorded". (Stock of the unknown item is ample: no other refusal.)
+@case("price_of_keyerror_passes_through_single_line")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    shop.stock["ghost"] = 50
+    refused(m, s, shop, "ann", [("ghost", 1)], KeyError, [])
+
+
+# doc: same sentences (unknown item first, in the middle, last, twice; good lines not taken).
+@case("price_of_keyerror_among_good_lines_nothing_taken")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    shop.stock["ghost"] = 50
+    refused(m, s, shop, "ann", [("ghost", 1), ("kibble", 1)], KeyError, [])
+    refused(m, s, shop, "ann", [("kibble", 1), ("ghost", 2), ("toy", 1)], KeyError, [])
+    refused(m, s, shop, "ann", [("kibble", 1), ("toy", 3), ("ghost", 1)], KeyError, [])
+    refused(m, s, shop, "ann", [("kibble", 1), ("ghost", 1), ("ghost", 1)], KeyError, [])
+
+
+# doc: same sentences (after earlier sales: state as it was, ids go on).
+@case("price_of_keyerror_after_sales_state_unchanged")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    shop.stock["ghost"] = 50
+    e1 = expected("S1", "ann", [("kibble", 1), ("toy", 1)])
+    check_sale(sell_ok(m, s, shop, "ann", [("kibble", 1), ("toy", 1)]), e1)
+    shop.taken = []
+    refused(m, s, shop, "bob", [("leash", 1), ("ghost", 1)], KeyError, [e1])
+    e2 = expected("S2", "bob", [("leash", 1)])
+    check_sale(sell_ok(m, s, shop, "bob", [("leash", 1)]), e2)
+    taken_matches(shop, [("leash", 1)])
+    check_state(m, s, [e1, e2])
+
+
+# ---------------------------------------------------------------- take
+
+# doc: "otherwise `take` is called once per line" (`take(item_id, quantity)`).
+@case("take_called_once_per_line_single")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    sell_ok(m, s, shop, "ann", [("kibble", 7)])
+    taken_matches(shop, [("kibble", 7)])
+    ok(shop.stock["kibble"] == 3, "stock left is %r" % shop.stock["kibble"])
+
+
+# doc: same sentence (several items; the multiset of calls equals the lines).
+@case("take_called_once_per_line_several")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    lines = [("toy", 2), ("kibble", 1), ("leash", 3), ("bowl", 10)]
+    sell_ok(m, s, shop, "ann", lines)
+    taken_matches(shop, lines)
+    for q in [q for _, q in shop.taken]:
+        ok(is_int(q), "take got a quantity that is not an int: %r" % (q,))
+
+
+# doc: same sentence ("once per line", not once per item).
+@case("take_called_per_line_not_per_item")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    lines = [("kibble", 2), ("toy", 1), ("kibble", 3), ("toy", 1), ("kibble", 2)]
+    sell_ok(m, s, shop, "ann", lines)
+    ok(len(shop.taken) == 5, "take called %d times for 5 lines" % len(shop.taken))
+    taken_matches(shop, lines)
+    ok(shop.stock["kibble"] == 3 and shop.stock["toy"] == 8, "stock left %r" % shop.stock)
+
+
+# doc: same sentence, over successive sales (no call repeated or left over from before).
+@case("take_calls_over_successive_sales")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    sell_ok(m, s, shop, "ann", [("kibble", 2)])
+    taken_matches(shop, [("kibble", 2)])
+    shop.taken = []
+    sell_ok(m, s, shop, "bob", [("toy", 1), ("kibble", 1)])
+    taken_matches(shop, [("toy", 1), ("kibble", 1)])
+    shop.taken = []
+    s2 = roundtrip(s)
+    sell_ok(m, s2, shop, "cat", [("leash", 4)])
+    taken_matches(shop, [("leash", 4)])
+
+
+# doc: "it receives three callables and knows nothing else of where they come from"
+# (each call uses the callables given to that call).
+@case("callables_of_each_call_are_the_ones_used")
+def _():
+    m = load()
+    s = m.new()
+    a = Shop({"kibble": 100}, {"kibble": 2})
+    b = Shop({"kibble": 250, "fish": 30}, {"kibble": 9, "fish": 4})
+    e1 = expected("S1", "ann", [("kibble", 2)], a.prices)
+    check_sale(sell_ok(m, s, a, "ann", [("kibble", 2)]), e1)
+    lines = [("kibble", 9), ("fish", 4)]
+    e2 = expected("S2", "bob", lines, b.prices)
+    check_sale(sell_ok(m, s, b, "bob", lines), e2)
+    taken_matches(a, [("kibble", 2)])
+    taken_matches(b, lines)
+    a.taken = []
+    a.stock["fish"] = 9
+    refused(m, s, a, "cat", [("fish", 1)], KeyError, [e1, e2])
+    check_state(m, s, [e1, e2])
+
+
+# ---------------------------------------------------------------- get, sales, takings
+
+# doc: "`get(state, sale_id)` returns the sale"; "`sales(state)` returns all sales in the
+# order made"; "`takings(state)` returns the sum of `total_cents`".
+@case("get_sales_takings_agree_with_what_sell_returned")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    orders = [("zed", [("toy", 3)]), ("ann", [("kibble", 2), ("leash", 1)]),
+              ("mia", [("bowl", 1), ("bowl", 2), ("toy", 1)]), ("ann", [("leash", 4)])]
+    exps = []
+    returned = []
+    for i, (cust, lines) in enumerate(orders, 1):
+        e = expected("S%d" % i, cust, lines)
+        sale = sell_ok(m, s, shop, cust, lines)
+        check_sale(sale, e)
+        returned.append(json.loads(json.dumps(sale)))
+        exps.append(e)
+    check_state(m, s, exps)
+    ok(m.takings(s) == 3 + 3399 + 1201 + 3596, "takings is %r" % m.takings(s))
+    for r in returned:
+        check_sale(m.get(s, r["id"]), r, "get(%s) against what sell returned" % r["id"])
+    ok([x["customer_id"] for x in m.sales(s)] == ["zed", "ann", "mia", "ann"], "order made")
+
+
+# doc: "`get(state, sale_id)` ... `KeyError` when unknown".
+@case("get_unknown_id_keyerror")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    e1 = expected("S1", "ann", [("kibble", 1)])
+    e2 = expected("S2", "bob", [("toy", 1)])
+    sell_ok(m, s, shop, "ann", [("kibble", 1)])
+    sell_ok(m, s, shop, "bob", [("toy", 1)])
+    for sale_id in ["S3", "S0", "S10", "X1", "nope"]:
+        try:
+            r = m.get(s, sale_id)
+        except KeyError:
+            continue
+        except Exception as e:
+            raise Fail("get(%r) raised %s, expected KeyError" % (sale_id, type(e).__name__))
+        raise Fail("get(%r) returned %r, expected KeyError" % (sale_id, r))
+    check_state(m, s, [e1, e2])
+
+
+# doc: "nothing is recorded" + "`KeyError` when unknown" (a refused sale has no id to get).
+@case("get_id_of_refused_sale_keyerror")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    sell_ok(m, s, shop, "ann", [("kibble", 1)])
+    shop.taken = []
+    try:
+        sell(m, s, shop, "bob", [("kibble", 99)])
+    except ValueError:
+        pass
+    else:
+        raise Fail("over-asking was not refused")
+    try:
+        r = m.get(s, "S2")
+    except KeyError:
+        return
+    except Exception as e:
+        raise Fail("get('S2') raised %s, expected KeyError" % type(e).__name__)
+    raise Fail("get('S2') returned %r after a refused sale" % (r,))
+
+
+# doc: "`takings(state)` returns the sum of `total_cents`" (reading does not change it).
+@case("takings_and_reads_do_not_change_the_state")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    e1 = expected("S1", "ann", [("kibble", 2)])
+    e2 = expected("S2", "bob", [("toy", 5), ("bowl", 1)])
+    sell_ok(m, s, shop, "ann", [("kibble", 2)])
+    sell_ok(m, s, shop, "bob", [("toy", 5), ("bowl", 1)])
+    for _i in range(3):
+        check_state(m, s, [e1, e2])
+    ok(m.takings(s) == 2500 + 405, "takings is %r" % m.takings(s))
+    taken_matches(shop, [("kibble", 2), ("toy", 5), ("bowl", 1)])
+
+
+# ---------------------------------------------------------------- copies
+
+# doc: "Returned sales are copies, their lines included" (the sale `sell` returned).
+@case("copy_returned_by_sell")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    lines = [("kibble", 2), ("toy", 1)]
+    e1 = expected("S1", "ann", lines)
+    mutate(sell_ok(m, s, shop, "ann", lines))
+    check_state(m, s, [e1])
+    e2 = expected("S2", "bob", [("bowl", 1)])
+    check_sale(sell_ok(m, s, shop, "bob", [("bowl", 1)]), e2)
+    check_state(m, s, [e1, e2])
+
+
+# doc: same sentence (the sale `get` returned).
+@case("copy_returned_by_get")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    lines = [("kibble", 2), ("toy", 1)]
+    e1 = expected("S1", "ann", lines)
+    sell_ok(m, s, shop, "ann", lines)
+    mutate(m.get(s, "S1"))
+    check_state(m, s, [e1])
+    mutate(m.get(s, "S1"))
+    check_state(m, s, [e1])
+
+
+# doc: same sentence (the sales `sales` returned).
+@case("copy_returned_by_sales")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    l1 = [("kibble", 2), ("toy", 1)]
+    e1 = expected("S1", "ann", l1)
+    e2 = expected("S2", "bob", [("bowl", 3)])
+    sell_ok(m, s, shop, "ann", l1)
+    sell_ok(m, s, shop, "bob", [("bowl", 3)])
+    for x in list(m.sales(s)):
+        mutate(x)
+    check_state(m, s, [e1, e2])
+    ok(m.takings(s) == e1["total_cents"] + e2["total_cents"], "takings changed")
+
+
+# doc: same sentence (only the line dicts are touched: a shallow copy is not enough).
+@case("copy_lines_included")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    lines = [("kibble", 2), ("toy", 1)]
+    e1 = expected("S1", "ann", lines)
+    sold = sell_ok(m, s, shop, "ann", lines)
+    for src in (sold, m.get(s, "S1"), list(m.sales(s))[0]):
+        for line in list(src["lines"]):
+            line["quantity"] = 77
+            line["line_total_cents"] = 77
+        check_state(m, s, [e1])
+    got = m.get(s, "S1")
+    ok(got is not m.get(s, "S1"), "get returns the same object twice")
+    ok(all(a is not b for a, b in zip(got["lines"], m.get(s, "S1")["lines"])),
+       "get returns the same line dicts twice")
+
+
+# doc: same sentence (copies are independent of each other and of later sales).
+@case("copy_held_by_caller_not_changed_by_later_sales")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop()
+    e1 = expected("S1", "ann", [("kibble", 2)])
+    held = sell_ok(m, s, shop, "ann", [("kibble", 2)])
+    got = m.get(s, "S1")
+    sell_ok(m, s, shop, "bob", [("toy", 1)])
+    sell_ok(m, s, shop, "cat", [("kibble", 1)])
+    check_sale(held, e1, "sale held from sell")
+    check_sale(got, e1, "sale held from get")
+
+
+# ---------------------------------------------------------------- states
+
+# doc: "Every function takes the sales state first"; principle 2 "Sales live only in this
+# state" (two states do not share sales or ids).
+@case("two_states_are_independent")
+def _():
+    m = load()
+    a = m.new()
+    b = m.new()
+    shop = Shop()
+    ea1 = expected("S1", "ann", [("kibble", 1)])
+    ea2 = expected("S2", "ann", [("toy", 2)])
+    check_sale(sell_ok(m, a, shop, "ann", [("kibble", 1)]), ea1)
+    check_sale(sell_ok(m, a, shop, "ann", [("toy", 2)]), ea2)
+    check_state(m, b, [], "second state")
+    eb1 = expected("S1", "bob", [("bowl", 3)])
+    check_sale(sell_ok(m, b, shop, "bob", [("bowl", 3)]), eb1)
+    check_state(m, a, [ea1, ea2], "first state")
+    check_state(m, b, [eb1], "second state")
+    ea3 = expected("S3", "ann", [("leash", 1)])
+    check_sale(sell_ok(m, a, shop, "ann", [("leash", 1)]), ea3)
+    check_state(m, a, [ea1, ea2, ea3], "first state")
+    check_state(m, b, [eb1], "second state")
+    c = m.new()
+    check_state(m, c, [], "third state")
+    shop.taken = []
+    refused(m, b, shop, "bob", [("bowl", 8)], ValueError, [eb1])
+    check_state(m, a, [ea1, ea2, ea3], "first state")
+
+
+# doc: "Functions change the state they are given, in place."
+@case("state_changed_in_place")
+def _():
+    m = load()
+    s = m.new()
+    alias = s
+    holder = [s]
+    shop = Shop()
+    e1 = expected("S1", "ann", [("kibble", 1)])
+    e2 = expected("S2", "bob", [("toy", 1)])
+    sell_ok(m, s, shop, "ann", [("kibble", 1)])
+    check_state(m, alias, [e1], "alias")
+    sell_ok(m, holder[0], shop, "bob", [("toy", 1)])
+    check_state(m, s, [e1, e2])
+    check_state(m, alias, [e1, e2], "alias")
+
+
+# doc: principle 1 "the module holds no state of its own" (a state made and filled by one
+# loaded instance of the module is served by another).
+@case("module_holds_no_state_second_instance_serves_the_state")
+def _():
+    m1 = load()
+    s = m1.new()
+    shop = Shop()
+    l1 = [("kibble", 1), ("kibble", 2)]
+    e1 = expected("S1", "ann", l1)
+    e2 = expected("S2", "bob", [("toy", 1)])
+    sell_ok(m1, s, shop, "ann", l1)
+    sell_ok(m1, s, shop, "bob", [("toy", 1)])
+    m2 = load()
+    ok(m2 is not m1, "module not loaded twice")
+    check_state(m2, s, [e1, e2], "state seen by the second instance")
+    e3 = expected("S3", "cat", [("bowl", 2)])
+    check_sale(sell_ok(m2, s, shop, "cat", [("bowl", 2)]), e3)
+    check_state(m1, s, [e1, e2, e3], "state seen by the first instance")
+    s2 = roundtrip(s)
+    m3 = load()
+    e4 = expected("S4", "dan", [("leash", 1)])
+    check_sale(sell_ok(m3, s2, shop, "dan", [("leash", 1)]), e4)
+    check_state(m1, s2, [e1, e2, e3, e4], "round-tripped state")
+    check_state(m3, s, [e1, e2, e3], "original state")
+
+
+# doc: principle 1 "the module holds no state of its own" (nothing of earlier states leaks
+# into a new state, in this instance or in another).
+@case("module_holds_no_state_new_states_start_empty")
+def _():
+    m1 = load()
+    shop = Shop()
+    a = m1.new()
+    sell_ok(m1, a, shop, "ann", [("kibble", 1)])
+    sell_ok(m1, a, shop, "ann", [("toy", 1)])
+    try:
+        sell(m1, a, shop, "ann", [("toy", 99)])
+    except ValueError:
+        pass
+    b = m1.new()
+    check_state(m1, b, [], "new state in the same instance")
+    eb = expected("S1", "bob", [("bowl", 1)])
+    check_sale(sell_ok(m1, b, shop, "bob", [("bowl", 1)]), eb)
+    m2 = load()
+    c = m2.new()
+    check_state(m2, c, [], "new state in a second instance")
+    ec = expected("S1", "cat", [("leash", 1)])
+    check_sale(sell_ok(m2, c, shop, "cat", [("leash", 1)]), ec)
+    check_state(m1, c, [ec], "state of the second instance seen by the first")
+    check_state(m2, b, [eb], "state of the first instance seen by the second")
+
+
+# doc: principle 5 "A refused call leaves the state as it was" (a long mixed history).
+@case("mixed_history_of_sales_and_refusals")
+def _():
+    m = load()
+    s = m.new()
+    shop = Shop(stock={"kibble": 6, "leash": 2, "bowl": 3, "toy": 4})
+    shop.stock["ghost"] = 9
+    exps = []
+    script = [
+        ("ann", [("kibble", 2), ("kibble", 2)], None),
+        ("ann", [("kibble", 2), ("kibble", 1)], ValueError),
+        ("", [("toy", 1)], ValueError),
+        ("bob", [("leash", 2), ("toy", 4)], None),
+        ("bob", [("leash", 1)], ValueError),
+        ("bob", [("bowl", 1), ("ghost", 1)], KeyError),
+        ("cat", [("bowl", 1), ("bowl", 1), ("bowl", 1)], None),
+        ("cat", [("kibble", 2.0)], ValueError),
+        ("cat", [], ValueError),
+        ("dan", [("kibble", 1), ("kibble", 1)], None),
+        ("dan", [("kibble", 1)], ValueError),
+    ]
+    for cust, lines, exc in script:
+        shop.taken = []
+        if exc is None:
+            e = expected("S%d" % (len(exps) + 1), cust, lines)
+            check_sale(sell_ok(m, s, shop, cust, lines), e)
+            taken_matches(shop, lines)
+            exps.append(e)
+        else:
+            refused(m, s, shop, cust, lines, exc, exps)
+        check_state(m, s, exps)
+    ok(len(exps) == 4 and exps[-1]["id"] == "S4", "history miscounted")
+    ok(shop.stock == {"kibble": 0, "leash": 0, "bowl": 0, "toy": 0, "ghost": 9},
+       "stock left is %r" % shop.stock)
+
+
+# ---------------------------------------------------------------- runner
+
+def run_child(name, build):
+    global _BUILD
+    _BUILD = build
+    sys.dont_write_bytecode = True
+    fn = dict(CASES)[name]
+    try:
+        fn()
+        result = "OK"
+    except Fail as e:
+        result = "FAIL " + str(e)
+    except BaseException as e:
+        result = "FAIL unexpected %s: %s" % (type(e).__name__, e)
+    result = " ".join(result.split())
+    sys.stdout.write("\n" + MARK + result[:300] + "\n")
+    sys.stdout.flush()
+    os._exit(0)
+
+
+def run_case(name, build, workdir):
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("PYTHONPATH", None)
+    cmd = [sys.executable, os.path.abspath(__file__), "--case", name, build]
+    try:
+        p = subprocess.run(cmd, cwd=workdir, env=env, timeout=TIMEOUT, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.TimeoutExpired:
+        return "timed out after %d s" % TIMEOUT
+    out = p.stdout.decode("utf-8", "replace")
+    for line in reversed(out.splitlines()):
+        if line.startswith(MARK):
+            res = line[len(MARK):]
+            return None if res == "OK" else (res[5:] or "failed")
+    err = " ".join(p.stderr.decode("utf-8", "replace").split())
+    return "no result (exit %s) %s" % (p.returncode, err[-200:])
+
+
+def main(argv):
+    if len(argv) == 4 and argv[1] == "--case":
+        run_child(argv[2], argv[3])
+    if len(argv) != 2:
+        sys.stderr.write("usage: check <build-dir>\n")
+        return 2
+    build = os.path.abspath(argv[1])
+    names = [n for n, _ in CASES]
+    assert len(set(names)) == len(names)
+    with tempfile.TemporaryDirectory() as workdir:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda n: run_case(n, build, workdir), names))
+    passed = 0
+    for name, reason in zip(names, results):
+        if reason is None:
+            passed += 1
+            print("PASS %s" % name)
+        else:
+            print("FAIL %s: %s" % (name, reason))
+    print("%d/%d" % (passed, len(names)))
+    return 0 if passed == len(names) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
