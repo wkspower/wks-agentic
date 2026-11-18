@@ -94,10 +94,11 @@ def main(argv):
     budgets = {u: budget_of(docs[u]) for u in units}
     children = {u: [c for c in units if c != "root" and parent_of(c, units) == u] for u in units}
     stands = {}
-    for line in read(os.path.join(tree, "judge", "stands.tsv")).splitlines():
-        f = line.split("\t")
-        if len(f) >= 5:
-            stands[f[1]] = f[4]
+    for u in units:
+        rows = [l.split("\t") for l in read(os.path.join(
+            tree, "judge", "stands", *u.split("/")) + ".tsv").splitlines() if l.strip()]
+        if rows and len(rows[-1]) >= 5:
+            stands[u] = rows[-1][4]
     adds = first_adds(tree)
     order = {c: i for i, c in enumerate(dict.fromkeys(c for c, _ in adds))}
     tracked = set(git(tree, "ls-files").splitlines())
