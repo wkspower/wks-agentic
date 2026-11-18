@@ -1,50 +1,61 @@
 # Record of the root
 
-**State.** Round 1 asked and answered ("Ok"; `queue.md`). Every unit has
-its document, its measure and its judge. Correct results: 2.
+**State.** Every unit is built and standing. Correct results: 7.
 
 | Unit | Verdict | Stands by |
 |---|---|---|
-| judge | passes, 4391 | no judge: first of the tree |
-| enforcer | passes, 10738 | judge (after its first build stood unjudged) |
+| judge | passes, 4429 | itself as installer, the enforcer's run as judge |
+| enforcer | passes, 10818 | judge |
+| petshop | passes, 2824 | judge, over 1 alternative |
 | petshop/catalog | passes, 1190 | judge, over 1 alternative |
-| petshop/stock, customers, sales | not built | |
-| petshop | not built | |
+| petshop/stock | passes, 862 | judge, over 1 alternative |
+| petshop/customers | passes, 753 | judge, over 1 alternative |
+| petshop/sales | passes, 1890 | judge, over 1 alternative |
 
-**The number** (`./verdict`): 13 items ÷ 2 correct results = 6.50; it was
-10.00 at the first result. The verdict passes: Q11 to Q13 are answered
-and nothing waits.
+**The number** (`./verdict`): 16 items ÷ 7 correct results = 2.29. It was
+10.00 at the first result and 6.50 at the second. The verdict fails while
+Q15 and Q16 wait (2 items waiting against 0 at the previous result) and
+passes once they are answered in the record.
 
-**Spend** (`ledger.tsv`): 8 of 16 runs; about 1 h of 4. Attention after
-round 1: 3 items for 2 results, budget 2 per result. Effects without undo: 0.
+**Spend** (`ledger.tsv`): 24 of 24 runs; about 2 h 15 of 4 h. Attention
+after round 1: 6 items for 7 results (budget 2 per result). Effects
+without undo: 0.
 
 **Error of what the root gave.**
-- Judge, source: the audit cases of the judged unit (`petshop/audit/`).
-  Wrong stands: 0 of 1 audited (catalog passes all 123 audit cases). The
-  enforcer's stand has no audit: unknown. Wrong refusals: unknown, the
-  judge has refused nothing yet.
-- Enforcer: unknown. Pet shop measure: unknown until the shop is built.
+- Judge, source: the audits of the judged units. Wrong stands: 0 of 6
+  audited (the five pet shop units and the enforcer each pass every audit
+  case). The judge's own stand has no audit: unknown. Wrong refusals:
+  unknown, the judge has refused nothing.
+- Pet shop measure, source `audit/petshop/check` (130 scenarios). Wrong
+  passes: 0 of 2 builds. Wrong fails: 0 of 25 planted; 23 also fail the
+  audit, 2 break only rule 3, which the audit cannot see from outside.
+- Enforcer measure, source `audit/enforcer/check` (104 cases). Wrong
+  passes: 0 of 1 build. Wrong fails: not counted (planted enforcers were
+  not audited).
 - Root's own measure: unmeasured (`root.md`, principle 6).
 
 **Limits.**
 - One session coordinated everything: it gave the declarations of every
-  unit and built the judge and the enforcer. Measures, the catalog builds
-  and the audit came from separate agents that saw only what they were
-  given, but all are the same model, started by that session.
-- Nothing forces a call to the enforcer; identity of who made a change is
-  not checked by anything.
-- Earlier stands cannot be undone by revert (judge's record).
+  unit and built the judge and the enforcer. Measures, pet shop builds and
+  audits came from separate agents that saw only what they were given, but
+  all are the same model, started by that session.
+- A change to the judge is installed by the candidate itself; only the
+  enforcer's run is independent of it.
+- Nothing forces a call to the enforcer; who made a change is not checked.
+- Stands made before the judge kept one file per unit cannot be undone by
+  reverting them alone.
+- While a notice waits, the verdict fails: every report costs a failing
+  verdict until it is read.
 - The session's own work is metered in time only (Q3).
 
-**Found and absorbed.** `undo` failed on first use while the enforcer's
-verdict passed: the measure gained the case, then the judge let the fix
-stand. Gaps the measure writers found in documents became rules there.
+**Found and absorbed.** The enforcer's `undo` failed while its verdict
+passed; the judge's single stands file blocked undo. Each became a case
+in a measure before the fix stood.
 
 **Tried and rejected.** Nothing at this level.
 
 **Due next**, in order:
-1. Judge: any stand undoable alone (about 3 runs; needs budget).
-2. Build stock, customers, sales, then the shop (8 runs, in budget).
-3. Audit cases for those four and a source for the enforcer's error
-   (about 5 runs; needs budget).
-4. Catalog: the points its builders decided become rules in its document.
+1. Q15 and Q16 answered, so the verdict passes.
+2. Builders' open decisions become rules with cases (about 4 runs).
+3. Audit the planted enforcers and the judge's own stand (about 2 runs).
+4. Both need budget: all 24 runs are spent.

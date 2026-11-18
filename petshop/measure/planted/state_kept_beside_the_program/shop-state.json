@@ -1,0 +1,12 @@
+{
+ "items": {
+  "bone": {
+   "name": "Bone",
+   "kind": "product",
+   "price_cents": 250
+  }
+ },
+ "stock": {},
+ "customers": [],
+ "sales": []
+}

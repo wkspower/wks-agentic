@@ -114,3 +114,17 @@ source for the enforcer, about 5 runs; (4) catalog: its builders' decisions
 become rules. Options: A. go ahead, cost raised from 16 to 24 agent runs.
 B. only part 2. Recommended: A. Waiting costs: parts 1 and 3 stay undone.
 Answer, word for word: "Go ahead". Taken as A.
+
+### Q15 | notice | asked=2026-11-18T22:21Z | answered=-
+**To judge by reading: change `c4b916f`**, which writes your answer "Go
+ahead" into `queue.md` (Q14) and raises cost in `root.md` from 16 to 24
+agent runs, and holds nothing else. Options: A. it stands. B. it does not;
+say what to restore. Recommended: A. Waiting costs: nothing stops; if B,
+every unit returns to its state before the change.
+
+### Q16 | notice | asked=2026-11-18T22:21Z | answered=-
+**Report of results: the whole pet shop stands** (stock, customers, sales
+and the shop, each selected by the judge over one alternative), the judge
+keeps one stands file per unit, and every measure the tree gave has an
+audit ([`record.md`](record.md)). Options: A. read. Waiting costs: nothing
+stops.

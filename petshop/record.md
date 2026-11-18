@@ -1,35 +1,48 @@
 # Record of the pet shop
 
-**State.** Not built: `shop.py` does not exist, so `verdict` fails. Its
-measure exists (52 scenarios, 25 planted wrong shops, all failing).
+**State.** Built and standing. Verdict passes (52 scenarios); number 2824.
+The shop runs: `python3 shop.py --state FILE COMMAND ...` after
+`petshop/build <dir>`.
 
-| Unit | Document | Measure | Judge | Built |
-|---|---|---|---|---|
-| catalog | yes | 18 cases, 23 planted | judge | stands, 1190 |
-| stock | yes | 12 cases, 17 planted | judge | no |
-| customers | yes | 16 cases, 22 planted | judge | no |
-| sales | yes | 56 cases, 24 planted | judge | no |
-| pet shop | yes | 52 scenarios, 25 planted | judge | no |
+| Unit | Measure | Stands by the judge | Number |
+|---|---|---|---|
+| catalog | 23 cases, 26 planted | candidate over alternative | 1190 |
+| stock | 12 cases, 17 planted | alternative over candidate | 862 |
+| customers | 16 cases, 22 planted | alternative over candidate | 753 |
+| sales | 56 cases, 24 planted | candidate over alternative | 1890 |
+| pet shop | 52 scenarios, 25 planted | candidate (2824) over alternative (2883) | 2824 |
 
-**Error of the measures it gave** (declaration 5 of each unit).
-- catalog, source `audit/catalog/check` (123 cases written from the
-  document alone by an agent that saw neither measure nor build).
-  Wrong passes: 0 of 2 builds that passed the measure (both pass all 123).
-  Wrong fails: 0 of 23 builds that failed the measure (the planted ones);
-  22 also fail the audit, and the one the audit passes imports a network
-  module, which rule 3 forbids and the audit does not look for.
-  Limit: the builds that failed are the measure writer's own planted ones.
-- stock, customers, sales: unknown. No audit cases exist yet.
+**How the shop stood.** Two agents each wrote `shop.py` on unchanged copies
+of the four standing modules, neither seeing the other. `src` holds what was
+judged; `build` takes the modules from the units (declaration 2).
+
+**Error of the measures it gave** (source: `audit/<unit>/check`, cases
+written from each document alone by agents that saw neither measure nor
+build). Wrong passes: builds that passed the measure and fail the audit.
+Wrong fails: builds that failed the measure and are right by the audit.
+
+| Unit | Audit cases | Wrong passes | Wrong fails |
+|---|---|---|---|
+| catalog | 123 | 0 of 2 | 0 of 23 |
+| stock | 60 | 0 of 2 | 0 of 17 |
+| customers | 97 | 0 of 2 | 0 of 22 |
+| sales | 75 | 0 of 2 | 0 of 24 |
+
+Where the audit passes a planted build (one each for catalog, stock,
+customers), the build breaks rule 3 (a network import), which the audits do
+not look for: the measure is right. Limit: the builds that failed are the
+measure writers' own planted ones, and every offered build passed, so the
+wrong-pass count rests on 2 builds per unit.
 
 **Round before first effect.** Nothing asked of the root.
 
-**Absorbed.** Gaps the measure writers reported, turned into rules in the
-documents before any build: state changes in place; either refusal when two
-apply; an item unknown to the catalog is refused by `receive`, `stock` and
-`sell`; surplus arguments are malformed; returned sales copy their lines.
+**Absorbed.** Gaps the measure writers reported became rules in the
+documents before any build; the three points catalog's builders decided
+became rules with cases.
 
-**Spend.** 5 of 13 runs (see `ledger.tsv`): 2 for measures, 3 for catalog.
+**Spend.** 17 of 17 runs (`ledger.tsv`).
 
-**Due next.** Build stock, customers and sales (each: one build, one
-alternative, the judge), then the shop. Audit cases for each need runs the
-budget does not hold: 8 remain, the four builds take 8.
+**Due next.** The points the builders of stock, customers, sales and the
+shop decided for themselves (their records; for the shop: number
+spellings, where `--state` goes, when the state file is written) become
+rules with cases: about 4 runs, which the budget does not hold.
