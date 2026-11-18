@@ -8,7 +8,7 @@ def _text(value):
 
 
 def _price(value):
-    return isinstance(value, int) and not isinstance(value, bool)
+    return type(value) is int
 
 
 def new():

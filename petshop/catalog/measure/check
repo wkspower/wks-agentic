@@ -83,6 +83,8 @@ def outcome(fn, *args):
 # ---------------------------------------------------------------- cases
 # Signature: case(m, rt). m is the build's catalog module; rt is described above.
 
+import enum
+
 def item(item_id, name, kind, price_cents):
     return {"id": item_id, "name": name, "kind": kind, "price_cents": price_cents}
 
@@ -112,6 +114,19 @@ def shop(m, rt):
 NOT_TEXT = ["", None, 7, 1.5, True, ["cat"], b"cat"]        # not a non-empty string
 NOT_KIND = ["Animal", "animals", "PRODUCT", " animal", "", "pet", None, 1, ["animal"]]
 NOT_PRICE = [-1, -100, True, False, 1.5, 100.0, "100", None, [100]]
+
+
+class Cents(int):
+    """An int subclass a caller might write: an instance is not exactly an int."""
+
+
+class Tag(enum.IntEnum):
+    """An enum whose members are ints by subclass."""
+    SALE = 500
+
+
+SUBCLASS_PRICE = [Cents(100), Cents(0), Tag.SALE]           # int by subclass only
+NOT_A_STRING_ID = [None, 7, True, 1.5, b"cat", ("cat",), ["cat"], {"id": "cat"}]
 
 
 def case_new_is_empty(m, rt):
@@ -321,6 +336,72 @@ def case_state_survives_json_round_trips(m, rt):
     raises(KeyError, "get unknown after round trip", m.get, s, "bee")
     expect(m.items(s), [item("ant", "Farm", "product", 2500),
                         item("cat", "Tom", "animal", 16000)], "items after round trips")
+
+
+def shop_with_number_like_ids(m, rt):
+    """shop() plus items whose ids are the texts "7", "None", "True" and "1.5"."""
+    s = shop(m, rt)
+    for text in ["7", "None", "True", "1.5"]:
+        m.add(s, text, "Item " + text, "product", 300)
+    return rt(s)
+
+
+def case_get_of_id_that_is_not_a_string_is_keyerror(m, rt):
+    """get: an id that is not a string is unknown, so KeyError (never TypeError)."""
+    s = shop_with_number_like_ids(m, rt)
+    for bad in NOT_A_STRING_ID:
+        refused(m, s, KeyError, ["cat", "ant", "bee", "7"], "get(%r)" % (bad,), m.get, bad)
+    s = rt(m.new())
+    for bad in NOT_A_STRING_ID:
+        raises(KeyError, "get(%r) on empty state" % (bad,), m.get, s, bad)
+
+
+def case_set_price_of_id_that_is_not_a_string_is_keyerror(m, rt):
+    """set_price: an id that is not a string is unknown, so KeyError; nothing changes."""
+    s = shop_with_number_like_ids(m, rt)
+    for bad in NOT_A_STRING_ID:
+        refused(m, s, KeyError, ["cat", "ant", "bee", "7", "None", "True", "1.5"],
+                "set_price(%r, 100)" % (bad,), m.set_price, bad, 100)
+        s = rt(s)
+    s = rt(m.new())
+    for bad in NOT_A_STRING_ID:
+        refused(m, s, KeyError, ["cat"], "set_price(%r, 100) on empty state" % (bad,),
+                m.set_price, bad, 100)
+
+
+def case_add_refuses_price_of_an_int_subclass(m, rt):
+    """add: a valid price is exactly an int; an instance of a subclass is ValueError."""
+    s = shop(m, rt)
+    for bad in SUBCLASS_PRICE:
+        refused(m, s, ValueError, ["cat", "ant", "bee", "dog"],
+                "add with price %s(%d)" % (type(bad).__name__, bad),
+                m.add, "dog", "Rex", "animal", bad)
+        s = rt(s)
+
+
+def case_set_price_refuses_price_of_an_int_subclass(m, rt):
+    """set_price: an instance of an int subclass is not a valid price: ValueError."""
+    s = shop(m, rt)
+    for bad in SUBCLASS_PRICE:
+        refused(m, s, ValueError, ["cat", "ant", "bee"],
+                "set_price to %s(%d)" % (type(bad).__name__, bad), m.set_price, "cat", bad)
+        s = rt(s)
+    expect(m.get(s, "cat"), item("cat", "Tom", "animal", 15000), "item after refusals")
+
+
+def case_set_price_refuses_unknown_id_before_invalid_price(m, rt):
+    """set_price with an unknown id AND an invalid price: KeyError, not ValueError."""
+    s = shop(m, rt)
+    for bad in NOT_PRICE + SUBCLASS_PRICE:
+        refused(m, s, KeyError, ["cat", "ant", "bee", "dog"],
+                "set_price of unknown id to invalid %r" % (bad,), m.set_price, "dog", bad)
+        s = rt(s)
+    for not_text in [None, 7]:
+        refused(m, s, KeyError, ["cat", "ant", "bee"],
+                "set_price(%r, -1)" % (not_text,), m.set_price, not_text, -1)
+    s = rt(m.new())
+    refused(m, s, KeyError, ["dog"], "set_price('dog', -1) on empty state",
+            m.set_price, "dog", -1)
 
 
 # ---------------------------------------------------------------- harness
