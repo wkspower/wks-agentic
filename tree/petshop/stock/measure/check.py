@@ -126,5 +126,17 @@ def state_is_data(m):
     assert again.product(food)["quantity"] == 9 and again.add_product("Collar", 1990) != food
 
 
+@scenario
+def ids_are_numbers(m):
+    """an id written as text is not an id: it is not found, and nothing changes"""
+    s, food = shelf(m)
+    refuses(LookupError, s.product, str(food))
+    refuses(LookupError, s.receive, str(food), 1)
+    refuses(LookupError, s.remove, str(food), 1)
+    refuses(LookupError, s.set_price, str(food), 1)
+    refuses(LookupError, s.product, float(food))
+    assert s.product(food) == {"id": food, "name": "Dog food 1 kg", "price_cents": 2500, "quantity": 10}
+
+
 if __name__ == "__main__":
-    main("stock", expected=11)
+    main("stock", expected=12)
