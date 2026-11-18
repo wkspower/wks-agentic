@@ -21,10 +21,24 @@ on stdout being one JSON object, and on the fields the case is about.
 |---|---|---|
 | `test_build.py` | `build` | valid src passes; a syntax error in the unit's module, or anywhere in `src/`, fails; nothing is written into `src/` |
 | `test_verdict.py` | `verdict` | each unit with a passing measure passes with number 1; one failing case gives number 0.5 and fails; cases across files and errors count (0.75); another unit's failure does not count; zero cases fails; no measure fails; a measure that hangs past the 120 s timeout fails |
-| `test_proof.py` | `proof` | each unit passes; all planted cases failing passes (each reported `"failed"`); one planted case passing the measure fails (reported `"passed"`); no planted directory, or no planted case in it, fails |
+| `test_proof.py` | `proof` | each unit passes; all planted cases failing passes (each reported `"failed"`); one planted case passing the measure fails (reported `"passed"`); a planted case that cannot be loaded (syntax error, or raises on import) fails and is reported as neither; no planted directory, or no planted case in it, fails |
 | `test_rules.py` | `rules` | clean tree passes with no violations; reading a file and forbidden modules in `measures/` are not violations; R1 once per forbidden module (`socket`, `urllib`, `http.client`, `smtplib`, `subprocess`, `ftplib`, `ssl`), a non-standard-library import and `open(` for writing; R2 for `email` (key and parameter), `card_number`, `address`, `customer_name`; R3 for code in `src/` outside `src/petshop/` — each planted alone and reported with rule, file and line |
 | `test_judge.py` | `judge --base` | passes when numbers are equal, rise, or the unit is absent at the base (0); fails when a number drops, when a verdict fails without a drop, when rules, build or proof fail, or when a unit has no measure |
 | `test_interface.py` | — | unknown unit (also one with a measure directory) exits 2 for `build`, `verdict`, `proof`; no command, unknown command, missing unit, `judge` without `--base` or its ref exit 2; a malformed call still prints one JSON object |
+
+### Ambiguity read here: a planted case that cannot be loaded
+
+`units/judge/unit.md` says `proof` reports each planted case as `"failed"` or
+`"passed"`, but not what happens when the case itself cannot be loaded (a
+syntax or indentation error, or an exception raised by the planted module's
+own import). Such a case tests nothing, so counting it as `"failed"` lets a
+measure pass its proof unproven. This measure reads it strictly: `proof`
+fails (exit 1) and reports that case with a value other than `"failed"` or
+`"passed"` (for example `"error"`); the other cases are still reported as
+usual. Cases: `test_proof.ProofTest.test_fails_when_a_planted_case_has_a_syntax_error`
+and `test_fails_when_a_planted_case_raises_on_import`. Added under principle 6
+after the judge passed two planted cases with IndentationErrors. The reading
+should become part of `units/judge/unit.md` (a proposal to its owner).
 
 ## The number
 

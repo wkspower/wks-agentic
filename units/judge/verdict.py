@@ -107,11 +107,18 @@ sys.path.insert(0, src_dir)
 if planted:
     package = __import__("petshop")
     name = "petshop." + module
-    spec = importlib.util.spec_from_file_location(name, planted)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    setattr(package, module, mod)
+    try:
+        spec = importlib.util.spec_from_file_location(name, planted)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        setattr(package, module, mod)
+    except BaseException as exc:
+        # the planted case cannot be loaded: it tests nothing
+        sys.stderr.write("planted case does not load: %r\n" % (exc,))
+        with open(result_file, "w") as f:
+            json.dump({"load_error": "%s: %s" % (type(exc).__name__, exc)}, f)
+        sys.exit(0)
 
 suite = unittest.defaultTestLoader.discover(measure_dir, pattern="test_*.py", top_level_dir=measure_dir)
 result = Counting()
@@ -127,12 +134,14 @@ with open(result_file, "w") as f:
 
 def run_measure(root, unit, planted=None):
     """Run the measure of `unit` in `root` against root/src (with `planted`
-    in place of the unit's module). Return (number, cases)."""
+    in place of the unit's module). Return (number, cases, error); error is
+    "error" when a planted case cannot be loaded (or its run crashes before
+    reporting), else None."""
     root = Path(root).resolve()
     measure = root / "measures" / unit
     if not measure.is_dir() or not any(measure.glob("test_*.py")):
         log("%s: no measure at %s" % (unit, measure))
-        return 0.0, 0
+        return 0.0, 0, None
     fd, result_file = tempfile.mkstemp(prefix="judge-result-", suffix=".json")
     os.close(fd)
     os.unlink(result_file)
@@ -152,27 +161,30 @@ def run_measure(root, unit, planted=None):
             proc.communicate()
             log("%s%s: measure timed out after %d s" % (
                 unit, " (planted %s)" % Path(planted).stem if planted else "", MEASURE_TIMEOUT))
-            return 0.0, 0
+            return 0.0, 0, None
         try:
             with open(result_file) as f:
                 counts = json.load(f)
         except (OSError, ValueError):
             log("%s: measure produced no result (exit %s)\n%s" % (
                 unit, proc.returncode, err.decode(errors="replace")[-2000:]))
-            return 0.0, 0
+            return 0.0, 0, ("error" if planted else None)
     finally:
         try:
             os.unlink(result_file)
         except OSError:
             pass
+    if "load_error" in counts:
+        log("%s: planted %s does not load: %s" % (unit, Path(planted).stem, counts["load_error"]))
+        return 0.0, 0, "error"
     cases, passed = int(counts.get("cases", 0)), int(counts.get("passed", 0))
     if not planted and passed < cases:
         log("%s: %d/%d cases pass\n%s" % (unit, passed, cases, err.decode(errors="replace")[-4000:]))
-    return (passed / cases if cases else 0.0), cases
+    return (passed / cases if cases else 0.0), cases, None
 
 
 def verdict(root, unit):
-    number, cases = run_measure(root, unit)
+    number, cases, _ = run_measure(root, unit)
     return number, (cases > 0 and number == 1)
 
 
@@ -187,8 +199,9 @@ def proof(root, unit, pool=None):
     cases = planted_cases(root, unit)
     if not cases:
         log("%s: no planted case" % unit)
-    run = (pool.map if pool else map)(lambda p: run_measure(root, unit, p)[0], cases)
-    planted = {p.stem: ("passed" if number == 1 else "failed") for p, number in zip(cases, run)}
+    run = (pool.map if pool else map)(lambda p: run_measure(root, unit, p), cases)
+    planted = {p.stem: (error or ("passed" if number == 1 else "failed"))
+               for p, (number, _, error) in zip(cases, run)}
     ok = bool(planted) and all(v == "failed" for v in planted.values())
     return planted, ok
 

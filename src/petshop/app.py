@@ -1,7 +1,5 @@
 """WSGI application of the pet shop. Declarations: units/pet-shop/unit.md."""
 import json
-from urllib.parse import parse_qs
-
 from ._valid import is_int
 from .catalog import Catalog
 from .orders import Orders
@@ -51,7 +49,8 @@ class Shop:
             raise Fail(404, f"no item {sku}")
 
     def list_catalog(self, environ):
-        kinds = parse_qs(environ.get("QUERY_STRING", "")).get("kind")
+        kinds = [v for k, _, v in (pair.partition("=") for pair in
+                 environ.get("QUERY_STRING", "").split("&")) if k == "kind"]
         try:
             return 200, self.catalog.items(kinds[-1] if kinds else None)
         except ValueError as e:

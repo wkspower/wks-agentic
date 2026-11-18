@@ -64,3 +64,23 @@ proof pass for the four units, but `rules` reports R1 at `src/petshop/app.py:3`
 (`from urllib.parse import parse_qs`), since R1 names `urllib`. Work for the pet
 shop's maker, or a proposal to the root to narrow R1 to `urllib.request`; the judge
 keeps the strict reading until then.
+
+## 2026-11-18 — Defect found on first use (root)
+
+- First `judge --base HEAD` on the real tree failed R1 (`urllib.parse` in
+  `src/petshop/app.py`); the maker changed the code, the rule stands.
+- Wrong pass found: two planted cases in the pet shop's measures do not
+  compile, and `proof` counted them as "failed", so proof passed on cases that
+  test nothing. Under principle 6: the judge's measure writer adds the case
+  first, then the judge's builder fixes `proof`; the pet shop's measure
+  writer fixes the two planted cases. This is the judge's first wrong pass
+  (count: 1; source: the root's reading of the build log, not the measure).
+
+## 2026-11-18 — fix: unloadable planted case
+
+- `proof` now reports a planted case that cannot be loaded (syntax error, or an
+  error raised by its own import; also a run that crashes before reporting) as
+  `"error"`, which makes `proof` fail. The runner catches the load failure and
+  reports it instead of running the measure. Measure: 56/56, **number 1**;
+  `prove.py` proven. On the merged tree `judge --base HEAD` passes (all numbers 1,
+  no rule violation).
