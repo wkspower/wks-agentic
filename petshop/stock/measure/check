@@ -1,0 +1,407 @@
+#!/usr/bin/env python3
+"""Measure of petshop/stock (docs/petshop/stock/unit.md, declaration 5).
+
+Usage: check <build-dir>      (<build-dir> holds stock.py)
+
+Pass: exit 0, last stdout line = size in bytes of stock.py.
+Fail: exit 1, the failing case names on stderr.
+
+Each function named case_* below is one claim of the unit's document; its
+docstring says which. Every case runs twice: mode [plain], where rt(state)
+gives the state back untouched, and mode [json], where rt(state) is
+json.loads(json.dumps(state)) and only the result is used from then on.
+The state is never looked into: cases use only the documented functions.
+The rule_* cases are the rules of docs/petshop/unit.md rule 3 that can be
+checked on the module file. The module is loaded and run in a separate
+process with a timeout, never in this one.
+"""
+import ast
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import tokenize
+
+UNIT = "stock"
+TIMEOUT = 20        # seconds for all cases together
+MAX_LINE = 100      # characters, docs/petshop/unit.md rule 3
+NETWORK = {         # modules that reach the network
+    "socket", "socketserver", "ssl", "urllib", "http", "ftplib", "smtplib", "smtpd",
+    "poplib", "imaplib", "nntplib", "telnetlib", "xmlrpc", "webbrowser", "asyncore",
+    "asynchat", "wsgiref",
+}
+
+
+# ---------------------------------------------------------------- helpers
+
+class Failed(Exception):
+    """A case's claim does not hold for this build."""
+
+
+def same(got, want):
+    """Strict equality: 1 is not True is not 1.0; a tuple is not a list."""
+    if want is None or isinstance(want, bool):
+        return got is want
+    if isinstance(want, int):
+        return isinstance(got, int) and not isinstance(got, bool) and got == want
+    if isinstance(want, str):
+        return isinstance(got, str) and got == want
+    if isinstance(want, list):
+        return (isinstance(got, list) and len(got) == len(want)
+                and all(same(g, w) for g, w in zip(got, want)))
+    if isinstance(want, dict):
+        return (isinstance(got, dict) and set(got.keys()) == set(want.keys())
+                and all(same(got[k], want[k]) for k in want))
+    return type(got) is type(want) and got == want
+
+
+def expect(got, want, what):
+    if not same(got, want):
+        raise Failed("%s: got %r, want %r" % (what, got, want))
+
+
+def raises(exc, what, fn, *args):
+    """fn(*args) must raise exc (a KeyError is not a ValueError, nor the reverse)."""
+    try:
+        got = fn(*args)
+    except exc:
+        return
+    except Exception as err:
+        raise Failed("%s: raised %s, want %s" % (what, type(err).__name__, exc.__name__))
+    raise Failed("%s: returned %r, want %s" % (what, got, exc.__name__))
+
+
+def outcome(fn, *args):
+    """What a caller sees from fn(*args): the value, or the kind of exception."""
+    try:
+        return ["returned", fn(*args)]
+    except Exception as err:
+        return ["raised", type(err).__name__]
+
+
+# ---------------------------------------------------------------- cases
+# Signature: case(m, rt). m is the build's stock module; rt is described above.
+
+def view(m, state, ids):
+    """Everything a caller can observe: on_hand() of each id in ids."""
+    return [outcome(m.on_hand, state, i) for i in ids]
+
+
+def refused(m, state, ids, what, fn, *args):
+    """fn(state, *args) raises ValueError and changes nothing a caller can observe."""
+    before = view(m, state, ids)
+    raises(ValueError, what, fn, state, *args)
+    expect(view(m, state, ids), before, "state after refused " + what)
+
+
+def shelf(m, rt):
+    """A state with 5 of "cat" and 2 of "ant"; "bee" was never received."""
+    s = m.new()
+    m.receive(s, "cat", 5)
+    s = rt(s)
+    m.receive(s, "ant", 2)
+    return rt(s)
+
+
+IDS = ["cat", "ant", "bee"]
+NOT_TEXT = ["", None, 7, 1.5, True, ["cat"], b"cat"]        # not a non-empty string
+NOT_QUANTITY = [0, -1, -5, True, False, 1.5, 1.0, "1", None, [1]]
+
+
+def case_never_received_is_zero(m, rt):
+    """on_hand returns 0, an int, for an item never received (new state or not)."""
+    s = rt(m.new())
+    expect(m.on_hand(s, "cat"), 0, "on_hand on new state")
+    expect(m.on_hand(s, "cat"), 0, "on_hand on new state, asked again")
+    s = shelf(m, rt)
+    expect(m.on_hand(s, "bee"), 0, "on_hand of item never received")
+    expect(m.on_hand(rt(s), "cat"), 5, "on_hand of another item after asking")
+
+
+def case_receive_adds_and_returns_on_hand(m, rt):
+    """receive adds and returns the quantity now on hand; on_hand agrees."""
+    s = m.new()
+    expect(m.receive(s, "cat", 3), 3, "first receive returned")
+    s = rt(s)
+    expect(m.on_hand(s, "cat"), 3, "on_hand after first receive")
+    expect(m.receive(s, "cat", 1), 4, "second receive returned")
+    s = rt(s)
+    expect(m.receive(s, "cat", 1000000), 1000004, "third receive returned")
+    expect(m.on_hand(rt(s), "cat"), 1000004, "on_hand after three receives")
+
+
+def case_remove_takes_away_and_returns_on_hand(m, rt):
+    """remove takes away and returns the quantity now on hand; on_hand agrees."""
+    s = shelf(m, rt)
+    expect(m.remove(s, "cat", 2), 3, "remove returned")
+    s = rt(s)
+    expect(m.on_hand(s, "cat"), 3, "on_hand after remove")
+    expect(m.remove(s, "cat", 1), 2, "second remove returned")
+    expect(m.on_hand(rt(s), "cat"), 2, "on_hand after second remove")
+    expect(m.on_hand(s, "ant"), 2, "on_hand of the other item")
+
+
+def case_remove_of_all_on_hand_is_allowed(m, rt):
+    """remove is refused only when quantity exceeds what is on hand: all of it may go."""
+    s = shelf(m, rt)
+    expect(m.remove(s, "cat", 5), 0, "remove of exactly what is on hand returned")
+    s = rt(s)
+    expect(m.on_hand(s, "cat"), 0, "on_hand after removing all")
+    expect(m.receive(s, "cat", 2), 2, "receive after removing all returned")
+    s = rt(s)
+    m.receive(s, "one", 1)
+    expect(m.remove(rt(s), "one", 1), 0, "remove of the only one returned")
+
+
+def case_remove_refuses_more_than_on_hand(m, rt):
+    """remove: ValueError when quantity exceeds what is on hand; nothing changes."""
+    s = shelf(m, rt)
+    refused(m, s, IDS, "remove of 6 with 5 on hand", m.remove, "cat", 6)
+    s = rt(s)
+    refused(m, s, IDS, "remove of 1000 with 2 on hand", m.remove, "ant", 1000)
+    refused(m, s, IDS, "remove of item never received", m.remove, "bee", 1)
+    m.remove(s, "cat", 5)
+    s = rt(s)
+    refused(m, s, IDS, "remove of 1 with 0 on hand", m.remove, "cat", 1)
+    expect(view(m, rt(s), IDS), [["returned", 0], ["returned", 2], ["returned", 0]],
+           "on hand after refusals")
+    refused(m, rt(m.new()), IDS, "remove on new state", m.remove, "cat", 1)
+
+
+def case_receive_refuses_id_that_is_not_a_non_empty_string(m, rt):
+    """receive: ValueError when item_id is not a non-empty string; nothing changes."""
+    s = shelf(m, rt)
+    for bad in NOT_TEXT:
+        refused(m, s, IDS, "receive with id %r" % (bad,), m.receive, bad, 1)
+        s = rt(s)
+
+
+def case_remove_refuses_id_that_is_not_a_non_empty_string(m, rt):
+    """remove: ValueError when item_id is not a non-empty string; nothing changes."""
+    s = shelf(m, rt)
+    for bad in NOT_TEXT:
+        refused(m, s, IDS, "remove with id %r" % (bad,), m.remove, bad, 1)
+        s = rt(s)
+
+
+def case_receive_refuses_invalid_quantity(m, rt):
+    """receive: ValueError when quantity is not an int (not a bool) of 1 or more."""
+    s = shelf(m, rt)
+    for bad in NOT_QUANTITY:
+        refused(m, s, IDS, "receive of %r, item in stock" % (bad,), m.receive, "cat", bad)
+        refused(m, s, IDS, "receive of %r, item never received" % (bad,), m.receive, "bee", bad)
+        s = rt(s)
+
+
+def case_remove_refuses_invalid_quantity(m, rt):
+    """remove: ValueError when quantity is not an int (not a bool) of 1 or more."""
+    s = shelf(m, rt)
+    for bad in NOT_QUANTITY:
+        refused(m, s, IDS, "remove of %r, item in stock" % (bad,), m.remove, "cat", bad)
+        refused(m, s, IDS, "remove of %r, item never received" % (bad,), m.remove, "bee", bad)
+        s = rt(s)
+
+
+def case_ids_are_any_non_empty_string(m, rt):
+    """Item ids are data: any non-empty string, each one its own item."""
+    ids = ["cat", "Cat", "cat ", " ", "0", "not in any catalog", "ração", "a/b.c:d", "C1"]
+    s = m.new()
+    for n, item_id in enumerate(ids, 1):
+        expect(m.receive(s, item_id, n), n, "receive(%r) returned" % item_id)
+        s = rt(s)
+    expect(view(m, s, ids), [["returned", n] for n in range(1, len(ids) + 1)], "on hand")
+    expect(m.remove(s, " ", 4), 0, "remove from id ' ' returned")
+    expect(m.remove(s, "Cat", 1), 1, "remove from id 'Cat' returned")
+    s = rt(s)
+    expect(view(m, s, ids), [["returned", n] for n in [1, 1, 3, 0, 5, 6, 7, 8, 9]],
+           "on hand after removes")
+
+
+def case_states_are_independent(m, rt):
+    """The state is made by new() and holds everything: two states share nothing."""
+    a = shelf(m, rt)
+    b = rt(m.new())
+    expect(m.on_hand(b, "cat"), 0, "on_hand in a new state while another has stock")
+    expect(m.receive(b, "cat", 1), 1, "receive in second state returned")
+    expect(m.remove(a, "cat", 2), 3, "remove in first state returned")
+    a, b = rt(a), rt(b)
+    expect(m.on_hand(a, "cat"), 3, "first state")
+    expect(m.on_hand(b, "cat"), 1, "second state")
+    raises(ValueError, "remove of 2 from second state", m.remove, b, "cat", 2)
+
+
+def case_state_survives_json_round_trips(m, rt):
+    """json.loads(json.dumps(state)) behaves as the state did, at every step."""
+    def js(state):
+        return json.loads(json.dumps(json.loads(json.dumps(state))))
+    s = js(m.new())
+    expect(m.on_hand(s, "cat"), 0, "on_hand of round-tripped new()")
+    s = js(s)
+    expect(m.receive(s, "cat", 4), 4, "receive after round trip")
+    s = js(s)
+    expect(m.receive(s, "cat", 3), 7, "second receive after round trip")
+    s = js(s)
+    expect(m.remove(s, "cat", 7), 0, "remove of all after round trip")
+    s = js(s)
+    raises(ValueError, "remove from none after round trip", m.remove, s, "cat", 1)
+    expect(m.receive(s, "10", 2), 2, "receive of id '10'")
+    s = js(s)
+    expect(view(m, s, ["cat", "10", "bee"]),
+           [["returned", 0], ["returned", 2], ["returned", 0]], "on hand after round trips")
+
+
+# ---------------------------------------------------------------- harness
+
+MODES = ("plain", "json")
+
+
+def cases():
+    found = [(n, f) for n, f in globals().items() if n.startswith("case_") and callable(f)]
+    return [("%s[%s]" % (n[5:], mode), f, mode) for mode in MODES for n, f in found]
+
+
+def load(build):
+    import importlib.util
+    path = os.path.join(build, UNIT + ".py")
+    spec = importlib.util.spec_from_file_location(UNIT, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def child(build, out_path):
+    """Runs in the subprocess: every case, one JSON line per start and per result."""
+    out = open(out_path, "a")
+
+    def emit(record):
+        out.write(json.dumps(record) + "\n")
+        out.flush()
+
+    sys.stdout = sys.stderr = open(os.devnull, "w")
+    for label, fn, mode in cases():
+        emit({"start": label})
+        rt = (lambda s: json.loads(json.dumps(s))) if mode == "json" else (lambda s: s)
+        try:
+            fn(load(build), rt)
+            emit({"done": label, "ok": True})
+        except Failed as err:
+            emit({"done": label, "ok": False, "why": str(err)[:300]})
+        except BaseException as err:
+            why = "%s: %s" % (type(err).__name__, err)
+            emit({"done": label, "ok": False, "why": "unexpected " + why[:300]})
+    emit({"end": True})
+    out.close()
+    os._exit(0)
+
+
+def imported_names(tree):
+    """(line, module name) for every import, and for constant dynamic imports."""
+    names = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names += [(node.lineno, alias.name) for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                names.append((node.lineno, "." * node.level + (node.module or "")))
+            else:
+                names.append((node.lineno, node.module))
+                names += [(node.lineno, node.module + "." + a.name) for a in node.names]
+        elif isinstance(node, ast.Call) and node.args:
+            fn, arg = node.func, node.args[0]
+            called = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+            if called in ("__import__", "import_module") and isinstance(arg, ast.Constant):
+                if isinstance(arg.value, str):
+                    names.append((node.lineno, arg.value))
+    return names
+
+
+def rules(path):
+    """The rules of docs/petshop/unit.md rule 3 checkable on the file: failures."""
+    fails = []
+    try:
+        with tokenize.open(path) as handle:
+            text = handle.read()
+        tree = ast.parse(text, filename=path)
+    except (SyntaxError, UnicodeError, ValueError) as err:
+        return ["rule_module_is_python: %s" % type(err).__name__]
+    long_lines = [i for i, line in enumerate(text.splitlines(), 1) if len(line) > MAX_LINE]
+    if long_lines:
+        fails.append("rule_no_line_over_100_characters: line(s) %s" % long_lines[:5])
+    stdlib = sys.stdlib_module_names
+    for line, name in imported_names(tree):
+        top = name.split(".")[0]
+        if top not in stdlib:
+            fails.append("rule_standard_library_only_no_other_unit: line %d imports %s"
+                         % (line, name))
+        elif top in NETWORK:
+            fails.append("rule_no_network: line %d imports %s" % (line, name))
+    return fails
+
+
+def parent(build):
+    path = os.path.join(build, UNIT + ".py")
+    if not os.path.isfile(path):
+        return ["module_present: no %s.py in %s" % (UNIT, build)], 0
+    fails = rules(path)
+    if fails and fails[0].startswith("rule_module_is_python"):
+        return fails, 0
+    labels = [label for label, _, _ in cases()]
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = os.path.join(tmp, "results.jsonl")
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        cmd = [sys.executable, "-B", "-I", os.path.abspath(__file__), "--child",
+               os.path.abspath(build), out_path]
+        timed_out = False
+        try:
+            subprocess.run(cmd, cwd=tmp, env=env, timeout=TIMEOUT, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        records = []
+        if os.path.isfile(out_path):
+            with open(out_path) as handle:
+                for line in handle:
+                    try:
+                        records.append(json.loads(line))
+                    except ValueError:
+                        pass
+    done = {r["done"]: r for r in records if isinstance(r, dict) and "done" in r}
+    started = [r["start"] for r in records if isinstance(r, dict) and "start" in r]
+    for label in labels:
+        if label in done:
+            if done[label].get("ok") is not True:
+                fails.append("%s: %s" % (label, done[label].get("why", "")))
+        elif label in started:
+            fails.append("%s: %s" % (label, "timed out" if timed_out else "process died"))
+        else:
+            fails.append("%s: not run" % label)
+    return fails, len(labels)
+
+
+def main(argv):
+    if len(argv) == 4 and argv[1] == "--child":
+        child(argv[2], argv[3])
+    if len(argv) != 2:
+        sys.stderr.write("usage: check <build-dir>\n")
+        return 1
+    if not hasattr(sys, "stdlib_module_names"):
+        sys.stderr.write("FAIL harness_needs_python_3_10_or_later\n")
+        return 1
+    try:
+        fails, count = parent(argv[1])
+    except Exception as err:        # a fail, never a traceback of ours
+        fails, count = ["harness: %s: %s" % (type(err).__name__, err)], 0
+    if fails:
+        for line in fails:
+            sys.stderr.write("FAIL " + line + "\n")
+        sys.stderr.write("%d failing of %d case runs\n" % (len(fails), count))
+        return 1
+    print("%s: %d case runs passed (%d cases, plain and json), rules kept"
+          % (UNIT, count, count // len(MODES)))
+    print(os.path.getsize(os.path.join(argv[1], UNIT + ".py")))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

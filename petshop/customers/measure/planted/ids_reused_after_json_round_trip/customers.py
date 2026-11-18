@@ -1,0 +1,32 @@
+"""Customers: who the shop sells to; an id is never reused."""
+
+_LAST = {}
+
+
+def new():
+    return {"customers": []}
+
+
+def register(state, name):
+    if not isinstance(name, str):
+        raise ValueError("name must be a string")
+    name = name.strip()
+    if name == "":
+        raise ValueError("name must not be empty")
+    _LAST[id(state)] = _LAST.get(id(state), 0) + 1
+    customer_id = "C%d" % _LAST[id(state)]
+    state["customers"].append({"id": customer_id, "name": name})
+    return customer_id
+
+
+def get(state, customer_id):
+    for customer in state["customers"]:
+        if customer["id"] == customer_id:
+            return dict(customer)
+    raise KeyError(customer_id)
+
+
+def find(state, text):
+    wanted = text.lower()
+    found = [c for c in state["customers"] if wanted in c["name"].lower()]
+    return [dict(c) for c in found]

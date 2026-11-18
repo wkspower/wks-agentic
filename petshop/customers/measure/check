@@ -1,0 +1,477 @@
+#!/usr/bin/env python3
+"""Measure of petshop/customers (docs/petshop/customers/unit.md, declaration 5).
+
+Usage: check <build-dir>      (<build-dir> holds customers.py)
+
+Pass: exit 0, last stdout line = size in bytes of customers.py.
+Fail: exit 1, the failing case names on stderr.
+
+Each function named case_* below is one claim of the unit's document; its
+docstring says which. Every case runs twice: mode [plain], where rt(state)
+gives the state back untouched, and mode [json], where rt(state) is
+json.loads(json.dumps(state)) and only the result is used from then on.
+The state is never looked into: cases use only the documented functions.
+The rule_* cases are the rules of docs/petshop/unit.md rule 3 that can be
+checked on the module file. The module is loaded and run in a separate
+process with a timeout, never in this one.
+"""
+import ast
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import tokenize
+
+UNIT = "customers"
+TIMEOUT = 20        # seconds for all cases together
+MAX_LINE = 100      # characters, docs/petshop/unit.md rule 3
+NETWORK = {         # modules that reach the network
+    "socket", "socketserver", "ssl", "urllib", "http", "ftplib", "smtplib", "smtpd",
+    "poplib", "imaplib", "nntplib", "telnetlib", "xmlrpc", "webbrowser", "asyncore",
+    "asynchat", "wsgiref",
+}
+
+
+# ---------------------------------------------------------------- helpers
+
+class Failed(Exception):
+    """A case's claim does not hold for this build."""
+
+
+def same(got, want):
+    """Strict equality: 1 is not True is not 1.0; a tuple is not a list."""
+    if want is None or isinstance(want, bool):
+        return got is want
+    if isinstance(want, int):
+        return isinstance(got, int) and not isinstance(got, bool) and got == want
+    if isinstance(want, str):
+        return isinstance(got, str) and got == want
+    if isinstance(want, list):
+        return (isinstance(got, list) and len(got) == len(want)
+                and all(same(g, w) for g, w in zip(got, want)))
+    if isinstance(want, dict):
+        return (isinstance(got, dict) and set(got.keys()) == set(want.keys())
+                and all(same(got[k], want[k]) for k in want))
+    return type(got) is type(want) and got == want
+
+
+def expect(got, want, what):
+    if not same(got, want):
+        raise Failed("%s: got %r, want %r" % (what, got, want))
+
+
+def raises(exc, what, fn, *args):
+    """fn(*args) must raise exc (a KeyError is not a ValueError, nor the reverse)."""
+    try:
+        got = fn(*args)
+    except exc:
+        return
+    except Exception as err:
+        raise Failed("%s: raised %s, want %s" % (what, type(err).__name__, exc.__name__))
+    raise Failed("%s: returned %r, want %s" % (what, got, exc.__name__))
+
+
+def outcome(fn, *args):
+    """What a caller sees from fn(*args): the value, or the kind of exception."""
+    try:
+        return ["returned", fn(*args)]
+    except Exception as err:
+        return ["raised", type(err).__name__]
+
+
+# ---------------------------------------------------------------- cases
+# Signature: case(m, rt). m is the build's customers module; rt is described above.
+
+def cust(customer_id, name):
+    return {"id": customer_id, "name": name}
+
+
+def view(m, state, count):
+    """Everything a caller can observe with count customers registered:
+    find(""), and get() of C0, C1 ... up to the id after the last."""
+    ids = ["C%d" % n for n in range(count + 2)]
+    return [outcome(m.find, state, "")] + [outcome(m.get, state, i) for i in ids]
+
+
+def refused(m, state, exc, count, what, fn, *args):
+    """fn(state, *args) raises exc and changes nothing a caller can observe."""
+    before = view(m, state, count)
+    raises(exc, what, fn, state, *args)
+    expect(view(m, state, count), before, "state after refused " + what)
+
+
+def people(m, rt):
+    """Three customers: C1 Maria Silva, C2 ana souza, C3 Bob."""
+    s = m.new()
+    m.register(s, "Maria Silva")
+    s = rt(s)
+    m.register(s, "ana souza")
+    m.register(s, "Bob")
+    return rt(s)
+
+
+PEOPLE = [cust("C1", "Maria Silva"), cust("C2", "ana souza"), cust("C3", "Bob")]
+NOT_A_NAME = [None, 7, 1.5, True, ["Ana"], b"Ana", {"name": "Ana"}]
+EMPTY_ONCE_STRIPPED = ["", " ", "     ", "\t", "\n", " \t \n "]
+
+
+def case_new_is_empty(m, rt):
+    """new() returns an empty state: find("") is []; get of anything is KeyError."""
+    s = rt(m.new())
+    expect(m.find(s, ""), [], 'find(new(), "")')
+    raises(KeyError, "get on empty state", m.get, s, "C1")
+
+
+def case_register_returns_c1_then_c2_and_so_on(m, rt):
+    """register returns the new id: "C1", then "C2", and so on (past "C9" too)."""
+    s = m.new()
+    for n in range(1, 13):
+        expect(m.register(s, "Customer %d" % n), "C%d" % n, "register number %d returned" % n)
+        s = rt(s)
+    expect(m.get(s, "C1"), cust("C1", "Customer 1"), "get C1")
+    expect(m.get(s, "C10"), cust("C10", "Customer 10"), "get C10")
+    expect(m.get(s, "C12"), cust("C12", "Customer 12"), "get C12")
+    raises(KeyError, "get of the id not yet given", m.get, s, "C13")
+
+
+def case_get_returns_the_customer(m, rt):
+    """get returns a dict with exactly id and name."""
+    s = people(m, rt)
+    expect(m.get(s, "C1"), PEOPLE[0], "get C1")
+    expect(m.get(s, "C2"), PEOPLE[1], "get C2")
+    expect(m.get(s, "C3"), PEOPLE[2], "get C3")
+
+
+def case_name_is_stored_stripped(m, rt):
+    """register stores the name stripped of surrounding whitespace, the rest as given."""
+    s = m.new()
+    expect(m.register(s, "  Ana Lima "), "C1", "register returned")
+    expect(m.register(s, "\tJosé  da   Silva\n"), "C2", "register returned")
+    expect(m.register(s, " \n x \t "), "C3", "register returned")
+    s = rt(s)
+    expect(m.get(s, "C1"), cust("C1", "Ana Lima"), "get C1")
+    expect(m.get(s, "C2"), cust("C2", "José  da   Silva"), "get C2")
+    expect(m.find(s, ""), [cust("C1", "Ana Lima"), cust("C2", "José  da   Silva"),
+                           cust("C3", "x")], 'find("")')
+    expect(m.find(s, "lima "), [], "find of text with a space the stored name lost")
+    expect(m.find(s, " ana"), [], "find of text with a space the stored name lost")
+
+
+def case_register_refuses_name_that_is_not_a_string(m, rt):
+    """register: ValueError when name is not a string; nothing changes, no id is used."""
+    s = people(m, rt)
+    for bad in NOT_A_NAME:
+        refused(m, s, ValueError, 3, "register(%r)" % (bad,), m.register, bad)
+        s = rt(s)
+    expect(m.register(s, "Dora"), "C4", "register after refusals returned")
+    s = rt(m.new())
+    raises(ValueError, "register(None) on new state", m.register, s, None)
+    expect(m.register(s, "Eve"), "C1", "first register after a refusal returned")
+
+
+def case_register_refuses_name_empty_once_stripped(m, rt):
+    """register: ValueError when name is empty once stripped; nothing changes."""
+    s = people(m, rt)
+    for bad in EMPTY_ONCE_STRIPPED:
+        refused(m, s, ValueError, 3, "register(%r)" % (bad,), m.register, bad)
+        s = rt(s)
+    expect(m.register(s, "Dora"), "C4", "register after refusals returned")
+    s = rt(m.new())
+    raises(ValueError, "register('  ') on new state", m.register, s, "  ")
+    expect(m.register(s, "Eve"), "C1", "first register after a refusal returned")
+    expect(m.find(rt(s), ""), [cust("C1", "Eve")], "customers after a refusal")
+
+
+def case_two_customers_may_share_a_name(m, rt):
+    """Two customers may share a name: each registration gets its own id."""
+    s = m.new()
+    expect(m.register(s, "Ana"), "C1", "first register returned")
+    s = rt(s)
+    expect(m.register(s, "Ana"), "C2", "second register, same name, returned")
+    expect(m.register(s, " Ana "), "C3", "third register, same name once stripped, returned")
+    s = rt(s)
+    expect(m.get(s, "C1"), cust("C1", "Ana"), "get C1")
+    expect(m.get(s, "C2"), cust("C2", "Ana"), "get C2")
+    expect(m.find(s, "Ana"), [cust("C1", "Ana"), cust("C2", "Ana"), cust("C3", "Ana")], "find")
+
+
+def case_get_unknown_is_keyerror(m, rt):
+    """get: KeyError when the id is unknown."""
+    s = people(m, rt)
+    for unknown in ["C0", "C4", "C99", "C01", "C1 ", "1", "C", "", "Bob", "C-1"]:
+        refused(m, s, KeyError, 3, "get(%r)" % unknown, m.get, unknown)
+
+
+def case_find_matches_text_anywhere_in_the_name(m, rt):
+    """find returns the customers whose name contains text: start, middle or end."""
+    s = people(m, rt)
+    expect(m.find(s, "Maria"), [PEOPLE[0]], 'find("Maria")')
+    expect(m.find(s, "ia Si"), [PEOPLE[0]], 'find("ia Si")')
+    expect(m.find(s, "souza"), [PEOPLE[1]], 'find("souza")')
+    expect(m.find(s, " "), [PEOPLE[0], PEOPLE[1]], 'find(" ")')
+    expect(m.find(s, "o"), [PEOPLE[1], PEOPLE[2]], 'find("o")')
+    expect(m.find(s, "a"), [PEOPLE[0], PEOPLE[1]], 'find("a")')
+    expect(m.find(s, "Maria Silva"), [PEOPLE[0]], "find of a whole name")
+    expect(m.find(s, "xyz"), [], "find of text in no name")
+    expect(m.find(s, "Maria Silva x"), [], "find of text longer than the name")
+    expect(m.find(s, "C1"), [], "find of an id")
+
+
+def case_find_ignores_case(m, rt):
+    """find ignores case, in the text and in the name."""
+    s = people(m, rt)
+    expect(m.find(s, "MARIA"), [PEOPLE[0]], 'find("MARIA")')
+    expect(m.find(s, "maria silva"), [PEOPLE[0]], 'find("maria silva")')
+    expect(m.find(s, "ANA"), [PEOPLE[1]], 'find("ANA")')
+    expect(m.find(s, "Ana Souza"), [PEOPLE[1]], 'find("Ana Souza")')
+    expect(m.find(s, "bOB"), [PEOPLE[2]], 'find("bOB")')
+    expect(m.find(s, "S"), [PEOPLE[0], PEOPLE[1]], 'find("S")')
+    expect(m.get(s, "C2"), PEOPLE[1], "the stored name keeps its case")
+
+
+def case_find_empty_text_returns_every_customer(m, rt):
+    """find returns every customer when text is ""."""
+    s = people(m, rt)
+    expect(m.find(s, ""), PEOPLE, 'find("")')
+    m.register(s, "Dora")
+    expect(m.find(rt(s), ""), PEOPLE + [cust("C4", "Dora")], 'find("") after register')
+
+
+def case_find_is_in_order_of_registration(m, rt):
+    """find returns customers in order of registration (not by name, not by id text)."""
+    names = ["Zoe Lee", "Yan Lee", "Max Lee", "Abe Lee", "Kim Lee", "Bea Lee", "Lee Roy",
+             "Ida Lee", "Cy Lee", "Abe Lee", "Aaron Lee", "Jo Leeds"]
+    s = m.new()
+    for name in names:
+        m.register(s, name)
+        s = rt(s)
+    everyone = [cust("C%d" % n, name) for n, name in enumerate(names, 1)]
+    expect(m.find(s, "lee"), everyone, 'find("lee")')
+    expect(m.find(s, ""), everyone, 'find("")')
+    expect(m.find(s, "abe"), [everyone[3], everyone[9]], 'find("abe")')
+    expect(m.find(s, "a"), [everyone[1], everyone[2], everyone[3], everyone[5], everyone[7],
+                            everyone[9], everyone[10]], 'find("a")')
+
+
+def case_get_returns_a_copy(m, rt):
+    """Returned customers are copies: changing what get returned changes nothing."""
+    s = people(m, rt)
+    got = m.get(s, "C1")
+    got["name"] = "Changed"
+    got["id"] = "C9"
+    got["extra"] = True
+    expect(m.get(s, "C1"), PEOPLE[0], "get after mutation")
+    m.get(s, "C2").clear()
+    s = rt(s)
+    expect(m.find(s, ""), PEOPLE, "find after mutations")
+    raises(KeyError, "get of the id written into a returned customer", m.get, s, "C9")
+    expect(m.register(s, "Dora"), "C4", "register after mutations returned")
+
+
+def case_find_returns_copies(m, rt):
+    """Returned customers are copies: changing the list or its customers changes nothing."""
+    s = people(m, rt)
+    got = m.find(s, "")
+    got[0]["name"] = "Changed"
+    got[1]["id"] = "C9"
+    got[2].clear()
+    expect(m.find(s, ""), PEOPLE, "find after mutating returned customers")
+    expect(m.get(s, "C1"), PEOPLE[0], "get after mutating returned customers")
+    got = m.find(s, "")
+    got.reverse()
+    got.pop()
+    got.append(cust("C4", "Ghost"))
+    s = rt(s)
+    expect(m.find(s, ""), PEOPLE, "find after mutating returned list")
+    raises(KeyError, "get of customer appended to returned list", m.get, s, "C4")
+    expect(m.register(s, "Dora"), "C4", "register after mutations returned")
+
+
+def case_states_are_independent(m, rt):
+    """The state is made by new() and holds everything: each starts at C1, shares nothing."""
+    a = people(m, rt)
+    b = rt(m.new())
+    expect(m.find(b, ""), [], "find in a new state while another has customers")
+    expect(m.register(b, "Zed"), "C1", "first register in second state returned")
+    expect(m.register(a, "Dora"), "C4", "fourth register in first state returned")
+    a, b = rt(a), rt(b)
+    expect(m.find(a, ""), PEOPLE + [cust("C4", "Dora")], "first state")
+    expect(m.find(b, ""), [cust("C1", "Zed")], "second state")
+
+
+def case_ids_are_not_reused_after_json_round_trips(m, rt):
+    """json.loads(json.dumps(state)) behaves as the state did: the ids go on from
+    where they were, an id is never given twice."""
+    def js(state):
+        return json.loads(json.dumps(json.loads(json.dumps(state))))
+    s = js(m.new())
+    expect(m.find(s, ""), [], "find in round-tripped new()")
+    expect(m.register(s, "Ana"), "C1", "register after round trip")
+    s = js(s)
+    expect(m.register(s, "Bia"), "C2", "second register after round trip")
+    s = js(s)
+    raises(ValueError, "register('') after round trip", m.register, s, "")
+    s = js(s)
+    expect(m.register(s, "Caio"), "C3", "third register after round trip")
+    s = js(s)
+    raises(KeyError, "get unknown after round trip", m.get, s, "C4")
+    expect(m.get(s, "C2"), cust("C2", "Bia"), "get after round trips")
+    expect(m.find(s, "A"), [cust("C1", "Ana"), cust("C2", "Bia"), cust("C3", "Caio")],
+           "find after round trips")
+
+
+# ---------------------------------------------------------------- harness
+
+MODES = ("plain", "json")
+
+
+def cases():
+    found = [(n, f) for n, f in globals().items() if n.startswith("case_") and callable(f)]
+    return [("%s[%s]" % (n[5:], mode), f, mode) for mode in MODES for n, f in found]
+
+
+def load(build):
+    import importlib.util
+    path = os.path.join(build, UNIT + ".py")
+    spec = importlib.util.spec_from_file_location(UNIT, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def child(build, out_path):
+    """Runs in the subprocess: every case, one JSON line per start and per result."""
+    out = open(out_path, "a")
+
+    def emit(record):
+        out.write(json.dumps(record) + "\n")
+        out.flush()
+
+    sys.stdout = sys.stderr = open(os.devnull, "w")
+    for label, fn, mode in cases():
+        emit({"start": label})
+        rt = (lambda s: json.loads(json.dumps(s))) if mode == "json" else (lambda s: s)
+        try:
+            fn(load(build), rt)
+            emit({"done": label, "ok": True})
+        except Failed as err:
+            emit({"done": label, "ok": False, "why": str(err)[:300]})
+        except BaseException as err:
+            why = "%s: %s" % (type(err).__name__, err)
+            emit({"done": label, "ok": False, "why": "unexpected " + why[:300]})
+    emit({"end": True})
+    out.close()
+    os._exit(0)
+
+
+def imported_names(tree):
+    """(line, module name) for every import, and for constant dynamic imports."""
+    names = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names += [(node.lineno, alias.name) for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                names.append((node.lineno, "." * node.level + (node.module or "")))
+            else:
+                names.append((node.lineno, node.module))
+                names += [(node.lineno, node.module + "." + a.name) for a in node.names]
+        elif isinstance(node, ast.Call) and node.args:
+            fn, arg = node.func, node.args[0]
+            called = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+            if called in ("__import__", "import_module") and isinstance(arg, ast.Constant):
+                if isinstance(arg.value, str):
+                    names.append((node.lineno, arg.value))
+    return names
+
+
+def rules(path):
+    """The rules of docs/petshop/unit.md rule 3 checkable on the file: failures."""
+    fails = []
+    try:
+        with tokenize.open(path) as handle:
+            text = handle.read()
+        tree = ast.parse(text, filename=path)
+    except (SyntaxError, UnicodeError, ValueError) as err:
+        return ["rule_module_is_python: %s" % type(err).__name__]
+    long_lines = [i for i, line in enumerate(text.splitlines(), 1) if len(line) > MAX_LINE]
+    if long_lines:
+        fails.append("rule_no_line_over_100_characters: line(s) %s" % long_lines[:5])
+    stdlib = sys.stdlib_module_names
+    for line, name in imported_names(tree):
+        top = name.split(".")[0]
+        if top not in stdlib:
+            fails.append("rule_standard_library_only_no_other_unit: line %d imports %s"
+                         % (line, name))
+        elif top in NETWORK:
+            fails.append("rule_no_network: line %d imports %s" % (line, name))
+    return fails
+
+
+def parent(build):
+    path = os.path.join(build, UNIT + ".py")
+    if not os.path.isfile(path):
+        return ["module_present: no %s.py in %s" % (UNIT, build)], 0
+    fails = rules(path)
+    if fails and fails[0].startswith("rule_module_is_python"):
+        return fails, 0
+    labels = [label for label, _, _ in cases()]
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = os.path.join(tmp, "results.jsonl")
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        cmd = [sys.executable, "-B", "-I", os.path.abspath(__file__), "--child",
+               os.path.abspath(build), out_path]
+        timed_out = False
+        try:
+            subprocess.run(cmd, cwd=tmp, env=env, timeout=TIMEOUT, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        records = []
+        if os.path.isfile(out_path):
+            with open(out_path) as handle:
+                for line in handle:
+                    try:
+                        records.append(json.loads(line))
+                    except ValueError:
+                        pass
+    done = {r["done"]: r for r in records if isinstance(r, dict) and "done" in r}
+    started = [r["start"] for r in records if isinstance(r, dict) and "start" in r]
+    for label in labels:
+        if label in done:
+            if done[label].get("ok") is not True:
+                fails.append("%s: %s" % (label, done[label].get("why", "")))
+        elif label in started:
+            fails.append("%s: %s" % (label, "timed out" if timed_out else "process died"))
+        else:
+            fails.append("%s: not run" % label)
+    return fails, len(labels)
+
+
+def main(argv):
+    if len(argv) == 4 and argv[1] == "--child":
+        child(argv[2], argv[3])
+    if len(argv) != 2:
+        sys.stderr.write("usage: check <build-dir>\n")
+        return 1
+    if not hasattr(sys, "stdlib_module_names"):
+        sys.stderr.write("FAIL harness_needs_python_3_10_or_later\n")
+        return 1
+    try:
+        fails, count = parent(argv[1])
+    except Exception as err:        # a fail, never a traceback of ours
+        fails, count = ["harness: %s: %s" % (type(err).__name__, err)], 0
+    if fails:
+        for line in fails:
+            sys.stderr.write("FAIL " + line + "\n")
+        sys.stderr.write("%d failing of %d case runs\n" % (len(fails), count))
+        return 1
+    print("%s: %d case runs passed (%d cases, plain and json), rules kept"
+          % (UNIT, count, count // len(MODES)))
+    print(os.path.getsize(os.path.join(argv[1], UNIT + ".py")))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
