@@ -162,5 +162,20 @@ def command_line_refusal(m, path):
     assert path.read_text() == before
 
 
+@with_place
+def command_line_numbers(m, path):
+    """a number written without = is text: it is refused, with the hint to write it with ="""
+    cli(path, "customers", "add_customer", "Ana Souza", "555-0101")
+    cli(path, "stock", "add_product", "Dog food 1 kg", "=2500", "=10")
+    before = path.read_text()
+    for args in (("customers", "add_pet", "1", "Rex", "dog"), ("stock", "receive", "1", "=5"),
+                 ("stock", "receive", "=1", "5"), ("sales", "sell", '=[["1", 1]]')):
+        done = cli(path, *args)
+        assert done.returncode != 0 and "Traceback" not in done.stderr, args
+        if args[0] != "sales":
+            assert "=1" in done.stderr or "=5" in done.stderr, done.stderr
+    assert path.read_text() == before
+
+
 if __name__ == "__main__":
-    main("shop", expected=10)
+    main("shop", expected=11)
