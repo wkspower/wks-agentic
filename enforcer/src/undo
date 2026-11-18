@@ -1,16 +1,25 @@
 #!/bin/sh
-# Proves a change can be undone: reverts it in a clone outside the record and
-# shows the tree is back at the state before it. Usage: undo <commit>
-set -e
-tree=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
-commit=$(git -C "$tree" rev-parse "$1")
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-git clone -q "$tree" "$tmp/clone"
-cd "$tmp/clone"
-git checkout -q --detach "$commit"
-git -c user.name=enforcer -c user.email=enforcer@tree revert -q --no-edit "$commit"
-if git diff --quiet "$commit^" HEAD; then
-  echo "undo proven: reverting $(git rev-parse --short "$commit") returns the tree to $(git rev-parse --short "$commit^")"
-else
-  echo "undo FAILED for $commit" >&2; exit 1
-fi
+# Proves a change can be undone: in a clone outside the tree, reverts the
+# commit on top of the tree's HEAD and checks that every path the commit
+# touched is again as it was before it. Usage: undo <commit> [<tree-dir>]
+[ -n "$1" ] || { echo "usage: undo <commit> [<tree-dir>]" >&2; exit 1; }
+top=$(git -C "${2:-.}" rev-parse --show-toplevel 2>/dev/null) ||
+  { echo "undo: not a repository" >&2; exit 1; }
+commit=$(git -C "$top" rev-parse --verify -q "$1^{commit}") ||
+  { echo "undo: unknown commit $1" >&2; exit 1; }
+before=$(git -C "$top" rev-parse --verify -q "$commit^") ||
+  { echo "undo: $1 has nothing before it" >&2; exit 1; }
+head=$(git -C "$top" rev-parse HEAD) || exit 1
+tmp=$(mktemp -d) || exit 1
+trap 'rm -rf "$tmp"' EXIT
+git clone -q --no-hardlinks "$top" "$tmp/clone" 2>/dev/null &&
+  cd "$tmp/clone" && git checkout -q --detach "$head" 2>/dev/null ||
+  { echo "undo: cannot clone the tree" >&2; exit 1; }
+git -c user.name=enforcer -c user.email=enforcer@tree \
+  revert --no-edit "$commit" >/dev/null 2>&1 ||
+  { echo "undo FAILED: reverting $1 on top of HEAD does not apply" >&2; exit 1; }
+git diff --name-only -z "$before" "$commit" |
+  xargs -0 git diff --quiet "$before" HEAD -- ||
+  { echo "undo FAILED: paths touched by $1 did not return" >&2; exit 1; }
+echo "undo proven: reverting $(git rev-parse --short "$commit") on top of" \
+  "$(git rev-parse --short "$head") returns what it touched to $(git rev-parse --short "$before")"
