@@ -22,8 +22,8 @@ class Sales:
 
     def sell(self, items, customer_id=None, when=None):
         items = [tuple(item) for item in items]
-        if not items or any(len(i) != 2 or type(i[1]) is not int or i[1] <= 0 for i in items):
-            raise ValueError("a sale has items, each a product and a whole quantity above zero")
+        if not items or any(len(i) != 2 or type(i[0]) is not int or type(i[1]) is not int or i[1] <= 0 for i in items):
+            raise ValueError("a sale has items, each a product id and a whole quantity above zero")
         when = when or datetime.now().strftime(FORMAT)
         try:
             datetime.strptime(when, FORMAT)
