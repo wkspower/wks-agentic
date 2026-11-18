@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+# Stand-in for the stock: products in <data-dir>/peer-stock.json, written by the check.
+import json, os, sys
+path = os.path.join(sys.argv[1], "peer-stock.json")
+stock = json.load(open(path))
+r = json.load(sys.stdin)
+p = stock.get(str(r.get("id")))
+q = r.get("quantity")
+if r.get("op") not in ("stock.get", "stock.remove", "stock.add"):
+    out = {"ok": False, "error": "unknown_op"}
+elif p is None:
+    out = {"ok": False, "error": "not_found"}
+elif r["op"] == "stock.get":
+    out = {"ok": True, "product": dict(p, id=r["id"])}
+elif not isinstance(q, int) or q <= 0:
+    out = {"ok": False, "error": "invalid"}
+elif r["op"] == "stock.remove" and q > p["quantity"]:
+    out = {"ok": False, "error": "insufficient"}
+else:
+    p["quantity"] += q if r["op"] == "stock.add" else -q
+    json.dump(stock, open(path, "w"))
+    out = {"ok": True}
+print(json.dumps(out))

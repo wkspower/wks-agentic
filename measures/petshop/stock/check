@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Measure of `petshop/stock`. usage: check <tree> <work>
+Cases over the operations stated in units/petshop/stock/unit.md."""
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from opcheck import Shop, Cases, ok, err, fresh, listing
+
+tree, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+here = os.path.dirname(os.path.abspath(__file__))
+data, c = fresh(work), Cases()
+unit = os.path.join(tree, "units/petshop/stock")
+before = listing(unit)
+s = Shop(os.path.join(unit, "run"), data("a"))
+qty = lambda i: s("stock.get", id=i).get("product", {}).get("quantity")
+
+a = s("stock.product_add", name="Ração 10 kg", price_cents=18990, quantity=4)
+b = s("stock.product_add", name="Shampoo", price_cents=2500, quantity=0)
+c.add("add products", ok(a) and ok(b) and isinstance(a.get("id"), int) and a.get("id") != b.get("id"), [a, b])
+g = s("stock.get", id=a.get("id"))
+c.add("get returns what was given", ok(g) and g.get("product") == {"id": a.get("id"), "name": "Ração 10 kg", "price_cents": 18990, "quantity": 4}, g)
+c.add("empty name refused", err(s("stock.product_add", name="", price_cents=1, quantity=1), "invalid"))
+c.add("negative price refused", err(s("stock.product_add", name="x", price_cents=-1, quantity=1), "invalid"))
+c.add("negative quantity refused", err(s("stock.product_add", name="x", price_cents=1, quantity=-1), "invalid"))
+c.add("fractional quantity refused", err(s("stock.product_add", name="x", price_cents=1, quantity=1.5), "invalid"))
+c.add("fractional price refused", err(s("stock.product_add", name="x", price_cents=9.99, quantity=1), "invalid"))
+c.add("receive goods", ok(s("stock.add", id=a.get("id"), quantity=6)) and qty(a.get("id")) == 10)
+c.add("receive zero refused", err(s("stock.add", id=a.get("id"), quantity=0), "invalid") and qty(a.get("id")) == 10)
+c.add("receive a negative quantity refused", err(s("stock.add", id=a.get("id"), quantity=-3), "invalid") and qty(a.get("id")) == 10)
+c.add("remove", ok(s("stock.remove", id=a.get("id"), quantity=3)) and qty(a.get("id")) == 7)
+c.add("PLANT-LIKE remove more than there is: refused, quantity untouched",
+      err(s("stock.remove", id=a.get("id"), quantity=8), "insufficient") and qty(a.get("id")) == 7)
+c.add("remove exactly what there is", ok(s("stock.remove", id=a.get("id"), quantity=7)) and qty(a.get("id")) == 0)
+c.add("remove from an empty shelf", err(s("stock.remove", id=b.get("id"), quantity=1), "insufficient") and qty(b.get("id")) == 0)
+c.add("remove zero refused", err(s("stock.remove", id=a.get("id"), quantity=0), "invalid"))
+c.add("unknown product", all(err(r, "not_found") for r in (s("stock.get", id=999999), s("stock.add", id=999999, quantity=1), s("stock.remove", id=999999, quantity=1))))
+l = s("stock.list")
+c.add("list shows every product once", ok(l) and sorted(x.get("id") for x in l.get("products", [])) == sorted([a.get("id"), b.get("id")]), l)
+c.add("unknown operation", err(s("stock.fly"), "unknown_op"))
+c.add("nothing written outside the data directory", listing(unit) == before)
+c.finish()

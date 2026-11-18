@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Measure of `petshop/appointments`. usage: check <tree> <work>
+Cases over the operations stated in units/petshop/appointments/unit.md."""
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from opcheck import Shop, Cases, ok, err, fresh, listing
+
+tree, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+here = os.path.dirname(os.path.abspath(__file__))
+data, c = fresh(work), Cases()
+unit = os.path.join(tree, "units/petshop/appointments")
+before = listing(unit)
+s = Shop(os.path.join(unit, "run"), data("a"), PETSHOP_PEER=os.path.join(here, "peer"))
+D = "2026-12-01"
+
+a = s("appointments.book", pet=1, service="bath", date=D, time="10:00")
+c.add("book a bath", ok(a) and isinstance(a.get("id"), int), a)
+c.add("PLANT-LIKE same slot twice is a conflict", err(s("appointments.book", pet=2, service="grooming", date=D, time="10:00"), "conflict"))
+b = s("appointments.book", pet=2, service="grooming", date=D, time="09:00")
+c.add("book grooming at another time", ok(b) and b.get("id") != a.get("id"), b)
+d = s("appointments.day", date=D)
+want = [{"id": b.get("id"), "pet": 2, "service": "grooming", "date": D, "time": "09:00", "status": "booked"},
+        {"id": a.get("id"), "pet": 1, "service": "bath", "date": D, "time": "10:00", "status": "booked"}]
+c.add("the day lists both, earliest first", ok(d) and d.get("appointments") == want, d)
+d = s("appointments.day", date="2026-12-02")
+c.add("another day is empty", ok(d) and d.get("appointments") == [], d)
+c.add("same time on another day is free", ok(s("appointments.book", pet=1, service="bath", date="2026-12-02", time="10:00")))
+c.add("unknown pet", err(s("appointments.book", pet=999999, service="bath", date=D, time="11:00"), "not_found"))
+c.add("unknown service refused", err(s("appointments.book", pet=1, service="walk", date=D, time="11:00"), "invalid"))
+c.add("impossible date refused", err(s("appointments.book", pet=1, service="bath", date="2026-13-40", time="11:00"), "invalid"))
+c.add("impossible time refused", err(s("appointments.book", pet=1, service="bath", date=D, time="25:00"), "invalid"))
+c.add("day with an impossible date refused", err(s("appointments.day", date="soon"), "invalid"))
+c.add("cancel", ok(s("appointments.cancel", id=a.get("id"))))
+d = s("appointments.day", date=D)
+c.add("a cancelled appointment stays on the day, marked", ok(d) and [(x.get("id"), x.get("status")) for x in d.get("appointments", [])]
+      == [(b.get("id"), "booked"), (a.get("id"), "cancelled")], d)
+e = s("appointments.book", pet=1, service="grooming", date=D, time="10:00")
+c.add("a cancelled slot is free again", ok(e) and e.get("id") not in (a.get("id"), b.get("id")), e)
+c.add("cancel an unknown appointment", err(s("appointments.cancel", id=999999), "not_found"))
+c.add("mark as done", ok(s("appointments.done", id=b.get("id"))))
+d = s("appointments.day", date=D)
+c.add("done shows on the day", ok(d) and ("done" in [x.get("status") for x in d.get("appointments", []) if x.get("id") == b.get("id")]), d)
+c.add("done on an unknown appointment", err(s("appointments.done", id=999999), "not_found"))
+c.add("unknown operation", err(s("appointments.fly"), "unknown_op"))
+c.add("nothing written outside the data directory", listing(unit) == before)
+c.finish()

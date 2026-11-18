@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Measure of `petshop/sales`. usage: check <tree> <work>
+Cases over the operations stated in units/petshop/sales/unit.md."""
+import json
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from opcheck import Shop, Cases, ok, err, fresh, listing
+
+tree, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+here = os.path.dirname(os.path.abspath(__file__))
+data, c = fresh(work), Cases()
+unit = os.path.join(tree, "units/petshop/sales")
+before = listing(unit)
+d = data("a")
+os.makedirs(d)
+shelf = os.path.join(d, "peer-stock.json")
+json.dump({"1": {"name": "Ração", "price_cents": 1000, "quantity": 5},
+           "2": {"name": "Shampoo", "price_cents": 250, "quantity": 1}}, open(shelf, "w"))
+s = Shop(os.path.join(unit, "run"), d, PETSHOP_PEER=os.path.join(here, "peer"), PETSHOP_TODAY="2026-12-01")
+qty = lambda i: json.load(open(shelf))[str(i)]["quantity"]
+
+a = s("sales.sell", items=[{"product": 1, "quantity": 2}, {"product": 2, "quantity": 1}], customer=7)
+c.add("sell two products", ok(a) and isinstance(a.get("id"), int) and a.get("total_cents") == 2250, a)
+c.add("the sale took the goods from the stock", (qty(1), qty(2)) == (3, 0))
+c.add("PLANT-LIKE selling what is not there: refused", err(s("sales.sell", items=[{"product": 2, "quantity": 1}]), "insufficient") and qty(2) == 0)
+c.add("PLANT-LIKE all or nothing: one missing item leaves every shelf untouched",
+      err(s("sales.sell", items=[{"product": 1, "quantity": 1}, {"product": 2, "quantity": 1}]), "insufficient") and (qty(1), qty(2)) == (3, 0))
+c.add("the same product on two lines counts together",
+      err(s("sales.sell", items=[{"product": 1, "quantity": 2}, {"product": 1, "quantity": 2}]), "insufficient") and qty(1) == 3)
+c.add("unknown product: refused, shelves untouched",
+      err(s("sales.sell", items=[{"product": 1, "quantity": 1}, {"product": 999999, "quantity": 1}]), "not_found") and qty(1) == 3)
+c.add("empty sale refused", err(s("sales.sell", items=[]), "invalid"))
+c.add("zero quantity refused", err(s("sales.sell", items=[{"product": 1, "quantity": 0}]), "invalid") and qty(1) == 3)
+stock = json.load(open(shelf))
+stock["1"]["price_cents"] = 1200
+json.dump(stock, open(shelf, "w"))
+g = s("sales.get", id=a.get("id"))
+c.add("a sale keeps the price of its moment",
+      ok(g) and g.get("sale", {}).get("total_cents") == 2250 and g.get("sale", {}).get("customer") == 7
+      and g.get("sale", {}).get("date") == "2026-12-01"
+      and g.get("sale", {}).get("items") == [{"product": 1, "quantity": 2, "price_cents": 1000}, {"product": 2, "quantity": 1, "price_cents": 250}], g)
+b = s("sales.sell", items=[{"product": 1, "quantity": 1}])
+c.add("a sale with no customer, at the new price", ok(b) and b.get("total_cents") == 1200 and b.get("id") != a.get("id") and qty(1) == 2, b)
+day = s("sales.day", date="2026-12-01")
+c.add("the day adds up", ok(day) and day.get("total_cents") == 3450 and sorted(x.get("id") for x in day.get("sales", [])) == sorted([a.get("id"), b.get("id")]), day)
+day = s("sales.day", date="2026-12-02")
+c.add("a day with no sale is zero, not an error", ok(day) and day.get("total_cents") == 0 and day.get("sales") == [], day)
+c.add("unknown sale", err(s("sales.get", id=999999), "not_found"))
+c.add("unknown operation", err(s("sales.fly"), "unknown_op"))
+c.add("nothing written outside the data directory", listing(unit) == before)
+c.finish()

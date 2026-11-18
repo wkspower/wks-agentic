@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Measure of `petshop/customers`. usage: check <tree> <work>
+Cases over the operations stated in units/petshop/customers/unit.md."""
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from opcheck import Shop, Cases, ok, err, fresh, listing
+
+tree, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+here = os.path.dirname(os.path.abspath(__file__))
+data, c = fresh(work), Cases()
+unit = os.path.join(tree, "units/petshop/customers")
+before = listing(unit)
+s = Shop(os.path.join(unit, "run"), data("a"))
+
+a = s("customers.add", name="Ana D'Ávila", phone="82 99911-2233")
+b = s("customers.add", name="Bruno Lima", phone="82 98800-0001")
+c.add("add a customer", ok(a) and isinstance(a.get("id"), int) and a["id"] > 0, a)
+c.add("each customer gets its own id", ok(b) and a.get("id") != b.get("id"), b)
+g = s("customers.get", id=a.get("id"))
+c.add("get returns what was given, accents and quotes intact",
+      ok(g) and g.get("customer") == {"id": a.get("id"), "name": "Ana D'Ávila", "phone": "82 99911-2233"} and g.get("pets") == [], g)
+c.add("PLANT-LIKE empty name refused", err(s("customers.add", name="  ", phone="1"), "invalid"))
+c.add("missing phone refused", err(s("customers.add", name="Caio"), "invalid"))
+c.add("unknown customer", err(s("customers.get", id=999999), "not_found"))
+f = s("customers.find", text="ana d")
+c.add("find by part of the name, any case", ok(f) and [x.get("id") for x in f.get("customers", [])] == [a.get("id")], f)
+f = s("customers.find", text="98800")
+c.add("find by part of the phone", ok(f) and [x.get("id") for x in f.get("customers", [])] == [b.get("id")], f)
+f = s("customers.find", text="zzz")
+c.add("find with no match is an empty list, not an error", ok(f) and f.get("customers") == [], f)
+p = s("customers.pet_add", customer=a.get("id"), name="Thor", species="dog")
+q = s("customers.pet_add", customer=a.get("id"), name="Mia", species="cat")
+c.add("add pets to a customer", ok(p) and ok(q) and isinstance(p.get("id"), int) and p.get("id") != q.get("id"), [p, q])
+g = s("customers.get", id=a.get("id"))
+c.add("the customer shows its pets", ok(g) and sorted((x.get("name"), x.get("species")) for x in g.get("pets", [])) == [("Mia", "cat"), ("Thor", "dog")], g)
+g = s("customers.get", id=b.get("id"))
+c.add("another customer does not show them", ok(g) and g.get("pets") == [], g)
+c.add("pet for an unknown customer", err(s("customers.pet_add", customer=999999, name="Rex", species="dog"), "not_found"))
+c.add("pet with no name refused", err(s("customers.pet_add", customer=a.get("id"), name="", species="dog"), "invalid"))
+g = s("customers.pet_get", id=p.get("id"))
+c.add("get a pet with its owner", ok(g) and g.get("pet") == {"id": p.get("id"), "name": "Thor", "species": "dog", "customer": a.get("id")}, g)
+c.add("unknown pet", err(s("customers.pet_get", id=999999), "not_found"))
+c.add("unknown operation", err(s("customers.fly"), "unknown_op"))
+other = Shop(s.exe, data("b"))
+f = other("customers.find", text="")
+c.add("another data directory is another shop", ok(f) and f.get("customers") == [], f)
+ids = [s("customers.add", name=f"Cliente {i:03d}", phone=f"82 9000-{i:04d}").get("id") for i in range(30)]
+f = s("customers.find", text="cliente 017")
+c.add("thirty more customers: all distinct, one found", len(set(ids)) == 30 and None not in ids and ok(f) and len(f.get("customers", [])) == 1, f)
+c.add("nothing written outside the data directory", listing(unit) == before)
+c.finish()
