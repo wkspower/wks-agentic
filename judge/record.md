@@ -20,7 +20,8 @@ later line followed, reverting an earlier installation no longer applied
 (`enforcer/undo e2d0575`, catalog). Now each unit has its own file under
 `judge/stands/`: measure changed first (by an agent that does not build the
 judge), the standing judge failed it, the changed judge installed itself
-under rule (b) and stands by the enforcer's run (declaration 6). The old
+under rule (b) and stands by the enforcer's run, which reported no
+breach (declaration 6). The old
 lines were moved, unchanged, into the units' files.
 
 **Tried and rejected.** The first build (4391): one shared stands file.

@@ -1,6 +1,8 @@
 # Record of the root
 
-**State.** Every unit is built and standing. Correct results: 7.
+**State.** Every unit is built and standing. Correct results: 7. The
+enforcer's full run over the tree reports no breach, and `./build` builds
+all seven units.
 
 | Unit | Verdict | Stands by |
 |---|---|---|
@@ -13,11 +15,11 @@
 | petshop/sales | passes, 1890 | judge, over 1 alternative |
 
 **The number** (`./verdict`): 16 items ÷ 7 correct results = 2.29. It was
-10.00 at the first result and 6.50 at the second. The verdict fails while
+10.00 at the first result and 6.50 at the last report. The verdict fails while
 Q15 and Q16 wait (2 items waiting against 0 at the previous result) and
 passes once they are answered in the record.
 
-**Spend** (`ledger.tsv`): 24 of 24 runs; about 2 h 15 of 4 h. Attention
+**Spend** (`ledger.tsv`): 24 of 24 runs; about 2 h 20 of 4 h. Attention
 after round 1: 6 items for 7 results (budget 2 per result). Effects
 without undo: 0.
 
