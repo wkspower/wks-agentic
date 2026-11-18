@@ -32,6 +32,35 @@ class ProofTest(TreeCase, unittest.TestCase):
         self.assertEqual(self.planted_status(res, "unseen"), "passed", res.describe())
         self.assertEqual(self.planted_status(res, "wrong_unknown"), "failed", res.describe())
 
+    # A planted case that cannot be loaded tests nothing: it must not count as
+    # "failed" the measure. Reading (an ambiguity of units/judge/unit.md, see
+    # README.md): proof fails and reports the case with a value other than
+    # "failed" or "passed" (e.g. "error").
+
+    def assertUnloadable(self, res, case):
+        self.assertDecision(res, False)
+        status = self.planted_status(res, case)
+        self.assertNotIn(status, ("failed", "passed"),
+                         "an unloadable planted case is reported as %r\n%s" % (status, res.describe()))
+        self.assertEqual(self.planted_status(res, "wrong_unknown"), "failed", res.describe())
+
+    def test_fails_when_a_planted_case_has_a_syntax_error(self):
+        self.tree.write("measures/catalog/planted/broken_indent.py", (
+            "# Defect: the price is wrong (but the file does not load).\n"
+            "def get(sku):\n"
+            "return None\n"))
+        res = self.tree.run("proof", "catalog")
+        self.assertUnloadable(res, "broken_indent")
+
+    def test_fails_when_a_planted_case_raises_on_import(self):
+        self.tree.write("measures/catalog/planted/broken_import.py", (
+            "# Defect: the price is wrong (but the module raises on import).\n"
+            "import petshop_no_such_module_planted\n\n\n"
+            "def get(sku):\n"
+            "    return None\n"))
+        res = self.tree.run("proof", "catalog")
+        self.assertUnloadable(res, "broken_import")
+
     def test_fails_with_no_planted_directory(self):
         self.tree.remove("measures/stock/planted")
         res = self.tree.run("proof", "stock")
