@@ -1,0 +1,914 @@
+#!/usr/bin/env python3
+"""Audit cases for catalog.py, written from docs/catalog.md alone.
+
+Usage: check <build-dir>      (the build dir holds catalog.py)
+
+Each case runs in its own subprocess with a timeout. Nothing is written
+into the build dir. One line per case is printed (PASS/FAIL), then
+<passed>/<total>. Exit 0 if all pass, else 1.
+
+"Doc" below is docs/catalog.md, declaration 2 (Interface) unless said
+otherwise; "Rule 3" is docs/petshop-rule-3.md.
+"""
+import ast
+import decimal
+import fractions
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+TIMEOUT = 20
+CASES = []  # (name, basis, function)
+
+
+def case(name, basis):
+    def deco(fn):
+        CASES.append((name, basis, fn))
+        return fn
+    return deco
+
+
+class Fail(Exception):
+    pass
+
+
+def check(cond, msg):
+    if not cond:
+        raise Fail(msg)
+
+
+def short(x, n=70):
+    r = repr(x)
+    return r if len(r) <= n else r[:n] + "..."
+
+
+BUILD = None
+_counter = [0]
+
+
+def load():
+    """Load a fresh, separate instance of the build's catalog module."""
+    _counter[0] += 1
+    path = os.path.join(BUILD, "catalog.py")
+    name = "catalog" if _counter[0] == 1 else "catalog_%d" % _counter[0]
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    if _counter[0] == 1:
+        sys.modules["catalog"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def rt(state):
+    return json.loads(json.dumps(state))
+
+
+def item(i, n, k, p):
+    return {"id": i, "name": n, "kind": k, "price_cents": p}
+
+
+def same_item(got, exp, what="item"):
+    """Exact dict, exact key set, exact value types (no bool/float price)."""
+    check(isinstance(got, dict), "%s is not a dict: %s" % (what, short(got)))
+    check(set(got.keys()) == {"id", "name", "kind", "price_cents"},
+          "%s keys are %s" % (what, short(sorted(map(str, got.keys())))))
+    for k in ("id", "name", "kind"):
+        check(type(got[k]) is str, "%s[%r] is %s" % (what, k, type(got[k]).__name__))
+    check(type(got["price_cents"]) is int,
+          "%s price_cents is %s" % (what, type(got["price_cents"]).__name__))
+    check(got == exp, "%s is %s, expected %s" % (what, short(got), short(exp)))
+
+
+def same_items(got, exp, what="items()"):
+    check(isinstance(got, list), "%s is not a list: %s" % (what, short(got)))
+    check(len(got) == len(exp), "%s has %d items, expected %d: %s"
+          % (what, len(got), len(exp), short(got)))
+    check([g.get("id") if isinstance(g, dict) else g for g in got]
+          == [e["id"] for e in exp],
+          "%s order/ids %s, expected %s" % (what, short([
+              g.get("id") if isinstance(g, dict) else g for g in got]),
+              short([e["id"] for e in exp])))
+    for g, e in zip(got, exp):
+        same_item(g, e, "%s entry %r" % (what, e["id"]))
+
+
+def raises(exc, fn, *args):
+    """fn(*args) must raise exc (ValueError or KeyError)."""
+    try:
+        r = fn(*args)
+    except exc:
+        return
+    except Exception as e:
+        raise Fail("expected %s, got %s: %s"
+                   % (exc.__name__, type(e).__name__, short(str(e), 50)))
+    raise Fail("expected %s, nothing raised (returned %s)" % (exc.__name__, short(r)))
+
+
+def refused(c, exc, state, expected, fn, *args):
+    """A refused call: right exception, and the state is left as it was."""
+    snap = rt(state)
+    raises(exc, fn, state, *args)
+    check(rt(state) == snap, "refused call changed the state")
+    same_items(c.items(state), expected, "items() after refused call")
+    for e in expected:
+        same_item(c.get(state, e["id"]), e, "get(%r) after refused call" % e["id"])
+
+
+def basic(c):
+    s = c.new()
+    c.add(s, "cat", "Tabby cat", "animal", 12000)
+    c.add(s, "ball", "Rubber ball", "product", 250)
+    exp = [item("ball", "Rubber ball", "product", 250),
+           item("cat", "Tabby cat", "animal", 12000)]
+    return s, exp
+
+
+# --------------------------------------------------------------- new / add / get
+
+@case("new_is_empty", "Doc: `new()` returns an empty state.")
+def _(c):
+    s = c.new()
+    same_items(c.items(s), [])
+
+
+@case("new_empty_get_keyerror", "Doc: `new()` returns an empty state; get: `KeyError` when "
+      "unknown.")
+def _(c):
+    s = c.new()
+    raises(KeyError, c.get, s, "cat")
+    same_items(c.items(s), [])
+
+
+@case("new_states_independent", "Doc: the state is made only by `new()`; principle 1: the module "
+      "holds no state of its own.")
+def _(c):
+    a = c.new()
+    b = c.new()
+    c.add(a, "x", "X", "animal", 1)
+    same_items(c.items(b), [])
+    raises(KeyError, c.get, b, "x")
+    c.add(b, "x", "Other", "product", 2)  # same id is free in the other state
+    c.add(b, "y", "Y", "product", 3)
+    same_items(c.items(a), [item("x", "X", "animal", 1)])
+    same_items(c.items(b), [item("x", "Other", "product", 2), item("y", "Y", "product", 3)])
+    c.set_price(a, "x", 9)
+    same_item(c.get(b, "x"), item("x", "Other", "product", 2))
+    same_items(c.items(c.new()), [])
+
+
+@case("add_returns_none", "Doc: `add(...)` returns `None`.")
+def _(c):
+    s = c.new()
+    check(c.add(s, "a", "A", "animal", 5) is None, "add returned non-None")
+    check(c.add(s, "b", "B", "product", 0) is None, "add returned non-None")
+
+
+@case("add_then_get_exact_item", "Doc: An item is a dict with exactly `id`, `name`, `kind`, "
+      "`price_cents`; `get` returns the item.")
+def _(c):
+    s = c.new()
+    c.add(s, "cat", "Tabby cat", "animal", 12000)
+    same_item(c.get(s, "cat"), item("cat", "Tabby cat", "animal", 12000))
+    c.add(s, "ball", "Rubber ball", "product", 250)
+    same_item(c.get(s, "ball"), item("ball", "Rubber ball", "product", 250))
+    same_item(c.get(s, "cat"), item("cat", "Tabby cat", "animal", 12000))
+
+
+@case("add_both_kinds", "Doc: `kind` is `\"animal\"` or `\"product\"`.")
+def _(c):
+    s = c.new()
+    c.add(s, "1", "n", "product", 1)
+    c.add(s, "2", "n", "animal", 1)
+    same_items(c.items(s), [item("1", "n", "product", 1), item("2", "n", "animal", 1)])
+
+
+@case("add_price_zero_valid", "Doc: A valid price is an `int` (not a `bool`) of 0 or more.")
+def _(c):
+    s = c.new()
+    c.add(s, "free", "Free leaflet", "product", 0)
+    same_item(c.get(s, "free"), item("free", "Free leaflet", "product", 0))
+    same_items(c.items(s), [item("free", "Free leaflet", "product", 0)])
+
+
+@case("add_large_int_price", "Doc: A valid price is an `int` (not a `bool`) of 0 or more "
+      "(no upper bound stated).")
+def _(c):
+    s = c.new()
+    c.add(s, "a", "A", "animal", 10 ** 30)
+    c.add(s, "b", "B", "product", 2 ** 63)
+    c.add(s, "c", "C", "product", 2 ** 53 + 1)
+    exp = [item("a", "A", "animal", 10 ** 30), item("b", "B", "product", 2 ** 63),
+           item("c", "C", "product", 2 ** 53 + 1)]
+    same_items(c.items(s), exp)
+    s = rt(s)
+    same_items(c.items(s), exp)
+    c.set_price(s, "c", 10 ** 40 + 7)
+    same_item(c.get(s, "c"), item("c", "C", "product", 10 ** 40 + 7))
+
+
+@case("add_odd_but_valid_strings", "Doc: ValueError only when `item_id` or `name` is not a "
+      "non-empty string; any non-empty string is accepted and returned as given.")
+def _(c):
+    ids = [" ", " a", "a ", "A", "a", "id", "name", "kind", "price_cents", "items",
+           "__class__", "0", "None", "a\nb", 'q"uote', "back\\slash", "caf\xe9",
+           "\u72ac", "x" * 500, "a.b", "a/b", "\t"]
+    s = c.new()
+    exp = []
+    for n, i in enumerate(ids):
+        nm = " " if n == 0 else "  %s  " % i
+        k = "animal" if n % 2 else "product"
+        c.add(s, i, nm, k, n)
+        exp.append(item(i, nm, k, n))
+    for e in exp:
+        same_item(c.get(s, e["id"]), e)
+    check(len(c.items(s)) == len(ids), "items() has %d, expected %d"
+          % (len(c.items(s)), len(ids)))
+    s2 = rt(s)
+    for e in exp:
+        same_item(c.get(s2, e["id"]), e, "after round trip")
+
+
+@case("add_same_name_different_ids", "Doc: only an existing *id* refuses an add; names may repeat.")
+def _(c):
+    s = c.new()
+    c.add(s, "a", "Same", "animal", 1)
+    c.add(s, "b", "Same", "animal", 1)
+    c.add(s, "Same", "Same", "product", 1)
+    same_items(c.items(s), [item("Same", "Same", "product", 1), item("a", "Same", "animal", 1),
+                            item("b", "Same", "animal", 1)])
+
+
+@case("ids_case_and_space_sensitive", "Doc: ValueError when the id already exists; get: KeyError "
+      "when unknown (ids are strings, compared as given).")
+def _(c):
+    s = c.new()
+    c.add(s, "cat", "lower", "animal", 1)
+    c.add(s, "Cat", "upper", "animal", 2)
+    c.add(s, "cat ", "space", "animal", 3)
+    same_item(c.get(s, "cat"), item("cat", "lower", "animal", 1))
+    same_item(c.get(s, "Cat"), item("Cat", "upper", "animal", 2))
+    same_item(c.get(s, "cat "), item("cat ", "space", "animal", 3))
+    raises(KeyError, c.get, s, "CAT")
+    raises(KeyError, c.get, s, " cat")
+    raises(KeyError, c.set_price, s, "CAT", 5)
+
+
+# --------------------------------------------------------------- get / KeyError
+
+@case("get_unknown_keyerror", "Doc: `get(state, item_id)` ... `KeyError` when unknown.")
+def _(c):
+    s, exp = basic(c)
+    refused(c, KeyError, s, exp, c.get, "dog")
+    refused(c, KeyError, s, exp, c.get, "Cat")
+    refused(c, KeyError, s, exp, c.get, "ca")
+    refused(c, KeyError, s, exp, c.get, "cats")
+
+
+@case("get_empty_string_id_keyerror", "Doc: get: `KeyError` when unknown (an empty id can never "
+      "have been added, so it is unknown).")
+def _(c):
+    s, exp = basic(c)
+    refused(c, KeyError, s, exp, c.get, "")
+
+
+@case("get_field_names_are_not_ids", "Doc: get: `KeyError` when unknown.")
+def _(c):
+    s, exp = basic(c)
+    for i in ("id", "name", "kind", "price_cents", "items", "animal", "product",
+              "Tabby cat", "12000"):
+        raises(KeyError, c.get, s, i)
+    same_items(c.items(s), exp)
+
+
+@case("get_does_not_change_state", "Doc: `get(state, item_id)` returns the item (a query; state "
+      "behaviour unchanged).")
+def _(c):
+    s, exp = basic(c)
+    for _i in range(3):
+        same_item(c.get(s, "cat"), exp[1])
+        same_item(c.get(s, "ball"), exp[0])
+        same_items(c.items(s), exp)
+
+
+# --------------------------------------------------------------- copies
+
+@case("get_returns_copy_mutation", "Doc: returned items are copies.")
+def _(c):
+    s, exp = basic(c)
+    g = c.get(s, "cat")
+    g["price_cents"] = 1
+    g["name"] = "HACKED"
+    g["kind"] = "product"
+    g["id"] = "dog"
+    g["extra"] = True
+    same_item(c.get(s, "cat"), exp[1], "get after mutating a returned item")
+    same_items(c.items(s), exp, "items() after mutating a returned item")
+    raises(KeyError, c.get, s, "dog")
+    g2 = c.get(s, "ball")
+    g2.clear()
+    same_item(c.get(s, "ball"), exp[0], "get after clearing a returned item")
+    same_items(c.items(s), exp)
+
+
+@case("items_returns_copies_mutation", "Doc: returned items are copies.")
+def _(c):
+    s, exp = basic(c)
+    lst = c.items(s)
+    lst[0]["price_cents"] = -5
+    lst[0]["name"] = "HACKED"
+    lst[1]["id"] = "zzz"
+    del lst[1]["kind"]
+    same_items(c.items(s), exp, "items() after mutating returned items")
+    same_item(c.get(s, "ball"), exp[0])
+    same_item(c.get(s, "cat"), exp[1])
+    raises(KeyError, c.get, s, "zzz")
+
+
+@case("items_list_mutation_harmless", "Doc: `items(state)` returns all items as a list; returned "
+      "items are copies.")
+def _(c):
+    s, exp = basic(c)
+    lst = c.items(s)
+    lst.clear()
+    same_items(c.items(s), exp, "items() after clearing the returned list")
+    lst = c.items(s)
+    lst.append(item("zzz", "Z", "animal", 1))
+    lst.reverse()
+    lst.pop()
+    same_items(c.items(s), exp, "items() after editing the returned list")
+    raises(KeyError, c.get, s, "zzz")
+    same_item(c.get(s, "cat"), exp[1])
+    c.add(s, "ant", "Ant", "animal", 3)
+    same_items(c.items(s), [item("ant", "Ant", "animal", 3)] + exp)
+
+
+@case("returned_copy_survives_later_changes", "Doc: returned items are copies (a copy does not "
+      "follow later changes of the state).")
+def _(c):
+    s, exp = basic(c)
+    g = c.get(s, "cat")
+    lst = c.items(s)
+    c.set_price(s, "cat", 1)
+    c.set_price(s, "ball", 2)
+    c.add(s, "ant", "Ant", "animal", 3)
+    same_item(g, exp[1], "item returned before set_price")
+    same_items(lst, exp, "list returned before the changes")
+
+
+@case("copies_after_round_trip", "Doc: returned items are copies; state survives the JSON round "
+      "trip unchanged in behaviour.")
+def _(c):
+    s, exp = basic(c)
+    s = rt(s)
+    g = c.get(s, "cat")
+    g["price_cents"] = 1
+    lst = c.items(s)
+    lst[0]["name"] = "HACKED"
+    lst.clear()
+    same_items(c.items(s), exp)
+    same_item(c.get(s, "cat"), exp[1])
+
+
+# --------------------------------------------------------------- items ordering
+
+@case("items_ordered_by_id_not_insertion", "Doc: `items(state)` returns all items as a list "
+      "ordered by `id`.")
+def _(c):
+    s = c.new()
+    for i in ("m", "z", "a", "q", "b"):
+        c.add(s, i, "n-" + i, "product", 1)
+    same_items(c.items(s), [item(i, "n-" + i, "product", 1) for i in ("a", "b", "m", "q", "z")])
+
+
+@case("items_order_is_string_order_digits", "Doc: items ordered by `id` (ids are strings, so "
+      "\"10\" sorts before \"9\").")
+def _(c):
+    s = c.new()
+    ids = ["9", "10", "100", "1", "2", "09", "011", "20"]
+    for i in ids:
+        c.add(s, i, "n", "animal", int(i))
+    same_items(c.items(s), [item(i, "n", "animal", int(i)) for i in sorted(ids)])
+
+
+@case("items_order_is_string_order_case", "Doc: items ordered by `id` (ids are strings; plain "
+      "string order: \"B\" before \"a\").")
+def _(c):
+    s = c.new()
+    ids = ["b", "a", "B", "A", "aa", "Ab", "aB", "_", "a_", "a-", " a", "Z", "a1", "a10", "a2"]
+    for n, i in enumerate(ids):
+        c.add(s, i, "n", "product", n)
+    exp = sorted((item(i, "n", "product", n) for n, i in enumerate(ids)), key=lambda e: e["id"])
+    same_items(c.items(s), exp)
+    same_items(c.items(rt(s)), exp, "items() after round trip")
+
+
+@case("items_order_not_by_name_or_price", "Doc: items ordered by `id` (not by name, kind or "
+      "price).")
+def _(c):
+    s = c.new()
+    c.add(s, "c", "Aardvark", "animal", 1)
+    c.add(s, "a", "Zebra", "product", 300)
+    c.add(s, "b", "Mouse", "animal", 20)
+    same_items(c.items(s), [item("a", "Zebra", "product", 300), item("b", "Mouse", "animal", 20),
+                            item("c", "Aardvark", "animal", 1)])
+    c.set_price(s, "a", 0)
+    c.set_price(s, "c", 999)
+    same_items(c.items(s), [item("a", "Zebra", "product", 0), item("b", "Mouse", "animal", 20),
+                            item("c", "Aardvark", "animal", 999)])
+
+
+@case("items_many_all_present_and_ordered", "Doc: `items(state)` returns all items as a list "
+      "ordered by `id`.")
+def _(c):
+    s = c.new()
+    ids = [str((n * 7919) % 1000) for n in range(300)]
+    for n, i in enumerate(ids):
+        c.add(s, i, "name " + i, "animal" if n % 3 else "product", n)
+    exp = sorted((item(i, "name " + i, "animal" if n % 3 else "product", n)
+                  for n, i in enumerate(ids)), key=lambda e: e["id"])
+    same_items(c.items(s), exp)
+    same_items(c.items(rt(s)), exp, "items() after round trip")
+
+
+@case("items_order_kept_after_round_trip_adds", "Doc: items ordered by `id`; state survives the "
+      "JSON round trip unchanged in behaviour.")
+def _(c):
+    s = c.new()
+    c.add(s, "m", "M", "animal", 1)
+    c.add(s, "z", "Z", "animal", 2)
+    s = rt(s)
+    c.add(s, "a", "A", "product", 3)
+    s = rt(s)
+    c.add(s, "n", "N", "product", 4)
+    c.add(s, "B", "B", "product", 5)
+    same_items(c.items(s), [item("B", "B", "product", 5), item("a", "A", "product", 3),
+                            item("m", "M", "animal", 1), item("n", "N", "product", 4),
+                            item("z", "Z", "animal", 2)])
+
+
+# --------------------------------------------------------------- set_price
+
+@case("set_price_returns_none", "Doc: `set_price(state, item_id, price_cents)` returns `None`.")
+def _(c):
+    s, _exp = basic(c)
+    check(c.set_price(s, "cat", 1) is None, "set_price returned non-None")
+    check(c.set_price(s, "cat", 1) is None, "set_price returned non-None")
+
+
+@case("set_price_changes_only_that_price", "Doc: `set_price(state, item_id, price_cents)`; an "
+      "item is a dict with exactly `id`, `name`, `kind`, `price_cents`.")
+def _(c):
+    s, _exp = basic(c)
+    c.set_price(s, "cat", 9999)
+    same_item(c.get(s, "cat"), item("cat", "Tabby cat", "animal", 9999))
+    same_item(c.get(s, "ball"), item("ball", "Rubber ball", "product", 250))
+    same_items(c.items(s), [item("ball", "Rubber ball", "product", 250),
+                            item("cat", "Tabby cat", "animal", 9999)])
+    c.set_price(s, "ball", 1)
+    c.set_price(s, "cat", 2)
+    c.set_price(s, "cat", 3)
+    same_items(c.items(s), [item("ball", "Rubber ball", "product", 1),
+                            item("cat", "Tabby cat", "animal", 3)])
+
+
+@case("set_price_zero_and_same_and_large", "Doc: A valid price is an `int` (not a `bool`) of 0 or "
+      "more.")
+def _(c):
+    s, _exp = basic(c)
+    c.set_price(s, "cat", 0)
+    same_item(c.get(s, "cat"), item("cat", "Tabby cat", "animal", 0))
+    c.set_price(s, "cat", 0)
+    same_item(c.get(s, "cat"), item("cat", "Tabby cat", "animal", 0))
+    c.set_price(s, "ball", 250)
+    same_item(c.get(s, "ball"), item("ball", "Rubber ball", "product", 250))
+    c.set_price(s, "ball", 10 ** 30)
+    same_item(c.get(s, "ball"), item("ball", "Rubber ball", "product", 10 ** 30))
+    c.set_price(s, "ball", 1)
+    same_item(c.get(s, "ball"), item("ball", "Rubber ball", "product", 1))
+
+
+@case("set_price_unknown_keyerror", "Doc: set_price: `KeyError` when unknown; a refused call "
+      "changes nothing.")
+def _(c):
+    s, exp = basic(c)
+    refused(c, KeyError, s, exp, c.set_price, "dog", 100)
+    refused(c, KeyError, s, exp, c.set_price, "Cat", 0)
+    raises(KeyError, c.get, s, "dog")  # the refused set_price did not create it
+    e = c.new()
+    refused(c, KeyError, e, [], c.set_price, "cat", 100)
+    raises(KeyError, c.get, e, "cat")
+
+
+BAD_PRICES = [
+    ("True", True), ("False", False), ("minus_1", -1), ("minus_large", -10 ** 30),
+    ("float_1_0", 1.0), ("float_0_0", 0.0), ("float_2_5", 2.5), ("float_nan", float("nan")),
+    ("float_inf", float("inf")), ("None", None), ("str_100", "100"), ("str_empty", ""),
+    ("list", [100]), ("tuple", (100,)), ("dict", {"price_cents": 100}),
+    ("Decimal", decimal.Decimal(100)), ("Fraction", fractions.Fraction(100, 1)),
+    ("complex", complex(100, 0)), ("bytes", b"100"),
+]
+
+
+def _mk_bad_price(label, bad):
+    # Doc: add: `ValueError` when ... the price is not valid. A valid price is an `int` (not a
+    # `bool`) of 0 or more. A refused call changes nothing.
+    @case("add_refuses_price_" + label, "Doc: add: `ValueError` when the price is not valid; a "
+          "valid price is an `int` (not a `bool`) of 0 or more; a refused call changes nothing.")
+    def _(c):
+        s, exp = basic(c)
+        refused(c, ValueError, s, exp, c.add, "new", "New", "product", bad)
+        raises(KeyError, c.get, s, "new")
+        e = c.new()
+        refused(c, ValueError, e, [], c.add, "new", "New", "animal", bad)
+        c.add(s, "new", "New", "product", 7)  # the id is still free
+        same_item(c.get(s, "new"), item("new", "New", "product", 7))
+
+    # Doc: set_price: `ValueError` when the price is not valid. A refused call changes nothing.
+    @case("set_price_refuses_price_" + label, "Doc: set_price: `ValueError` when the price is not "
+          "valid; a valid price is an `int` (not a `bool`) of 0 or more; a refused call changes "
+          "nothing.")
+    def _(c):
+        s, exp = basic(c)
+        refused(c, ValueError, s, exp, c.set_price, "cat", bad)
+        refused(c, ValueError, s, exp, c.set_price, "ball", bad)
+        s2 = c.new()
+        c.add(s2, "one", "One", "animal", 1)
+        c.add(s2, "zero", "Zero", "animal", 0)
+        exp2 = [item("one", "One", "animal", 1), item("zero", "Zero", "animal", 0)]
+        refused(c, ValueError, s2, exp2, c.set_price, "one", bad)   # True == 1, 1.0 == 1
+        refused(c, ValueError, s2, exp2, c.set_price, "zero", bad)  # False == 0, 0.0 == 0
+        c.set_price(s, "cat", 5)
+        same_item(c.get(s, "cat"), item("cat", "Tabby cat", "animal", 5))
+
+
+for _l, _b in BAD_PRICES:
+    _mk_bad_price(_l, _b)
+
+
+BAD_STRINGS = [
+    ("empty", ""), ("None", None), ("int", 7), ("zero", 0), ("True", True), ("float", 1.5),
+    ("bytes", b"cat"), ("list", ["cat"]), ("tuple", ("cat",)), ("dict", {"id": "cat"}),
+    ("set", {"cat"}),
+]
+
+
+def _mk_bad_string(label, bad):
+    # Doc: add: `ValueError` when `item_id` or `name` is not a non-empty string.
+    @case("add_refuses_id_" + label, "Doc: add: `ValueError` when `item_id` ... is not a non-empty "
+          "string; a refused call changes nothing.")
+    def _(c):
+        s, exp = basic(c)
+        refused(c, ValueError, s, exp, c.add, bad, "Name", "animal", 100)
+        e = c.new()
+        refused(c, ValueError, e, [], c.add, bad, "Name", "product", 0)
+
+    @case("add_refuses_name_" + label, "Doc: add: `ValueError` when ... `name` is not a non-empty "
+          "string; a refused call changes nothing.")
+    def _(c):
+        s, exp = basic(c)
+        refused(c, ValueError, s, exp, c.add, "new", bad, "animal", 100)
+        raises(KeyError, c.get, s, "new")
+        e = c.new()
+        refused(c, ValueError, e, [], c.add, "new", bad, "product", 0)
+        c.add(s, "new", "New", "animal", 7)  # the id is still free
+        same_item(c.get(s, "new"), item("new", "New", "animal", 7))
+
+
+for _l, _b in BAD_STRINGS:
+    _mk_bad_string(_l, _b)
+
+
+BAD_KINDS = [
+    ("Animal", "Animal"), ("PRODUCT", "PRODUCT"), ("empty", ""), ("None", None),
+    ("animals", "animals"), ("products", "products"), ("space_animal", " animal"),
+    ("product_space", "product "), ("pet", "pet"), ("animal_or_product", "animal or product"),
+    ("int", 1), ("True", True), ("bytes", b"animal"), ("list", ["animal"]),
+    ("tuple", ("animal", "product")), ("dict", {"animal": 1}),
+]
+
+
+def _mk_bad_kind(label, bad):
+    @case("add_refuses_kind_" + label, "Doc: add: `ValueError` when ... `kind` is not `\"animal\"` "
+          "or `\"product\"`; a refused call changes nothing.")
+    def _(c):
+        s, exp = basic(c)
+        refused(c, ValueError, s, exp, c.add, "new", "New", bad, 100)
+        raises(KeyError, c.get, s, "new")
+        e = c.new()
+        refused(c, ValueError, e, [], c.add, "new", "New", bad, 0)
+        c.add(s, "new", "New", "product", 7)  # the id is still free
+        same_item(c.get(s, "new"), item("new", "New", "product", 7))
+
+
+for _l, _b in BAD_KINDS:
+    _mk_bad_kind(_l, _b)
+
+
+@case("add_refuses_several_faults_at_once", "Doc: add: `ValueError` when [any of the listed "
+      "conditions] (all listed conditions give the same class).")
+def _(c):
+    s, exp = basic(c)
+    refused(c, ValueError, s, exp, c.add, "", "", "bird", -1)
+    refused(c, ValueError, s, exp, c.add, "cat", "", "animal", 1)
+    refused(c, ValueError, s, exp, c.add, "cat", "Tabby cat", "Animal", True)
+    refused(c, ValueError, s, exp, c.add, None, None, None, None)
+
+
+# --------------------------------------------------------------- duplicates
+
+@case("add_duplicate_refused_item_unaltered", "Doc: add: `ValueError` when ... the id already "
+      "exists; a refused call changes nothing.")
+def _(c):
+    s, exp = basic(c)
+    refused(c, ValueError, s, exp, c.add, "cat", "Other cat", "product", 1)
+    refused(c, ValueError, s, exp, c.add, "ball", "Rubber ball", "product", 0)
+    refused(c, ValueError, s, exp, c.add, "cat", "Tabby cat", "animal", 99999)
+    check(len(c.items(s)) == 2, "duplicate add produced a second entry")
+
+
+@case("add_duplicate_identical_refused", "Doc: add: `ValueError` when ... the id already exists "
+      "(even with identical name, kind and price).")
+def _(c):
+    s, exp = basic(c)
+    refused(c, ValueError, s, exp, c.add, "cat", "Tabby cat", "animal", 12000)
+    refused(c, ValueError, s, exp, c.add, "cat", "Tabby cat", "animal", 12000)
+
+
+@case("add_duplicate_after_set_price", "Doc: add: `ValueError` when the id already exists; a "
+      "refused call changes nothing.")
+def _(c):
+    s, _exp = basic(c)
+    c.set_price(s, "cat", 77)
+    exp = [item("ball", "Rubber ball", "product", 250), item("cat", "Tabby cat", "animal", 77)]
+    refused(c, ValueError, s, exp, c.add, "cat", "Tabby cat", "animal", 12000)
+
+
+@case("add_duplicate_after_round_trip", "Doc: state survives `json.loads(json.dumps(state))` "
+      "unchanged in behaviour; add: `ValueError` when the id already exists.")
+def _(c):
+    s, exp = basic(c)
+    s = rt(s)
+    refused(c, ValueError, s, exp, c.add, "cat", "Other", "product", 1)
+    refused(c, ValueError, s, exp, c.add, "ball", "Other", "animal", 1)
+
+
+@case("refused_calls_sequence_then_use", "Doc: A refused call changes nothing (principle 5: a "
+      "refused call leaves the state as it was).")
+def _(c):
+    s, exp = basic(c)
+    refused(c, ValueError, s, exp, c.add, "dog", "Dog", "animal", -1)
+    refused(c, ValueError, s, exp, c.add, "dog", "Dog", "dog", 1)
+    refused(c, ValueError, s, exp, c.add, "dog", "", "animal", 1)
+    refused(c, ValueError, s, exp, c.add, "cat", "Dog", "animal", 1)
+    refused(c, KeyError, s, exp, c.set_price, "dog", 1)
+    refused(c, ValueError, s, exp, c.set_price, "cat", -1)
+    refused(c, ValueError, s, exp, c.set_price, "cat", True)
+    refused(c, KeyError, s, exp, c.get, "dog")
+    c.add(s, "dog", "Dog", "animal", 1)
+    c.set_price(s, "cat", 2)
+    same_items(c.items(s), [exp[0], item("cat", "Tabby cat", "animal", 2),
+                            item("dog", "Dog", "animal", 1)])
+
+
+# --------------------------------------------------------------- JSON round trip
+
+@case("round_trip_empty_state", "Doc: the state ... survives `json.loads(json.dumps(state))` "
+      "unchanged in behaviour.")
+def _(c):
+    s = rt(c.new())
+    same_items(c.items(s), [])
+    raises(KeyError, c.get, s, "a")
+    raises(KeyError, c.set_price, s, "a", 1)
+    check(c.add(s, "a", "A", "animal", 1) is None, "add returned non-None")
+    same_items(c.items(s), [item("a", "A", "animal", 1)])
+
+
+@case("round_trip_mid_use_then_continue", "Doc: the state ... survives "
+      "`json.loads(json.dumps(state))` unchanged in behaviour.")
+def _(c):
+    s, exp = basic(c)
+    c.set_price(s, "ball", 300)
+    exp[0]["price_cents"] = 300
+    s = rt(s)
+    same_items(c.items(s), exp, "items() after round trip")
+    same_item(c.get(s, "cat"), exp[1], "get after round trip")
+    check(c.add(s, "ant", "Ant", "animal", 0) is None, "add returned non-None")
+    check(c.set_price(s, "cat", 1) is None, "set_price returned non-None")
+    raises(KeyError, c.get, s, "dog")
+    raises(KeyError, c.set_price, s, "dog", 1)
+    raises(ValueError, c.set_price, s, "cat", True)
+    raises(ValueError, c.set_price, s, "cat", 1.0)
+    raises(ValueError, c.add, s, "ant", "Ant2", "animal", 1)
+    same_items(c.items(s), [item("ant", "Ant", "animal", 0),
+                            item("ball", "Rubber ball", "product", 300),
+                            item("cat", "Tabby cat", "animal", 1)])
+
+
+@case("round_trip_repeated", "Doc: the state ... survives `json.loads(json.dumps(state))` "
+      "unchanged in behaviour (each time).")
+def _(c):
+    s = c.new()
+    exp = []
+    for n in range(12):
+        s = rt(s)
+        i = "id%02d" % (11 - n)
+        c.add(s, i, "N%d" % n, "animal" if n % 2 else "product", n)
+        exp.append(item(i, "N%d" % n, "animal" if n % 2 else "product", n))
+        s = rt(rt(s))
+        c.set_price(s, i, n * 10)
+        exp[-1]["price_cents"] = n * 10
+        same_items(c.items(s), sorted(exp, key=lambda e: e["id"]))
+
+
+@case("round_trip_via_text_and_options", "Doc: the state ... survives "
+      "`json.loads(json.dumps(state))` unchanged in behaviour.")
+def _(c):
+    s, exp = basic(c)
+    c.add(s, "zo\xe9", "Caf\xe9 \u72ac", "product", 2 ** 60)
+    exp.append(item("zo\xe9", "Caf\xe9 \u72ac", "product", 2 ** 60))
+    text = json.dumps(s)
+    check(isinstance(text, str), "json.dumps(state) is not text")
+    s2 = json.loads(text)
+    same_items(c.items(s2), exp)
+    s3 = json.loads(json.dumps(s2))
+    same_items(c.items(s3), exp)
+    same_item(c.get(s3, "zo\xe9"), exp[2])
+
+
+@case("round_trip_original_unaffected", "Doc: the state survives the round trip unchanged in "
+      "behaviour; principle 2: names, kinds and prices live only in this state.")
+def _(c):
+    s, exp = basic(c)
+    copy = rt(s)
+    same_items(c.items(s), exp, "original after json.dumps")
+    c.add(s, "dog", "Dog", "animal", 5)
+    c.set_price(s, "cat", 1)
+    same_items(c.items(s), [exp[0], item("cat", "Tabby cat", "animal", 1),
+                            item("dog", "Dog", "animal", 5)], "original, used after the dump")
+    same_items(c.items(copy), exp, "copy after the original changed")
+    raises(KeyError, c.get, copy, "dog")
+
+
+@case("round_trip_copy_independent_of_original", "Doc: principle 1: the module holds no state of "
+      "its own; principle 2: names, kinds and prices live only in this state.")
+def _(c):
+    s, exp = basic(c)
+    copy = rt(s)
+    c.add(copy, "eel", "Eel", "animal", 9)
+    c.set_price(copy, "ball", 0)
+    same_items(c.items(s), exp, "original after the copy changed")
+    raises(KeyError, c.get, s, "eel")
+    c.add(s, "eel", "Other eel", "product", 4)  # not a duplicate in the original
+    same_item(c.get(copy, "eel"), item("eel", "Eel", "animal", 9))
+    same_item(c.get(s, "eel"), item("eel", "Other eel", "product", 4))
+    same_item(c.get(copy, "ball"), item("ball", "Rubber ball", "product", 0))
+    same_item(c.get(s, "ball"), exp[0])
+
+
+@case("round_trip_types_kept", "Doc: an item is a dict with exactly `id`, `name`, `kind`, "
+      "`price_cents`; a valid price is an `int`; round trip unchanged in behaviour.")
+def _(c):
+    s = c.new()
+    c.add(s, "0", "1", "animal", 0)
+    c.add(s, "1", "0", "product", 1)
+    s = rt(s)
+    same_items(c.items(s), [item("0", "1", "animal", 0), item("1", "0", "product", 1)])
+    c.set_price(s, "0", 1)
+    s = rt(s)
+    same_item(c.get(s, "0"), item("0", "1", "animal", 1))
+    same_item(c.get(s, "1"), item("1", "0", "product", 1))
+
+
+@case("state_works_in_fresh_module_instance", "Doc: principle 1: the module holds no state of its "
+      "own; the state survives the JSON round trip unchanged in behaviour.")
+def _(c):
+    s, exp = basic(c)
+    text = json.dumps(s)
+    d = load()  # a second, separate instance of the module
+    same_items(d.items(json.loads(text)), exp, "items() in a fresh module instance")
+    same_items(d.items(s), exp, "items() of the same state in a fresh module instance")
+    same_items(d.items(d.new()), [], "new() in a fresh module instance")
+    s2 = json.loads(text)
+    raises(ValueError, d.add, s2, "cat", "Again", "animal", 1)
+    d.add(s2, "dog", "Dog", "animal", 5)
+    d.set_price(s2, "cat", 3)
+    same_items(c.items(json.loads(json.dumps(s2))),
+               [exp[0], item("cat", "Tabby cat", "animal", 3), item("dog", "Dog", "animal", 5)])
+    same_items(c.items(s), exp, "original state")
+
+
+@case("new_after_use_is_still_empty", "Doc: `new()` returns an empty state; principle 1: the "
+      "module holds no state of its own.")
+def _(c):
+    s, _exp = basic(c)
+    c.set_price(s, "cat", 1)
+    rt(s)
+    n = c.new()
+    same_items(c.items(n), [])
+    raises(KeyError, c.get, n, "cat")
+    c.add(n, "cat", "New cat", "animal", 2)
+    same_item(c.get(s, "cat"), item("cat", "Tabby cat", "animal", 1))
+
+
+# --------------------------------------------------------------- inherited rules (static)
+
+def _source():
+    with open(os.path.join(BUILD, "catalog.py"), encoding="utf-8") as f:
+        return f.read()
+
+
+@case("rule_no_line_over_100_chars", "Rule 3: no line longer than 100 characters.")
+def _(c):
+    for n, line in enumerate(_source().splitlines(), 1):
+        check(len(line) <= 100, "line %d has %d characters" % (n, len(line)))
+
+
+@case("rule_imports_standard_library_only", "Rule 3: Python 3 standard library only; a unit's "
+      "module imports no other unit's module.")
+def _(c):
+    std = getattr(sys, "stdlib_module_names", None)
+    if std is None:
+        return  # cannot tell on this interpreter; do not guess
+    for node in ast.walk(ast.parse(_source())):
+        names = []
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            check(node.level == 0, "relative import on line %d" % node.lineno)
+            names = [node.module or ""]
+        for nm in names:
+            check(nm.split(".")[0] in std, "imports %r (not standard library)" % nm)
+
+
+# --------------------------------------------------------------- runner
+
+def run_one(name, build):
+    global BUILD
+    BUILD = os.path.abspath(build)
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, BUILD)
+    fn = dict((n, f) for n, _b, f in CASES)[name]
+    try:
+        mod = load()
+        fn(mod)
+    except Fail as e:
+        reason = str(e)
+    except BaseException as e:  # noqa: any other failure of the build is a failed case
+        reason = "%s: %s" % (type(e).__name__, str(e))
+    else:
+        sys.stderr.write("\n@@AUDIT-OK@@\n")
+        sys.stderr.flush()
+        os._exit(0)
+    sys.stderr.write("\n@@AUDIT-FAIL@@ " + " ".join(reason.split())[:200] + "\n")
+    sys.stderr.flush()
+    os._exit(1)
+
+
+def main(argv):
+    if len(argv) == 4 and argv[1] == "--run-case":
+        run_one(argv[2], argv[3])
+        return 2
+    if len(argv) != 2:
+        sys.stderr.write("usage: check <build-dir>\n")
+        return 2
+    build = os.path.abspath(argv[1])
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("PYTHONPATH", None)
+    me = os.path.abspath(__file__)
+    passed = 0
+    with tempfile.TemporaryDirectory() as cwd:
+        for name, _basis, _fn in CASES:
+            reason = None
+            try:
+                p = subprocess.run(
+                    [sys.executable, "-B", me, "--run-case", name, build],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE, cwd=cwd, env=env, timeout=TIMEOUT)
+                err = p.stderr.decode("utf-8", "replace")
+                lines = [ln for ln in err.splitlines() if ln.startswith("@@AUDIT-")]
+                if p.returncode == 0 and lines and lines[-1].startswith("@@AUDIT-OK@@"):
+                    pass
+                elif lines and lines[-1].startswith("@@AUDIT-FAIL@@"):
+                    reason = lines[-1][len("@@AUDIT-FAIL@@"):].strip() or "failed"
+                else:
+                    reason = "case process ended abnormally (exit %s)" % p.returncode
+            except subprocess.TimeoutExpired:
+                reason = "timeout after %ds" % TIMEOUT
+            except Exception as e:
+                reason = "could not run case: %s" % type(e).__name__
+            if reason is None:
+                passed += 1
+                print("PASS %s" % name)
+            else:
+                print("FAIL %s: %s" % (name, reason))
+            sys.stdout.flush()
+    print("%d/%d" % (passed, len(CASES)))
+    return 0 if passed == len(CASES) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

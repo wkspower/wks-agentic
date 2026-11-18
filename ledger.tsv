@@ -7,3 +7,4 @@
 2026-11-18T20:34Z	petshop/catalog	1	audit cases for catalog, written from its document alone (source of the error numbers)
 2026-11-18T20:42Z	petshop/catalog	1	build of catalog (the change), attempt 1
 2026-11-18T20:42Z	petshop/catalog	1	alternative build of catalog, made without sight of the change
+2026-11-18T20:58Z	enforcer	1	case for undo added to the measure of the enforcer, by an agent that does not build it
