@@ -156,10 +156,10 @@ def main():
             # stands
             h = src_hash(src)
             last = None
-            text = read(os.path.join(tree, "judge", "stands.tsv")) or b""
-            for l in text.decode("utf-8", "replace").splitlines():
+            text = read(os.path.join(tree, "judge", "stands", u + ".tsv")) or b""
+            for l in text.decode("utf-8", "replace").splitlines()[-1:]:
                 f = l.split("\t")
-                if len(f) >= 5 and f[1] == u:
+                if len(f) >= 5:
                     last = f[4]
             rec = (read(os.path.join(d, "record.md")) or b"").decode(
                 "utf-8", "replace").splitlines()

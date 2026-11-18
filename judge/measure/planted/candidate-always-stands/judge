@@ -2,7 +2,7 @@
 """judge <unit-dir> <candidate-dir> [<alternative-dir> ...]
 
 Exit 0 when a build stands (installed as <unit-dir>/src, one line appended to
-<tree>/judge/stands.tsv); exit 1 when nothing stands, having changed nothing.
+<tree>/judge/stands/<unit path>.tsv); exit 1 when nothing stands, having changed nothing.
 """
 import hashlib
 import math
@@ -78,6 +78,14 @@ def src_hash(src):
     return h.hexdigest()
 
 
+def stands_file(root, unit):
+    """The unit's own file under <root>/judge/stands/, its directory made."""
+    parts = os.path.relpath(unit, root).split(os.sep)
+    path = os.path.join(root, "judge", "stands", *parts) + ".tsv"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return path
+
+
 def main(argv):
     if len(argv) < 3:
         print(__doc__, file=sys.stderr)
@@ -120,8 +128,7 @@ def main(argv):
         src_hash(src),
         " ".join(compared),
     ])
-    os.makedirs(os.path.join(root, "judge"), exist_ok=True)
-    with open(os.path.join(root, "judge", "stands.tsv"), "a", encoding="utf-8") as f:
+    with open(stands_file(root, unit), "a", encoding="utf-8") as f:
         f.write(line + "\n")
     print("stands: " + which)
     return 0

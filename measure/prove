@@ -26,6 +26,8 @@ REASON = {
     "rising-number": "number rose",
     "growing-queue": "queue grew",
     "result-lost-number-rises": "number rose",
+    "stands-file-names-another-unit": "not the file's unit",
+    "stand-only-in-old-shared-file": "unknown",
 }
 
 

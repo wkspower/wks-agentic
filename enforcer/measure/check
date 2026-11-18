@@ -12,10 +12,12 @@ Any fail: exit 1, failing case names on stderr.
 The clean tree (see build_tree):
 
     root.md principles.md queue.md build verdict measure/ ledger.tsv
-    judge/stands.tsv              not a unit: only the judge's list
+    judge/stands/                 not a unit: the judge's file of each unit
     tool/                         unit, src, "stood unjudged" in record.md
-    shop/                         unit, src, stands by stands.tsv (2nd line)
-    shop/cat/                     unit, src, stands by stands.tsv, context 4 KB
+    shop/                         unit, src, stands by judge/stands/shop.tsv
+                                  (its 2nd and last line)
+    shop/cat/                     unit, src, stands by
+                                  judge/stands/shop/cat.tsv, context 4 KB
     shop/kennel/dog/              unit under a plain directory, no src
     decoys that are NOT units: unit.md under measure/, audit/, src/, .cache/
 
@@ -210,10 +212,15 @@ def put_measure(tree, unit):
     put(tree, base + "planted/bad/note", "a build without the file good\n")
 
 
+def stands_file(unit):
+    return "judge/stands/%s.tsv" % unit
+
+
 def stand(tree, unit, minute):
-    """Append the judge's line for the unit's present src; return its hash."""
+    """Append the judge's line for the unit's present src to the unit's own
+    file judge/stands/<unit name>.tsv; return the hash."""
     h = src_hash(os.path.join(tree, unit, "src"))
-    put(tree, "judge/stands.tsv",
+    put(tree, stands_file(unit),
         "2026-01-01T00:%02dZ\t%s\tcandidate\t40\t%s\t40 41\n"
         % (minute, unit, h), append=True)
     return h
@@ -231,13 +238,13 @@ def build_tree(path, variant=None):
 
     Clean history, one commit per line:
       1 principles.md root.md queue.md        (touches only those)
-      2 the root's build, verdict, measure, ledger, empty stands.tsv
+      2 the root's build, verdict, measure, ledger
       3 documents, build and verdict of the four units; decoys
       4 the four units' measures
       5 tool/src and its record (stood unjudged)
       6 shop/src, first build, let stand
       7 shop/src, second build, let stand     (shop: two lines, last counts)
-      8 shop/cat/src, let stand               (last line of the file: cat's)
+      8 shop/cat/src, let stand               (cat's own file, one line)
       9 root.md and queue.md together         (an answer written)
      10 one more planted build for cat, and the ledger rows
     """
@@ -254,7 +261,6 @@ def build_tree(path, variant=None):
     put(path, "verdict", SCRIPT, exe=True)
     put_measure(path, "")
     put(path, "ledger.tsv", "# time\tunit\truns\tnote\n")
-    put(path, "judge/stands.tsv", "")
     t.commit("root interface and measure")
     # 3
     for unit in BUDGETS:
@@ -307,10 +313,22 @@ def build_tree(path, variant=None):
         put(path, "principles.md", "\nOne more line.\n", append=True)
         put(path, "ledger.tsv", "# checked\n", append=True)
         t.commit("principles reworded")
+    if variant == "clean-principles-md-below-the-root":
+        # not the root's principles.md: the answer rule does not see it
+        put(path, "shop/kennel/notes/principles.md", "# Notes\n")
+        put(path, "shop/kennel/notes/other.txt", "other\n")
+        t.commit("notes of the kennel")
     # 10
     put(path, "shop/cat/measure/planted/worse/note", "also lacks good\n")
     put(path, "ledger.tsv", LEDGER)
     t.commit("cat: one more planted build; ledger")
+    if variant == "clean-answer-breach-not-reachable-from-head":
+        # a commit that would break `answer`, on a branch HEAD does not reach
+        t.git("checkout", "-q", "-b", "side")
+        put(path, "root.md", "\nAnswer to Q2: ok.\n", append=True)
+        put(path, "shop/unit.md", "\n", append=True)
+        t.commit("answer to Q2 and a tidy-up, never merged")
+        t.git("checkout", "-q", "-")
     # left uncommitted in the working tree
     put(path, "shop/cat/src/__pycache__/main.cpython-311.pyc", b"\0cache")
     put(path, "shop/cat/src/lib/__pycache__/util.cpython-311.pyc", b"\0c")
@@ -410,20 +428,28 @@ def rename(old, new):
 
 
 def stale_stand(tree):
-    """shop: one more line, for the build that stood before the present one."""
-    lines = get(tree, "judge/stands.tsv").splitlines(True)
-    first = [l for l in lines if l.split("\t")[1] == "shop"][0]
-    put(tree, "judge/stands.tsv", first, append=True)
+    """shop: its file gets one more line, for the build that stood before the
+    present one; the present hash is still there, on the line before."""
+    first = get(tree, stands_file("shop")).splitlines(True)[0]
+    put(tree, stands_file("shop"), first, append=True)
 
 
-def stand_under_other_name(tree):
-    """shop: the line holding its present hash now names the unit shop/cat."""
-    lines = get(tree, "judge/stands.tsv").splitlines(True)
-    n = [i for i, l in enumerate(lines) if l.split("\t")[1] == "shop"][-1]
-    f = lines[n].split("\t")
-    f[1] = "shop/cat"
-    lines[n] = "\t".join(f)             # cat's own line is still its last
-    put(tree, "judge/stands.tsv", "".join(lines))
+def stand_in_another_units_file(tree):
+    """shop: the line holding its present hash is moved, as it is, to the
+    file of shop/cat (first line there: cat's own line is still its last)."""
+    lines = get(tree, stands_file("shop")).splitlines(True)
+    put(tree, stands_file("shop"), "".join(lines[:-1]))
+    put(tree, stands_file("shop/cat"),
+        lines[-1] + get(tree, stands_file("shop/cat")))
+
+
+def stands_in_old_single_file(tree):
+    """shop/cat: its own file is gone; every line the judge wrote, cat's right
+    hash on the last, is in the one file judge/stands.tsv that nothing reads
+    any more.  (shop keeps its own file, so only cat is in breach.)"""
+    text = get(tree, stands_file("shop")) + get(tree, stands_file("shop/cat"))
+    os.remove(os.path.join(tree, stands_file("shop/cat")))
+    put(tree, "judge/stands.tsv", text)
 
 
 def unjudged_hash_of_another_build(tree):
@@ -442,13 +468,26 @@ def row(unit, runs):
 # ------------------------------------------------------------------- cases
 # (name, rule that must be named or None for "exit 0", how the tree differs:
 #  a function applied to a copy of the clean tree, or the name of a history
-#  variant of build_tree)
+#  variant of build_tree).  Where the rule is followed by a unit's name, the
+#  breach line must start with both: `<rule-id> <unit name> `.
 
 CASES = [
     ("clean", None, None),
     ("clean-ledger-absent", None, remove("ledger.tsv")),
     ("clean-context-exactly-at-budget", None, grow(DOG, "unit.md", 8 * 1024)),
     ("clean-src-uncommitted-measure-committed", None, "clean-src-uncommitted"),
+    # answer looks only at commits reachable from HEAD, and only at
+    # principles.md and root.md at the root
+    ("clean-answer-breach-not-reachable-from-head", None,
+     "clean-answer-breach-not-reachable-from-head"),
+    ("clean-principles-md-below-the-root", None,
+     "clean-principles-md-below-the-root"),
+
+    # a breach line names the unit: its path from the root, `root` for the root
+    ("breach-line-names-unit-by-path-from-root", "doc " + DOG,
+     drop_line(DOG + "/unit.md", "Parent:")),
+    ("breach-line-names-the-root-root", "doc root",
+     drop_line("root.md", "Parent:")),
 
     # doc: names its parent, six declarations in order, seven principle rows
     ("doc-no-parent-line", "doc", drop_line("tool/unit.md", "Parent:")),
@@ -523,7 +562,8 @@ CASES = [
     ("before-measure-never-committed", "before", "before-measure-uncommitted"),
     ("before-neither-committed", "before", "before-neither-committed"),
 
-    # stands: src's hash is the unit's last in stands.tsv, or stood unjudged
+    # stands: src's hash is the fifth field of the last line of the unit's
+    # own file judge/stands/<unit name>.tsv, or the record says stood unjudged
     ("stands-src-file-changed-after-stand", "stands",
      append("shop/cat/src/main.py", "print('changed')\n")),
     ("stands-src-file-added-after-stand", "stands",
@@ -531,8 +571,10 @@ CASES = [
     ("stands-src-file-renamed-after-stand", "stands",
      rename("shop/src/shop.py", "shop/src/store.py")),
     ("stands-hash-is-not-the-units-last-line", "stands", stale_stand),
-    ("stands-hash-only-on-another-units-line", "stands",
-     stand_under_other_name),
+    ("stands-hash-only-in-another-units-file", "stands",
+     stand_in_another_units_file),
+    ("stands-hash-only-in-old-single-stands-tsv", "stands shop/cat",
+     stands_in_old_single_file),
     ("stands-unjudged-src-changed", "stands",
      append("tool/src/main.py", "print('changed')\n")),
     ("stands-unjudged-line-names-another-hash", "stands",
@@ -551,6 +593,8 @@ CASES = [
     ("spend-unit-rows-sum-over-its-cost", "spend", row("shop/cat", 2)),
     ("spend-child-rows-push-parent-over", "spend", row(DOG, 2)),
     ("spend-all-rows-push-root-over", "spend", row("root", 3)),
+    ("spend-row-naming-no-unit-counts-for-root", "spend",
+     row("gone/unit", 3)),
 ]
 
 HISTORY_VARIANTS = sorted(set(c[2] for c in CASES if isinstance(c[2], str)))

@@ -12,7 +12,8 @@ the failing cases are named on stderr.
 
 The fixture tree
     <tree>/root.md                    marks the tree's root
-    <tree>/judge/                     where stands.tsv is appended
+    <tree>/judge/                     under it the judge keeps one stands file
+                                      per unit: judge/stands/shop/widget.tsv
     <tree>/shop/widget/unit.md        its Budget line states `alternatives N`
     <tree>/shop/widget/measure/check  the toy check (below)
     <tree>/shop/widget/src/           what exists, when the case has one
@@ -162,7 +163,7 @@ class World:
     """One fixture tree, the builds offered to the judge, and what it did."""
 
     def __init__(self, judge, alternatives=0, existing=None, check=TOY_CHECK,
-                 stands=None, nested=False, purpose="Hold one integer, the lower the better.",
+                 stands=None, others=None, nested=False, purpose="Hold one integer, the lower the better.",
                  selection="Compared with what exists and with the alternatives offered."):
         self._tmp = tempfile.TemporaryDirectory(prefix="judge-measure-")
         self.top = os.path.realpath(self._tmp.name)
@@ -174,24 +175,38 @@ class World:
             self.tree = os.path.join(self.outer, "inner")
         else:
             self.tree = os.path.join(self.top, "tree")
-        self.unit = os.path.join(self.tree, "shop", "widget")
-        self.src = os.path.join(self.unit, "src")
-        self.stands = os.path.join(self.tree, "judge", "stands.tsv")
+        self.unit_doc = UNIT_DOC % {
+            "purpose": purpose, "alternatives": alternatives, "selection": selection}
+        self.unit_check = check
+        self.focus(UNIT)
         self.elsewhere = os.path.join(self.top, "elsewhere")
         os.makedirs(self.elsewhere)
         write(os.path.join(self.tree, "root.md"), "# Root\n")
         os.makedirs(os.path.join(self.tree, "judge"))
         write(os.path.join(self.tree, "shop", "notes.txt"), "kept by the shop\n")
-        write(os.path.join(self.unit, "unit.md"), UNIT_DOC % {
-            "purpose": purpose, "alternatives": alternatives, "selection": selection})
-        if check is not None:
-            write(os.path.join(self.unit, "measure", "check"), check, executable=True)
+        self.add_unit()
         if existing is not None:
             for rel, data in existing.items():
                 write(os.path.join(self.src, rel), data)
-        if stands is not None:
+        if stands is not None:  # earlier lines of this unit, in its own file
             write(self.stands, stands)
+        for rel, data in (others or {}).items():  # other files under judge/, e.g. other units' stands
+            write(os.path.join(self.tree, "judge", rel), data)
         self.builds = {}
+
+    def focus(self, unit_path):
+        """Make `unit_path` (from the tree's root) the unit the next runs judge."""
+        self.unit_path = unit_path
+        self.unit = os.path.join(self.tree, *unit_path.split("/"))
+        self.src = os.path.join(self.unit, "src")
+        self.stands_rel = "judge/stands/" + unit_path + ".tsv"
+        self.stands = os.path.join(self.tree, *self.stands_rel.split("/"))
+
+    def add_unit(self):
+        """Give the unit in focus its document and its check."""
+        write(os.path.join(self.unit, "unit.md"), self.unit_doc)
+        if self.unit_check is not None:
+            write(os.path.join(self.unit, "measure", "check"), self.unit_check, executable=True)
 
     def close(self):
         self._tmp.cleanup()
@@ -247,7 +262,8 @@ class World:
         self.outer_untouched()
 
     def stood(self, code, which, build, number):
-        """Exit 0, `build` installed as src, one well-formed line appended."""
+        """Exit 0, `build` installed as src, one well-formed line appended to the
+        unit's own stands file, nothing else in the tree changed."""
         need(code == 0, "exit %r where %s must stand (expected 0)" % (code, which))
         need(os.path.isdir(self.src), "no src after a build stood")
         need(files_of(self.src) == files_of(build),
@@ -257,7 +273,8 @@ class World:
         need(TIME_RE.match(fields[0]), "time %r is not YYYY-MM-DDTHH:MMZ" % fields[0])
         need(self.started <= fields[0] <= self.ended,
              "time %s is not the UTC time of the run (%s..%s)" % (fields[0], self.started, self.ended))
-        need(fields[1] == UNIT, "unit path %r, expected %r (from the tree's root)" % (fields[1], UNIT))
+        need(fields[1] == self.unit_path,
+             "unit path %r, expected %r (from the tree's root)" % (fields[1], self.unit_path))
         need(fields[2] == which, "which is %r, expected %r" % (fields[2], which))
         try:
             written = float(fields[3])
@@ -267,25 +284,30 @@ class World:
         need(fields[4] == src_hash(self.src), "hash field is not the hash of the installed src")
         need(fields[5].strip() != "", "sixth field (the numbers compared) is empty")
         after = snapshot(self.tree)
+        # what may differ: src, the unit's stands file, and the directories that lead to it
+        src_rel = self.unit_path + "/src"
+        leading = [self.stands_rel.rsplit("/", n)[0] for n in range(1, self.stands_rel.count("/"))]
         for snap in (after, self.before_tree):
-            for rel in [r for r in snap if r == UNIT + "/src" or r.startswith(UNIT + "/src/")
-                        or r == "judge/stands.tsv"]:
+            for rel in [r for r in snap if r == src_rel or r.startswith(src_rel + "/")
+                        or r == self.stands_rel
+                        or (r in leading and snap[r] == ("dir",))]:
                 del snap[rel]
         need(after == self.before_tree,
-             "the judge changed more than src and stands.tsv: " + self.diff(after))
+             "the judge changed more than src and %s: %s" % (self.stands_rel, self.diff(after)))
         self.builds_untouched()
         self.outer_untouched()
 
     def appended_line(self):
-        """The fields of the one line appended to stands.tsv by the last run."""
+        """The fields of the one line appended to the unit's stands file by the last run."""
+        need(os.path.isfile(self.stands), "no %s in the tree after a build stood" % self.stands_rel)
         now = self.read_stands()
-        need(now is not None, "no judge/stands.tsv in the tree after a build stood")
         old = self.before_stands or b""
-        need(now.startswith(old), "earlier content of stands.tsv was not kept")
+        need(now.startswith(old), "earlier content of %s was not kept" % self.stands_rel)
         old_lines = [l for l in old.decode("utf-8", "replace").split("\n") if l.strip()]
         new_lines = [l for l in now.decode("utf-8", "replace").split("\n") if l.strip()]
         need(len(new_lines) == len(old_lines) + 1,
-             "%d lines appended to stands.tsv, exactly 1 expected" % (len(new_lines) - len(old_lines)))
+             "%d lines appended to %s, exactly 1 expected"
+             % (len(new_lines) - len(old_lines), self.stands_rel))
         return new_lines[-1].rstrip("\r").split("\t")
 
     def builds_untouched(self):
@@ -342,7 +364,7 @@ OPEN = []
 
 @case
 def first_build_stands(judge):
-    """No src yet, budget 0, the candidate passes: exit 0, it is installed as src, stands.tsv is created with one line."""
+    """No src yet, budget 0, the candidate passes: exit 0, it is installed as src, judge/stands/shop/widget.tsv is created (its directories too) with one line; no judge/stands.tsv appears."""
     w = world(judge)
     cand = w.build("cand", 5)
     w.stood(w.run(cand), "candidate", cand, 5)
@@ -369,16 +391,50 @@ def hash_covers_every_file_sorted_pycache_left_out(judge):
 
 @case
 def line_is_appended_after_earlier_lines(judge):
-    """stands.tsv already holds lines: they are kept and exactly one is appended."""
-    earlier = "2026-11-18T20:30Z\tshop/other\tcandidate\t3\t" + "0" * 64 + "\t3\n"
+    """The unit's stands file already holds a line: it is kept and exactly one is appended."""
+    earlier = "2026-11-18T20:30Z\tshop/widget\tcandidate\t9\t" + "0" * 64 + "\t9\n"
     w = world(judge, stands=earlier)
     cand = w.build("cand", 5)
     w.stood(w.run(cand), "candidate", cand, 5)
 
 
 @case
+def other_units_stands_files_are_untouched(judge):
+    """Other units have stands files (`shop/other`, `enforcer`, and `shop` itself, beside the directory `shop/`): a stand for `shop/widget` leaves each byte for byte as it was."""
+    line = "2026-11-18T20:30Z\t%s\tcandidate\t3\t" + "0" * 64 + "\t3\n"
+    others = {"stands/shop/other.tsv": line % "shop/other", "stands/enforcer.tsv": line % "enforcer",
+              "stands/shop.tsv": line % "shop"}
+    w = world(judge, others=others)
+    cand = w.build("cand", 5)
+    w.stood(w.run(cand), "candidate", cand, 5)
+    for rel, data in others.items():
+        with open(os.path.join(w.tree, "judge", rel), "rb") as f:
+            need(f.read() == data.encode(), "judge/%s was changed by a stand of shop/widget" % rel)
+
+
+@case
+def one_stands_file_per_unit(judge):
+    """Two units in one tree: `shop/gadget` stands (its line goes to judge/stands/shop/gadget.tsv); then `shop/widget` stands twice: both lines go to judge/stands/shop/widget.tsv, the second appended, and gadget's file stays byte-identical."""
+    w = world(judge)
+    w.focus("shop/gadget")
+    w.add_unit()
+    gadget = w.build("gadget", 7, extra={"who.txt": "gadget\n"})
+    w.stood(w.run(gadget), "candidate", gadget, 7)
+    gadget_file, gadget_bytes = w.stands, w.read_stands()
+    w.focus("shop/widget")
+    first = w.build("first", 8)
+    w.stood(w.run(first), "candidate", first, 8)
+    second = w.build("second", 6)
+    w.stood(w.run(second), "candidate", second, 6)
+    with open(gadget_file, "rb") as f:
+        need(f.read() == gadget_bytes, "judge/stands/shop/gadget.tsv changed when shop/widget stood")
+    need(len([l for l in w.read_stands().split(b"\n") if l.strip()]) == 2,
+         "judge/stands/shop/widget.tsv does not hold the two lines of the two stands")
+
+
+@case
 def two_stands_two_lines(judge):
-    """A unit improved twice has two lines, each its own: the second run appends, it does not rewrite."""
+    """A unit improved twice has two lines in its file, each its own: the second run appends, it does not rewrite."""
     w = world(judge)
     first = w.build("first", 8)
     w.stood(w.run(first), "candidate", first, 8)
@@ -390,21 +446,21 @@ def two_stands_two_lines(judge):
 
 @case
 def failing_candidate_never_stands(judge):
-    """The candidate fails the check (exit 1, though a low number is printed): exit 1, src and stands.tsv untouched."""
+    """The candidate fails the check (exit 1, though a low number is printed): exit 1, src untouched, no stands file written."""
     w = world(judge, existing=toy(9))
     w.refused(w.run(w.build("cand", 1, ok=False)))
 
 
 @case
 def failing_candidate_with_no_src(judge):
-    """Nothing exists and the candidate fails: exit 1, no src and no stands.tsv appear."""
+    """Nothing exists and the candidate fails: exit 1, no src and nothing under judge/ appear."""
     w = world(judge)
     w.refused(w.run(w.build("cand", 1, ok=False)))
 
 
 @case
 def refusal_writes_no_line(judge):
-    """A refusal leaves an existing stands.tsv byte for byte as it was."""
+    """A refusal leaves the unit's existing stands file byte for byte as it was."""
     earlier = "2026-11-18T20:30Z\tshop/widget\tcandidate\t9\t" + "0" * 64 + "\t9\n"
     w = world(judge, existing=toy(9), stands=earlier)
     w.refused(w.run(w.build("cand", 12)))
@@ -662,7 +718,7 @@ def relative_paths_from_the_trees_root(judge):
 
 @case
 def relative_paths_from_another_directory(judge):
-    """Called from a directory outside the tree with relative paths: stands.tsv is the tree's, the unit path is from the tree's root."""
+    """Called from a directory outside the tree with relative paths: the stands file is the tree's, the unit path is from the tree's root."""
     w = world(judge)
     cand = w.build("cand", 5)
     w.stood(w.run(cand, cwd=w.elsewhere, relative_to=w.elsewhere), "candidate", cand, 5)
@@ -685,7 +741,7 @@ def refusal_from_the_trees_root_changes_nothing(judge):
 
 @case
 def nearest_root_md_is_the_root(judge):
-    """A tree inside a larger tree: the root is the NEAREST directory above the unit holding root.md; the line goes to its judge/stands.tsv with path `shop/widget`, nothing above changes."""
+    """A tree inside a larger tree: the root is the NEAREST directory above the unit holding root.md; the line goes to its judge/stands/shop/widget.tsv with path `shop/widget`, nothing above changes."""
     w = world(judge, nested=True)
     cand = w.build("cand", 5)
     w.stood(w.run(cand), "candidate", cand, 5)

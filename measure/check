@@ -8,13 +8,19 @@ Number = items in <tree>/queue.md / correct results.
   item            one heading `### Q<n> | <kind> | asked=<time> | answered=<time or ->`
                   (times UTC, YYYY-MM-DDTHH:MMZ).  It waits at time t when
                   asked <= t and it is unanswered (`-`) or answered > t.
-  correct result  a unit with a line in <tree>/judge/stands.tsv whose current
-                  <unit>/src has the hash of its LAST line there (its last
+  stands          every `*.tsv` file under <tree>/judge/stands/ (at any depth)
+                  holds the lines of one unit: `judge/stands/shop/alpha.tsv`
+                  those of unit `shop/alpha`.  Every line of a file must name
+                  that unit, else the check fails.  `judge/stands.tsv` is not
+                  read.
+  correct result  a unit with a line in its stands file whose current
+                  <unit>/src has the hash of the LAST line there (its last
                   change is the one its judge let stand) and whose executable
                   <unit>/verdict exits 0 (run from the tree).
-  point           the first line of each unit in stands.tsv, in file order:
-                  the k-th correct result, at that line's time t, where the
-                  number was (items asked <= t) / k.
+  point           the FIRST line of each unit's file; the points are ordered
+                  by that line's time across all files, ties by unit path.
+                  The k-th point, at time t, is the k-th correct result, where
+                  the number was (items asked <= t) / k.
 
 Passes (exit 0, last line of stdout = the number, two decimals) when
   - there is at least one correct result now, and
@@ -63,31 +69,42 @@ def read_items(tree):
 
 
 def read_stands(tree):
-    """[(time, unit, hash)] for every line of judge/stands.tsv; a missing file has none."""
-    path = os.path.join(tree, "judge", "stands.tsv")
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, encoding="utf-8") as f:
-            lines = f.read().split("\n")
-    except (OSError, UnicodeDecodeError) as e:
-        raise Unreadable("judge/stands.tsv cannot be read: %s" % e)
-    stands = []
-    for n, line in enumerate(lines, 1):
-        line = line.rstrip("\r")
-        if not line.strip():
-            continue
-        fields = line.split("\t")
-        if len(fields) < 5:
-            raise Unreadable("judge/stands.tsv line %d: fewer than 5 tab-separated fields" % n)
-        when, unit, digest = fields[0], fields[1].rstrip("/"), fields[4].strip().lower()
-        if not TIME.match(when):
-            raise Unreadable("judge/stands.tsv line %d: time is not YYYY-MM-DDTHH:MMZ" % n)
-        parts = unit.split("/")
-        if not unit or unit.startswith("/") or any(p in ("", ".", "..") for p in parts):
-            raise Unreadable("judge/stands.tsv line %d: %r is not a unit path inside the tree"
-                             % (n, fields[1]))
-        stands.append((when, unit, digest))
+    """{unit: [(time, hash)] in file order} from every `*.tsv` under judge/stands/.
+    The file `judge/stands/<unit path>.tsv` holds the lines of that unit only."""
+    top = os.path.join(tree, "judge", "stands")
+    files = []
+    for dirpath, dirnames, filenames in os.walk(top):
+        for name in filenames:
+            if name.endswith(".tsv"):
+                full = os.path.join(dirpath, name)
+                files.append((os.path.relpath(full, top).replace(os.sep, "/"), full))
+    stands = {}
+    for rel, path in sorted(files):
+        shown = "judge/stands/" + rel
+        owner = rel[:-len(".tsv")]
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines = f.read().split("\n")
+        except (OSError, UnicodeDecodeError) as e:
+            raise Unreadable("%s cannot be read: %s" % (shown, e))
+        for n, line in enumerate(lines, 1):
+            line = line.rstrip("\r")
+            if not line.strip():
+                continue
+            fields = line.split("\t")
+            if len(fields) < 5:
+                raise Unreadable("%s line %d: fewer than 5 tab-separated fields" % (shown, n))
+            when, unit, digest = fields[0], fields[1].rstrip("/"), fields[4].strip().lower()
+            if not TIME.match(when):
+                raise Unreadable("%s line %d: time is not YYYY-MM-DDTHH:MMZ" % (shown, n))
+            parts = unit.split("/")
+            if not unit or unit.startswith("/") or any(p in ("", ".", "..") for p in parts):
+                raise Unreadable("%s line %d: %r is not a unit path inside the tree"
+                                 % (shown, n, fields[1]))
+            if unit != owner:
+                raise Unreadable("%s line %d: names unit %r, not the file's unit %r"
+                                 % (shown, n, fields[1], owner))
+            stands.setdefault(unit, []).append((when, digest))
     return stands
 
 
@@ -143,19 +160,17 @@ def measure(tree):
     items = read_items(tree)
     stands = read_stands(tree)
 
-    last_hash = {}   # unit -> hash of its last stands line
-    points = []      # (number, waiting) at the first line of each unit
-    for when, unit, digest in stands:
-        if unit not in last_hash:
-            k = len(points) + 1
-            asked = sum(1 for a, _ in items if a <= when)
-            waiting = sum(1 for a, b in items if a <= when and (b is None or b > when))
-            points.append((Fraction(asked, k), waiting))
-        last_hash[unit] = digest
+    last_hash = {unit: lines[-1][1] for unit, lines in stands.items()}
+    points = []      # (number, waiting) at the first line of each unit, by time then unit path
+    for when, unit in sorted((lines[0][0], unit) for unit, lines in stands.items()):
+        k = len(points) + 1
+        asked = sum(1 for a, _ in items if a <= when)
+        waiting = sum(1 for a, b in items if a <= when and (b is None or b > when))
+        points.append((Fraction(asked, k), waiting))
 
     reasons = []
     correct = 0
-    for unit in last_hash:
+    for unit in sorted(last_hash):
         why = why_not_correct(tree, unit, last_hash[unit])
         if why is None:
             correct += 1
