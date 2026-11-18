@@ -137,3 +137,10 @@ sessions, the pet shop as built, and the components the principles and the
 root drove ([`reports/first-result.html`](reports/first-result.html),
 https://claude.ai/artifact/8txcTMbckjAsXtGQ2DaXqW). Options: A. read.
 Waiting costs: nothing stops.
+
+### Q18 | decision | asked=2026-11-18T23:45Z | answered=2026-11-18T23:45Z
+**Should pages you ask for count as items?** Under Q1 they do, so each
+requested report makes the verdict fail until the next result. Options:
+A. they count (as now). B. they do not; a change to the definition in
+`root.md`. Waiting costs: the verdict fails after every requested page.
+Answer, word for word: "No." Taken as B.
