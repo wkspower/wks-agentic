@@ -5,13 +5,15 @@ per item, with when it was opened and when it was answered; the waiting time
 of each item is attention, and is counted. An answer given in the chat counts
 only once it is written here.
 
-State: **3 open, 0 answered.**
+State: **0 open, 3 answered.** Format read by the root's check: each item is a
+`## Qn` section with one `Opened:` line and one `Answered:` line (`—` while open).
 
 ---
 
 ## Q1 — Budget values of the root
 
-Opened: 2026-11-18T18:58Z. Answered: —.
+Opened: 2026-11-18T18:58Z
+Answered: 2026-11-18T19:05Z
 Why you are asked: `root.md` declaration 4 says "values: not yet given"; the
 budget is given by the parent, and no judge exists above the root.
 
@@ -36,9 +38,17 @@ for it.
 Cost of waiting: total. Without these values the root causes no effect and
 nothing below it is built.
 
+**Answer of the person (Q1).** At most 3 items open at once. After this first
+batch, at most 1 item per 5 correct results. Zero effects without undo:
+everything stays in the repository, with no push, deploy, spending or real
+customer data. 3 attempts per change before returning to the last passing
+state. — Absorbed: values written in `root.md` declaration 4, read from there
+by the root's check and by the judge.
+
 ## Q2 — Executable check of the root's measure
 
-Opened: 2026-11-18T18:58Z. Answered: —.
+Opened: 2026-11-18T18:58Z
+Answered: 2026-11-18T19:05Z
 Why you are asked: `root.md` declaration 5 says "executable check: not yet
 written"; the measure is given by the parent and written by someone who does
 not build the unit.
@@ -78,9 +88,21 @@ and that is enforced by a check, but the independence is weaker than the
 principle asks until a second agent exists.
 Cost of waiting: total, same as Q1.
 
+**Answer of the person (Q2).** Attention per correct result: queue items and
+waiting time, divided by changes that passed their verdict and that their
+judge let stand. It passes when the latest window is no worse than the one
+before and the budget is respected. The agent writes it from this definition
+before any other unit, with planted cases that must fail, and records the
+single-agent limit as a limit. — Absorbed: `root.md` declaration 5 and
+`measure/`. Absorbed as a rule for every later case of the same kind: where
+one agent is both writer and builder, the measure is still written first and
+proven by planted cases, and the missing independence is stated as a limit
+in the unit's document; it is not asked again.
+
 ## Q3 — Purpose of the pet shop system
 
-Opened: 2026-11-18T18:58Z. Answered: —.
+Opened: 2026-11-18T18:58Z
+Answered: 2026-11-18T19:05Z
 Why you are asked: the purpose of a unit is given by its parent. The parent
 of the pet shop system is the root, and the root's declarations are yours; no
 judge can decide what the system is for. Asked now, with Q1 and Q2, so it
@@ -102,6 +124,9 @@ through selection.
 Cost of waiting: none until Q1 and Q2 are answered; after that, total for the
 pet shop branch of the tree.
 
----
+**Answer of the person (Q3).** A system for the staff of one physical shop:
+customers and their pets, appointments for bath and grooming, products with
+stock, and counter sales. It runs locally, with no real payments. Real use:
+not yet. Required technology: none. — Absorbed: purpose of
+`tree/petshop/unit.md`.
 
-To answer all three with the recommendations: "Q1 B, Q2 A, Q3 A".

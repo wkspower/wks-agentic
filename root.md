@@ -7,12 +7,21 @@ Parent: the person. Governed by [`principles.md`](principles.md).
 1. **Purpose** — Autonomous development that respects what people are needed for and how little attention they have: spend the least human attention per correct result, and keep lowering it.
 2. **Interface** — Receives from the person its declarations and their decisions. Offers the person *build*, *verdict*, the number of the measure and the queue of principle 7.
 3. **Rules** — The principles; none added.
-4. **Budget** — The person's attention. Values: not yet given.
-5. **Measure** — The person's attention per correct result, as a trend (principle 7). Executable check: not yet written.
-6. **Judge** — The person, for changes to this document and to `principles.md`. Every delivery has its judge below.
+4. **Budget** — The person's attention, and these values (given 2026-11-18, [`queue.md`](queue.md) Q1; read from this table by the check and the judge):
 
-Until the budget values and the executable check exist, the root causes no
-effect; they are the first thing the person is asked.
+   | Value | |
+   |---|---|
+   | `open_items_max` | 3 |
+   | `first_batch_items` | 3 |
+   | `correct_results_per_item` | 5 |
+   | `effects_without_undo` | 0 |
+   | `attempts_per_change` | 3 |
+   | `window_results` | 10 |
+
+   `window_results` is the size of the window of the measure; the person gave no number, the writer of the check chose it.
+   Everything stays in the repository: no push, deploy, spending or real customer data.
+5. **Measure** — The person's attention per correct result, as a trend (principle 7): queue items and waiting time, divided by changes that passed their verdict and that their judge let stand; it passes when the latest window is no worse than the one before and the budget is respected ([`queue.md`](queue.md) Q2). Executable check: [`measure/check.py`](measure/check.py), proven by [`measure/prove.py`](measure/prove.py). Limit: one agent wrote the check and builds the tree; its independence is only the person's definition.
+6. **Judge** — The person, for changes to this document and to `principles.md`. Every delivery has its judge below.
 
 ## The principles here
 
