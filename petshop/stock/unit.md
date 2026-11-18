@@ -14,7 +14,7 @@ Parent: [`petshop`](../unit.md). Governed by [`principles.md`](../../principles.
    `receive` and `remove` raise `ValueError` when `item_id` is not a non-empty string or `quantity` is not an `int` (not a `bool`) of 1 or more. Functions change the state they are given, in place. A refused call changes nothing. Where two refusals apply at once, either may be raised. Offers *build* and *verdict*.
 3. **Rules** — Those of [`petshop`](../unit.md), none added.
 4. **Budget** — cost 2 runs; time 0.4 h; context 8 KB; attempts 2; alternatives 1; attention 0; no-undo cap 0.
-5. **Measure** — `measure/check <build-dir>`: cases that call `stock.py` from the build; passes only if all pass; number: bytes of `stock.py`. Written before the unit by an agent that does not build it; planted wrong modules in `measure/planted/` must each fail. Error (seen by the pet shop, in [`record.md`](../record.md)): unknown, and a limit, until audit cases exist: cases written from this document alone by an agent that sees neither measure nor build.
+5. **Measure** — `measure/check <build-dir>`: cases that call `stock.py` from the build; passes only if all pass; number: bytes of `stock.py`. Written before the unit by an agent that does not build it; planted wrong modules in `measure/planted/` must each fail. Error (seen by the pet shop, in [`record.md`](../record.md)): wrong passes and wrong fails, counted on every build offered to the judge, from audit cases written from this document alone by an agent that sees neither measure nor build, kept in `petshop/audit/stock/`.
 6. **Judge** — The [`judge`](../../judge/unit.md).
 
 ## The principles here

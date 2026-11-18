@@ -8,3 +8,17 @@
 2026-11-18T20:42Z	petshop/catalog	1	build of catalog (the change), attempt 1
 2026-11-18T20:42Z	petshop/catalog	1	alternative build of catalog, made without sight of the change
 2026-11-18T20:58Z	enforcer	1	case for undo added to the measure of the enforcer, by an agent that does not build it
+2026-11-18T21:51Z	root	1	measures of the judge and the root changed for one stands file per unit, by an agent that builds neither
+2026-11-18T21:51Z	enforcer	1	measure of the enforcer changed for one stands file per unit, by an agent that does not build it
+2026-11-18T21:51Z	petshop/stock	1	build of stock (the change), attempt 1
+2026-11-18T21:51Z	petshop/stock	1	alternative build of stock, made without sight of the change
+2026-11-18T21:51Z	petshop	1	audit cases for stock, written from its document alone
+2026-11-18T21:51Z	petshop/customers	1	build of customers (the change), attempt 1
+2026-11-18T21:51Z	petshop/customers	1	alternative build of customers, made without sight of the change
+2026-11-18T21:51Z	petshop	1	audit cases for customers, written from its document alone
+2026-11-18T21:51Z	petshop/sales	1	build of sales (the change), attempt 1
+2026-11-18T21:51Z	petshop/sales	1	alternative build of sales, made without sight of the change
+2026-11-18T21:51Z	petshop	1	audit cases for sales, written from its document alone
+2026-11-18T21:51Z	root	1	audit scenarios for the pet shop, written from the documents alone
+2026-11-18T21:51Z	root	1	audit trees for the enforcer, written from its document and rules alone
+2026-11-18T21:51Z	petshop/catalog	1	cases for the three rules added to the catalog document, by an agent that does not build it
