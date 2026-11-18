@@ -19,7 +19,7 @@ class Customers:
         return name.strip()
 
     def _row(self, table, ident, what):
-        if str(ident) not in table:
+        if type(ident) is not int or str(ident) not in table:
             raise LookupError(f"no {what} {ident}")
         return table[str(ident)]
 
@@ -40,7 +40,7 @@ class Customers:
         return dict(self._row(self._customers, customer_id, "customer"))
 
     def has_customer(self, customer_id):
-        return str(customer_id) in self._customers
+        return type(customer_id) is int and str(customer_id) in self._customers
 
     def add_pet(self, customer_id, name, species=""):
         self._row(self._customers, customer_id, "customer")
@@ -53,7 +53,7 @@ class Customers:
         return dict(self._row(self._pets, pet_id, "pet"))
 
     def has_pet(self, pet_id):
-        return str(pet_id) in self._pets
+        return type(pet_id) is int and str(pet_id) in self._pets
 
     def pets_of(self, customer_id):
         self._row(self._customers, customer_id, "customer")
