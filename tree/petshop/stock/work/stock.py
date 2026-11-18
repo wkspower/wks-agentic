@@ -14,7 +14,7 @@ class Stock:
         return number
 
     def _row(self, product_id):
-        if str(product_id) not in self._rows:
+        if type(product_id) is not int or str(product_id) not in self._rows:
             raise LookupError(f"no product {product_id}")
         return self._rows[str(product_id)]
 
