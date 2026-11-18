@@ -93,3 +93,9 @@ check fails on the budget until 2026-11-25. Cause: the bootstrap needed
 seven decisions and the agent asked two early rather than holding them as
 the queue said. Work absorbed: the root's agent never puts a held item in a
 report; a report names held items only by id and date.
+
+## 2026-11-18 — First effect: pull request to `develop`
+
+- Opened [wkspower/wks-agentic#1](https://github.com/wkspower/wks-agentic/pull/1).
+  No workflow run started; GitHub lists no workflow. Not merged on a local
+  judge run (principle 3). Q8 held in `queue.md` until the budget allows.

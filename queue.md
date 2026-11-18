@@ -5,7 +5,21 @@ item is complete enough to decide without reading the work. Items are also
 counted in [`record/queue.jsonl`](record/queue.jsonl) when they open, and
 answers are recorded in [`record/root.log.md`](record/root.log.md).
 
-Open items: none.
+Open items: none. Held: Q8, opens 2026-11-25 18:40 UTC.
+
+## Held — opens 2026-11-25
+
+### Q8. Let GitHub Actions run the judge
+
+The pull request [wkspower/wks-agentic#1](https://github.com/wkspower/wks-agentic/pull/1)
+started no workflow run, and GitHub lists no workflow for the repository: Actions
+appear to be disabled for it or for the organisation. The agents' tools cannot
+change that. Without it, the status check `judge` never reports, so nothing
+reaches `develop`.
+
+- **Options:** (a) allow Actions for this repository (Settings → Actions → General: allow actions, at least `actions/checkout` and `actions/setup-python`); (b) merge on the strength of a judge run on the agent's machine, which is not external enforcement (principle 3), so this is not recommended.
+- **Recommendation:** (a).
+- **Cost of waiting:** the first delivery waits; the work continues on the branch.
 
 ## Decided — 2026-11-18 (asked early; see the record)
 
