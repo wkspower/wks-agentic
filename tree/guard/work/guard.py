@@ -82,7 +82,7 @@ def proof(unit, reasons, measured):
 def reach(unit, reasons, measured):
     work = ROOT / unit / "work"
     banned = NETWORK + ([] if unit in MAY_START_PROGRAMS else PROCESS)
-    files = sorted(work.rglob("*")) if work.is_dir() else []
+    files = sorted(f for f in work.rglob("*") if "__pycache__" not in f.parts) if work.is_dir() else []
     measured["work_files_scanned"] = len([f for f in files if f.is_file()])
     for file in files:
         if not file.is_file():
