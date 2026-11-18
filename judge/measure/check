@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Measure of the judge: planted changes, each with the decision it must get.
+
+Builds a toy tree in a scratch repository under .rehearsal/ and drives
+$WORK/tree against it. A case passes when the judge decides as stated AND the
+trunk shows it. Last line: `number: <cases passed>`.
+"""
+import os, subprocess, sys, tempfile
+
+TREE = os.path.join(os.path.abspath(os.environ["WORK"]), "tree")
+os.makedirs(".rehearsal/tmp", exist_ok=True)
+REPO = tempfile.mkdtemp(dir=os.path.abspath(".rehearsal/tmp"))
+ENV = dict(os.environ, GIT_AUTHOR_NAME="measure", GIT_AUTHOR_EMAIL="m@example.invalid",
+           GIT_COMMITTER_NAME="measure", GIT_COMMITTER_EMAIL="m@example.invalid")
+ENV.pop("WORK", None)
+passed = total = 0
+
+
+def sh(*cmd):
+    try:
+        p = subprocess.run(cmd, cwd=REPO, env=ENV, text=True, timeout=120,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return p.returncode, p.stdout
+    except Exception as e:
+        return 99, str(e)
+
+
+def git(*a):
+    return sh("git", *a)[1].strip()
+
+
+def put(path, text, mode=0o644):
+    full = os.path.join(REPO, path)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    open(full, "w").write(text)
+    os.chmod(full, mode)
+
+
+def read(path):
+    full = os.path.join(REPO, path)
+    return open(full).read() if os.path.exists(full) else ""
+
+
+def change(name, files, base="trunk"):
+    """A candidate branch made from the trunk; returns its name."""
+    git("checkout", "-q", "-b", name, base)
+    for path, text in files.items():
+        put(path, text, 0o755 if path.endswith("check") else 0o644)
+    git("add", "-A")
+    git("commit", "-q", "-m", name)
+    git("checkout", "-q", "trunk")
+    return name
+
+
+def judge(unit, *refs):
+    return sh(TREE, "judge", unit, *refs)[0]
+
+
+def case(name, cond):
+    global passed, total
+    total += 1
+    try:
+        good = bool(cond())
+    except Exception as e:
+        good, name = False, f"{name} ({e})"
+    passed += good
+    print("ok  " if good else "FAIL", name)
+
+
+def value():
+    return read("toy/work/value").strip()
+
+
+DOC = "# Toy\n\nParent: root.\n\n" + "".join(
+    f"**{d}** x\n" for d in ["Purpose", "Interface", "Rules", "Budget", "Measure", "Judge"]
+) + "".join(f"| {n} {p} | x |\n" for n, p in enumerate(
+    ["Boundary", "Single source", "External enforcement", "Rehearsal before effect",
+     "Return", "Selection", "Escalation"], 1))
+CHECK = """#!/usr/bin/env python3
+import os, sys
+try: v = int(open(os.path.join(os.environ["WORK"], "value")).read())
+except Exception: v = 0
+print("number:", v)
+sys.exit(0 if v >= %d else 1)
+"""
+
+git("init", "-q", "-b", "trunk")
+put(".gitignore", ".rehearsal/\n")
+put("root.md", "root\n")
+put("toy/unit.md", DOC)
+put("toy/measure/check", CHECK % 1, 0o755)
+put("toy/measure/plants/zero/value", "0\n")
+git("add", "-A")
+git("commit", "-q", "-m", "toy tree")
+
+# 1. A change that passes and is better stands, and is a result.
+start = git("rev-parse", "HEAD")
+r = judge("toy", change("c1", {"toy/work/value": "1\n"}))
+case("better change stands", lambda: r == 0 and value() == "1")
+case("standing change is in the ledger", lambda: "| toy |" in read("results.md"))
+case("the decision is recorded", lambda: " stands: " in read("toy/judged.md"))
+
+# 2. Planted violations: each must be rejected and leave the work as it was.
+r = judge("toy", change("c2", {"toy/work/value": "9\n", "toy/measure/check": CHECK % 0}))
+case("change that alters its own measure is rejected", lambda: r != 0 and value() == "1")
+r = judge("toy", change("c3", {"toy/work/value": "0\n"}))
+case("change that fails the verdict is rejected", lambda: r != 0 and value() == "1")
+case("the rejection and its reason are recorded",
+     lambda: read("toy/judged.md").count(" rejected: ") == 2)
+
+# 3. Alternatives made apart are compared by the same measure.
+r = judge("toy", change("c4", {"toy/work/value": "2\n"}), change("c5", {"toy/work/value": "3\n"}))
+case("the better of two alternatives stands", lambda: r == 0 and value() == "3")
+
+# 4. Return: the standing change has an undo, proven by doing it.
+git("revert", "--no-edit", "-m", "1", "HEAD")
+case("reverting the judge's merge restores the earlier work", lambda: value() == "1")
+git("reset", "-q", "--hard", "HEAD~1")
+case("and the undo is itself undone", lambda: value() == "3")
+
+# 5. More planted violations.
+r = judge("toy", change("c6", {"toy/work/value": "3\n", "toy/work/extra": "more\n"}))
+case("change that is not measured better is rejected", lambda: r != 0 and not read("toy/work/extra"))
+r = judge("toy", change("c7", {"toy/work/value": "8\n", "results.md": "forged\n"}))
+case("change that writes the ledger is rejected", lambda: r != 0 and value() == "3")
+git("branch", "stale", start)
+r = judge("toy", change("c8", {"toy/work/value": "8\n"}, "stale"))
+case("change not made from the present trunk is rejected", lambda: r != 0 and value() == "3")
+
+# 6. Attempts: three rejections in a row stop the unit and ask its parent.
+case("after three rejections an item waits in the parent's queue",
+     lambda: "toy: 3 attempts failed" in read("root/queue.md"))
+r = judge("toy", change("c9", {"toy/work/value": "8\n"}))
+case("a stopped unit is not judged, even with a good change", lambda: r != 0 and value() == "3")
+put("root/queue.md", read("root/queue.md").replace("| open |", "| 2026-01-01T00:00Z |"))
+git("commit", "-q", "-am", "parent answers")
+r = judge("toy", change("c10", {"toy/work/value": "8\n"}))
+case("once the parent answers, the unit is judged again", lambda: r == 0 and value() == "8")
+
+# 7. What a parent gives: a measure must stay proven, and a new case strikes.
+r = judge(".", change("g1", {"toy/measure/plants/zero/value": "5\n"}))
+case("measure whose plant passes is rejected", lambda: r != 0)
+git("checkout", "-q", "-b", "g2", "trunk")
+git("rm", "-q", "-r", "toy/measure/plants")
+git("commit", "-q", "-m", "g2")
+git("checkout", "-q", "trunk")
+r = judge(".", "g2")
+case("measure that loses its plants is rejected", lambda: r != 0)
+r = judge(".", change("g4", {"toy/measure/check": CHECK % 10,
+                              "toy/measure/plants/nine/value": "9\n"}))
+case("new case with its plant stands", lambda: r == 0 and "nine" in git("ls-files"))
+case("a result the new case shows wrong is struck",
+     lambda: "shown wrong" in read("results.md").splitlines()[-1])
+r = judge("toy", change("c11", {"toy/work/value": "9\n"}))
+case("after the new case, work that fails it is rejected", lambda: r != 0)
+r = judge("toy", change("c12", {"toy/work/value": "10\n"}))
+case("and work that meets it stands", lambda: r == 0 and value() == "10")
+
+r = judge(".", change("g3", {"toy/unit.md": DOC.replace("**Judge** x\n", "")}))
+case("document missing a declaration is rejected", lambda: r != 0)
+
+# 8. The judge decides nothing on a dirty trunk.
+c13 = change("c13", {"toy/work/value": "11\n"})
+put("toy/work/value", "77\n")
+r = judge("toy", c13)
+case("dirty trunk: nothing is decided", lambda: r != 0)
+
+print("number:", passed)
+sys.exit(0 if passed == total else 1)

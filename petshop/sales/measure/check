@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Measure of petshop/sales. Cases from petshop/measure/contract.json.
+Last line: `number: <cases passed>`; passes only when every case does."""
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "measure"))
+from kit import *
+
+c = Cases()
+fake = Fake()   # products 1 (Shampoo, 2500, stock 10) and 2 (Collar, 1990, stock 3); customer 1
+do = caller(tmp(), fake.path)
+stocks = lambda: (fake.stock(1), fake.stock(2))
+fake.do("product.get", id=1)   # creates the fake's state
+
+s = do("sale.make", items=[{"product_id": 1, "quantity": 2}, {"product_id": 2, "quantity": 1}])
+c.case("a sale is made and totalled", lambda: ok(s) and s["total_cents"] == 2 * 2500 + 1990 and s["id"] > 0)
+c.case("the stock of every item was taken", lambda: stocks() == (8, 2))
+g = do("sale.get", id=s.get("id"))
+c.case("the sale is kept with its items and prices",
+       lambda: ok(g) and g["sale"]["total_cents"] == 6990 and g["sale"]["voided"] is False
+       and g["sale"].get("customer_id") is None
+       and sorted((i["product_id"], i["name"], i["quantity"], i["unit_price_cents"]) for i in g["sale"]["items"])
+       == [(1, "Shampoo", 2, 2500), (2, "Collar", 1, 1990)])
+t = do("sale.make", items=[{"product_id": 1, "quantity": 1}], customer_id=1)
+c.case("a sale may name its customer", lambda: ok(t) and t["id"] != s["id"] and do("sale.get", id=t["id"])["sale"]["customer_id"] == 1)
+before = stocks()
+c.case("a sale to an unknown customer is refused", lambda: err(do("sale.make", items=[{"product_id": 1, "quantity": 1}], customer_id=99), "not_found"))
+c.case("a sale with no items is refused", lambda: err(do("sale.make", items=[]), "invalid"))
+c.case("a sale with items left out is refused", lambda: err(do("sale.make"), "missing_field"))
+c.case("a quantity of zero is refused", lambda: err(do("sale.make", items=[{"product_id": 1, "quantity": 0}]), "invalid"))
+c.case("a negative quantity is refused", lambda: err(do("sale.make", items=[{"product_id": 1, "quantity": -1}]), "invalid"))
+c.case("an unknown product is refused, even after a good item",
+       lambda: err(do("sale.make", items=[{"product_id": 1, "quantity": 1}, {"product_id": 99, "quantity": 1}]), "not_found"))
+c.case("more than the stock is refused, even after a good item",
+       lambda: err(do("sale.make", items=[{"product_id": 1, "quantity": 1}, {"product_id": 2, "quantity": 3}]), "insufficient_stock"))
+c.case("no refused sale left any stock changed", lambda: stocks() == before == (7, 2))
+c.case("no refused sale exists", lambda: err(do("sale.get", id=max(s["id"], t["id"]) + 1), "not_found"))
+v = do("sale.void", id=s.get("id"))
+c.case("a voided sale gives its stock back", lambda: ok(v) and stocks() == (9, 3))
+c.case("and is kept, marked voided", lambda: do("sale.get", id=s["id"])["sale"]["voided"] is True and do("sale.get", id=s["id"])["sale"]["total_cents"] == 6990)
+c.case("voiding twice is refused and gives nothing back", lambda: err(do("sale.void", id=s["id"]), "invalid") and stocks() == (9, 3))
+c.case("the other sale is untouched", lambda: do("sale.get", id=t["id"])["sale"]["voided"] is False)
+c.case("voiding an unknown sale is refused", lambda: err(do("sale.void", id=99999), "not_found"))
+c.case("an unknown sale is not found", lambda: err(do("sale.get", id=99999), "not_found"))
+c.case("exactly the whole stock can be sold", lambda: ok(do("sale.make", items=[{"product_id": 2, "quantity": 3}])) and stocks() == (9, 0))
+c.case("an unknown operation is refused", lambda: err(do("sale.erase", id=1), "unknown_operation"))
+c.end()

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Planted wrong judge: rejects every change.
+exit 1

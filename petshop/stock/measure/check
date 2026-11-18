@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Measure of petshop/stock. Cases from petshop/measure/contract.json.
+Last line: `number: <cases passed>`; passes only when every case does."""
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "measure"))
+from kit import *
+
+c = Cases()
+do = caller(tmp())
+
+s = do("product.add", name="Shampoo", price_cents=2500, stock=10)
+k = do("product.add", name="Collar", price_cents=1990, stock=0)
+c.case("a product is added and gets an id", lambda: ok(s) and isinstance(s["id"], int) and s["id"] > 0)
+c.case("two products get different ids", lambda: ok(k) and k["id"] != s["id"])
+c.case("the product is kept as given",
+       lambda: do("product.get", id=s["id"])["product"] == {"id": s["id"], "name": "Shampoo", "price_cents": 2500, "stock": 10})
+c.case("a negative price is refused", lambda: err(do("product.add", name="X", price_cents=-1, stock=1), "invalid"))
+c.case("a negative stock is refused", lambda: err(do("product.add", name="X", price_cents=1, stock=-1), "invalid"))
+c.case("a price that is not an integer is refused", lambda: err(do("product.add", name="X", price_cents="abc", stock=1), "invalid"))
+c.case("a fractional stock is refused", lambda: err(do("product.add", name="X", price_cents=1, stock=1.5), "invalid"))
+c.case("a product with no name is refused", lambda: err(do("product.add", price_cents=1, stock=1), "missing_field"))
+c.case("a product with no price is refused", lambda: err(do("product.add", name="X", stock=1), "missing_field"))
+c.case("an unknown product is not found", lambda: err(do("product.get", id=99999), "not_found"))
+l = do("product.list")
+c.case("the list has the products ordered by name, and no refused one",
+       lambda: ok(l) and [(x["name"], x["stock"]) for x in l["products"]] == [("Collar", 0), ("Shampoo", 10)])
+
+r = do("stock.receive", product_id=k.get("id"), quantity=5)
+c.case("receiving adds to the stock and returns it", lambda: ok(r) and r["stock"] == 5 and do("product.get", id=k["id"])["product"]["stock"] == 5)
+c.case("receiving zero is refused", lambda: err(do("stock.receive", product_id=k["id"], quantity=0), "invalid"))
+c.case("receiving a negative quantity is refused", lambda: err(do("stock.receive", product_id=k["id"], quantity=-2), "invalid"))
+c.case("receiving for an unknown product is refused", lambda: err(do("stock.receive", product_id=99999, quantity=1), "not_found"))
+t = do("stock.take", product_id=s.get("id"), quantity=4)
+c.case("taking removes from the stock and returns it", lambda: ok(t) and t["stock"] == 6 and do("product.get", id=s["id"])["product"]["stock"] == 6)
+c.case("taking more than there is is refused", lambda: err(do("stock.take", product_id=s["id"], quantity=7), "insufficient_stock"))
+c.case("and the stock stays as it was", lambda: do("product.get", id=s["id"])["product"]["stock"] == 6)
+c.case("taking exactly what there is leaves zero", lambda: do("stock.take", product_id=s["id"], quantity=6)["stock"] == 0)
+c.case("taking from zero is refused", lambda: err(do("stock.take", product_id=s["id"], quantity=1), "insufficient_stock"))
+c.case("taking zero is refused", lambda: err(do("stock.take", product_id=k["id"], quantity=0), "invalid"))
+c.case("taking a negative quantity is refused, and adds nothing",
+       lambda: err(do("stock.take", product_id=k["id"], quantity=-3), "invalid") and do("product.get", id=k["id"])["product"]["stock"] == 5)
+c.case("taking from an unknown product is refused", lambda: err(do("stock.take", product_id=99999, quantity=1), "not_found"))
+c.case("the other product was never touched", lambda: do("product.get", id=k["id"])["product"]["stock"] == 5)
+c.case("an unknown operation is refused", lambda: err(do("product.erase", id=1), "unknown_operation"))
+do("product.add", name="Leash", price_cents=900, stock=1)
+c.case("a product added later takes its place by name",
+       lambda: [x["name"] for x in do("product.list")["products"]] == ["Collar", "Leash", "Shampoo"])
+c.end()

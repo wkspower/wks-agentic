@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Measure of petshop: a day at the shop, through the whole system.
+
+The units are measured apart, each against a fake of the others; here they
+meet. Last line: `number: <cases passed>`; passes only when every case does.
+"""
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kit import *
+
+c = Cases()
+data = tmp()
+do = caller(data)
+
+ana = do("customer.add", name="Ana Souza", phone="5550101")
+rex = do("pet.add", customer_id=ana.get("id"), name="Rex", species="dog")
+c.case("a customer and her pet are registered", lambda: ok(ana) and ok(rex))
+b = do("appointment.book", pet_id=rex.get("id"), service="grooming", start="2026-03-10T14:00")
+d = do("appointment.day", date="2026-03-10")
+c.case("the pet is booked, and the day shows pet and owner from the register",
+       lambda: ok(b) and [(x["pet_name"], x["customer_name"], x["service"]) for x in d["appointments"]] == [("Rex", "Ana Souza", "grooming")])
+c.case("a pet that is not registered cannot be booked", lambda: err(do("appointment.book", pet_id=999, service="bath", start="2026-03-10T15:00"), "not_found"))
+sh = do("product.add", name="Shampoo", price_cents=2500, stock=5)
+co = do("product.add", name="Collar", price_cents=1990, stock=1)
+s = do("sale.make", items=[{"product_id": sh.get("id"), "quantity": 2}, {"product_id": co.get("id"), "quantity": 1}], customer_id=ana.get("id"))
+stock = lambda p: do("product.get", id=p["id"])["product"]["stock"]
+c.case("a counter sale is totalled from the products' prices", lambda: ok(s) and s["total_cents"] == 6990)
+c.case("and takes the real stock", lambda: (stock(sh), stock(co)) == (3, 0))
+c.case("a sale beyond the stock is refused and changes nothing",
+       lambda: err(do("sale.make", items=[{"product_id": sh["id"], "quantity": 1}, {"product_id": co["id"], "quantity": 1}]), "insufficient_stock")
+       and (stock(sh), stock(co)) == (3, 0))
+c.case("a sale to a customer that is not registered is refused",
+       lambda: err(do("sale.make", items=[{"product_id": sh["id"], "quantity": 1}], customer_id=999), "not_found") and stock(sh) == 3)
+c.case("voiding the sale returns the real stock", lambda: ok(do("sale.void", id=s["id"])) and (stock(sh), stock(co)) == (5, 1))
+c.case("an unknown operation is refused", lambda: err(do("shop.erase"), "unknown_operation"))
+c.case("every operation of the contract is answered by its unit",
+       lambda: all(do(op).get("error") != "unknown_operation" and do(op).get("ok") is not None for op in OPERATIONS))
+
+desk = Desk(data, None)
+try:
+    st, page = desk.request("/customer.add", [("name", "Bruno Lima"), ("phone", "5550202")])
+    found = do("customer.find", text="bruno")
+    c.case("what staff enter at the desk is in the system", lambda: st == 200 and [x["name"] for x in found["customers"]] == ["Bruno Lima"])
+    st, page = desk.request("/appointment.day", [("date", "2026-03-10")])
+    c.case("the desk shows the day's appointments", lambda: st == 200 and "Rex" in page and "Ana Souza" in page and "14:00" in page)
+    st, page = desk.request("/sale.make", [("items.product_id", str(co["id"])), ("items.quantity", "1")])
+    c.case("a sale at the desk takes the stock", lambda: st == 200 and stock(co) == 0)
+    st, page = desk.request("/sale.make", [("items.product_id", str(co["id"])), ("items.quantity", "1")])
+    c.case("the desk shows why a sale is refused", lambda: st == 400 and "insufficient_stock" in page)
+finally:
+    desk.close()
+again = caller(data)
+c.case("the shop's data is still there for the next call", lambda: again("customer.get", id=ana["id"])["customer"]["pets"][0]["name"] == "Rex")
+c.end()

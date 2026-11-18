@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Measure of petshop/appointments. Cases from petshop/measure/contract.json.
+Last line: `number: <cases passed>`; passes only when every case does."""
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "measure"))
+from kit import *
+
+c = Cases()
+fake = Fake()   # pets 1 (Rex, of Ana Souza) and 2 (Mia, of Bruno Lima) exist
+do = caller(tmp(), fake.path)
+
+def day(date):
+    r = do("appointment.day", date=date)
+    return [(x["pet_name"], x["service"], x["start"]) for x in r["appointments"]] if ok(r) else None
+
+a = do("appointment.book", pet_id=1, service="bath", start="2026-03-10T14:00")
+c.case("an appointment is booked and gets an id", lambda: ok(a) and isinstance(a["id"], int) and a["id"] > 0)
+d = do("appointment.day", date="2026-03-10")
+c.case("the day shows it with pet and owner",
+       lambda: ok(d) and d["appointments"] == [{"id": a["id"], "pet_id": 1, "pet_name": "Rex", "customer_name": "Ana Souza",
+                                                "service": "bath", "start": "2026-03-10T14:00"}])
+c.case("an unknown pet is refused", lambda: err(do("appointment.book", pet_id=99, service="bath", start="2026-03-10T15:00"), "not_found"))
+c.case("a service the shop does not offer is refused", lambda: err(do("appointment.book", pet_id=1, service="walk", start="2026-03-10T15:00"), "invalid"))
+c.case("a start that is not a date and time is refused", lambda: err(do("appointment.book", pet_id=1, service="bath", start="tomorrow"), "invalid"))
+c.case("a start that is not a real date is refused", lambda: err(do("appointment.book", pet_id=1, service="bath", start="2026-02-30T10:00"), "invalid"))
+c.case("a start that is not a real time is refused", lambda: err(do("appointment.book", pet_id=1, service="bath", start="2026-03-10T25:00"), "invalid"))
+c.case("a booking with no service is refused", lambda: err(do("appointment.book", pet_id=1, start="2026-03-10T15:00"), "missing_field"))
+c.case("the same pet at the same start is taken", lambda: err(do("appointment.book", pet_id=1, service="grooming", start="2026-03-10T14:00"), "taken"))
+c.case("refused bookings left the day as it was", lambda: day("2026-03-10") == [("Rex", "bath", "2026-03-10T14:00")])
+b = do("appointment.book", pet_id=2, service="grooming", start="2026-03-10T14:00")
+e = do("appointment.book", pet_id=1, service="grooming", start="2026-03-10T09:30")
+f = do("appointment.book", pet_id=2, service="bath", start="2026-03-11T08:00")
+c.case("another pet may have the same start", lambda: ok(b) and b["id"] != a["id"])
+c.case("the day is ordered by start",
+       lambda: [x[2] for x in day("2026-03-10")] == ["2026-03-10T09:30", "2026-03-10T14:00", "2026-03-10T14:00"]
+       and sorted(x[0] for x in day("2026-03-10")) == ["Mia", "Rex", "Rex"])
+c.case("another date shows only its own", lambda: ok(f) and day("2026-03-11") == [("Mia", "bath", "2026-03-11T08:00")])
+c.case("a date with nothing booked is empty", lambda: day("2026-03-12") == [])
+c.case("a day that is not a date is refused", lambda: err(do("appointment.day", date="10/03/2026"), "invalid"))
+x = do("appointment.cancel", id=a.get("id"))
+c.case("a cancelled appointment leaves the day",
+       lambda: ok(x) and day("2026-03-10") == [("Rex", "grooming", "2026-03-10T09:30"), ("Mia", "grooming", "2026-03-10T14:00")])
+c.case("cancelling an unknown appointment is refused", lambda: err(do("appointment.cancel", id=99999), "not_found"))
+r = do("appointment.book", pet_id=1, service="bath", start="2026-03-10T14:00")
+c.case("the freed start can be booked again", lambda: ok(r) and len(day("2026-03-10")) == 3)
+c.case("an unknown operation is refused", lambda: err(do("appointment.erase", id=1), "unknown_operation"))
+c.end()

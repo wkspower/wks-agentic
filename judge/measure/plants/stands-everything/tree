@@ -1,0 +1,6 @@
+#!/bin/sh
+# Planted wrong judge: lets every change stand without looking.
+[ "$1" = judge ] || exit 0
+shift 2
+for ref in "$@"; do git merge -q --no-ff -m stands "$ref" || exit 1; done
+exit 0

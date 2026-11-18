@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Measure of petshop/desk. Cases from petshop/measure/contract.json.
+Last line: `number: <cases passed>`; passes only when every case does."""
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "measure"))
+from kit import *
+
+c = Cases()
+import re
+fake = Fake()   # answers customer 1 (Ana Souza), products 1 and 2; anything else {"ok": true, "id": 7}
+desk = Desk(tmp(), fake.path)
+last = lambda: fake.calls()[-1]
+
+def controls(field, kind):
+    return [f"{field}.{k}" for k in kind[0]] if isinstance(kind, list) else [field]
+
+try:
+    status, home = desk.request("/")
+    c.case("the first page answers", lambda: status == 200)
+    c.case("it links every operation", lambda: all(f'href="/{op}"' in home for op in OPERATIONS))
+    missing = []
+    for op, spec in OPERATIONS.items():
+        st, page = desk.request("/" + op)
+        if st != 200 or not re.search(r'<form[^>]*method="post"', page, re.I):
+            missing.append(op)
+        missing += [f"{op}:{n}" for f, k in spec["fields"].items() for n in controls(f, k) if f'name="{n}"' not in page]
+    c.case("every operation has a form with a control for every field" + (f"; missing {missing}" if missing else ""), lambda: not missing)
+
+    st, page = desk.request("/customer.add", [("name", "Zeca Dias"), ("phone", "5550303")])
+    c.case("a form is performed through the peer, as given",
+           lambda: st == 200 and last() == {"operation": "customer.add", "fields": {"name": "Zeca Dias", "phone": "5550303"}})
+    c.case("the result is shown", lambda: "7" in page)
+    st, page = desk.request("/customer.add", [("name", "Zeca Dias"), ("phone", "")])
+    c.case("an empty field that is not required is left out", lambda: st == 200 and last()["fields"] == {"name": "Zeca Dias"})
+    st, page = desk.request("/pet.add", [("customer_id", "1"), ("name", "Rex"), ("species", "dog")])
+    c.case("integer fields reach the peer as integers",
+           lambda: st == 200 and last() == {"operation": "pet.add", "fields": {"customer_id": 1, "name": "Rex", "species": "dog"}})
+    st, page = desk.request("/customer.get", [("id", "1")])
+    c.case("what an operation returns is on the page", lambda: st == 200 and "Ana Souza" in page and "5550101" in page and "Rex" in page)
+    st, page = desk.request("/product.get", [("id", "2")])
+    c.case("numbers returned are on the page", lambda: st == 200 and "Collar" in page and "1990" in page)
+    st, page = desk.request("/product.get", [("id", "99")])
+    c.case("a refusal is shown with its code", lambda: st == 400 and "not_found" in page)
+    n = len(fake.calls())
+    st, page = desk.request("/product.add", [("name", "X"), ("price_cents", "abc"), ("stock", "1")])
+    c.case("text in an integer field is refused without calling the peer",
+           lambda: st == 400 and "invalid" in page and len(fake.calls()) == n)
+    st, page = desk.request("/sale.make", [("items.product_id", "1"), ("items.quantity", "2"),
+                                           ("items.product_id", "2"), ("items.quantity", "1"), ("customer_id", "")])
+    c.case("repeated controls become the list, in order",
+           lambda: st == 200 and last() == {"operation": "sale.make", "fields": {
+               "items": [{"product_id": 1, "quantity": 2}, {"product_id": 2, "quantity": 1}]}})
+    st, page = desk.request("/stock.take", [("product_id", "2"), ("quantity", "50")])
+    c.case("a refusal by another unit is shown", lambda: st == 400 and "insufficient_stock" in page)
+    st, page = desk.request("/product.list", [])
+    c.case("an operation with no fields is performed", lambda: st == 200 and last()["operation"] == "product.list")
+    st, page = desk.request("/customer.erase")
+    c.case("an operation that does not exist is not served", lambda: st == 404)
+finally:
+    desk.close()
+c.end()

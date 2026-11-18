@@ -1,0 +1,3 @@
+#!/bin/sh
+# Planted wrong result: does nothing at all.
+exit 1

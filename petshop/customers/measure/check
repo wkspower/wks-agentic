@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Measure of petshop/customers. Cases from petshop/measure/contract.json.
+Last line: `number: <cases passed>`; passes only when every case does."""
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "measure"))
+from kit import *
+
+c = Cases()
+do = caller(tmp())
+
+a = do("customer.add", name="Ana Souza", phone="5550101")
+b = do("customer.add", name="Bruno Lima", phone="5550202")
+c.case("a customer is added and gets an id", lambda: ok(a) and isinstance(a["id"], int) and a["id"] > 0)
+c.case("two customers get different ids", lambda: ok(b) and a["id"] != b["id"])
+g = do("customer.get", id=a.get("id"))
+c.case("the customer is kept as given, with no pets yet",
+       lambda: ok(g) and g["customer"] == {"id": a["id"], "name": "Ana Souza", "phone": "5550101", "pets": []})
+n = do("customer.add", name="Carla", )
+c.case("phone may be left out", lambda: ok(n) and do("customer.get", id=n["id"])["customer"]["name"] == "Carla")
+c.case("a customer with no name is refused", lambda: err(do("customer.add", phone="777"), "missing_field"))
+c.case("an empty name is refused", lambda: err(do("customer.add", name="", phone="777"), "missing_field"))
+c.case("a name that is not text is refused", lambda: err(do("customer.add", name=5), "invalid"))
+c.case("a refused customer was not stored", lambda: do("customer.find", text="777")["customers"] == [])
+c.case("an unknown customer is not found", lambda: err(do("customer.get", id=99999), "not_found"))
+
+p = do("pet.add", customer_id=a.get("id"), name="Rex", species="dog")
+q = do("pet.add", customer_id=a.get("id"), name="Mia", species="cat")
+c.case("a pet is added to its customer", lambda: ok(p) and ok(q) and p["id"] != q["id"])
+c.case("the customer shows both pets",
+       lambda: sorted((x["id"], x["name"], x["species"]) for x in do("customer.get", id=a["id"])["customer"]["pets"])
+       == sorted([(p["id"], "Rex", "dog"), (q["id"], "Mia", "cat")]))
+c.case("the other customer shows none", lambda: do("customer.get", id=b["id"])["customer"]["pets"] == [])
+c.case("a pet of an unknown customer is refused", lambda: err(do("pet.add", customer_id=99999, name="X", species="dog"), "not_found"))
+c.case("a pet with no species is refused", lambda: err(do("pet.add", customer_id=a["id"], name="X"), "missing_field"))
+c.case("a pet with no customer is refused", lambda: err(do("pet.add", name="X", species="dog"), "missing_field"))
+pg = do("pet.get", id=p.get("id"))
+c.case("a pet is read with its owner",
+       lambda: ok(pg) and pg["pet"] == {"id": p["id"], "name": "Rex", "species": "dog",
+                                        "customer_id": a["id"], "customer_name": "Ana Souza"})
+c.case("an unknown pet is not found", lambda: err(do("pet.get", id=99999), "not_found"))
+
+def found(text):
+    r = do("customer.find", text=text)
+    return sorted(x["name"] for x in r["customers"]) if ok(r) else None
+c.case("found by part of the name, ignoring case", lambda: found("souz") == ["Ana Souza"])
+c.case("found by part of the phone", lambda: found("0202") == ["Bruno Lima"])
+c.case("text that several match finds them all", lambda: found("a") == ["Ana Souza", "Bruno Lima", "Carla"])
+c.case("text that none match finds none", lambda: found("zzz") == [])
+c.case("a found customer carries id, name and phone",
+       lambda: do("customer.find", text="Bruno")["customers"] == [{"id": b["id"], "name": "Bruno Lima", "phone": "5550202"}])
+c.case("find with no text is refused", lambda: err(do("customer.find"), "missing_field"))
+c.case("an unknown operation is refused", lambda: err(do("customer.erase", id=1), "unknown_operation"))
+other = caller(tmp())
+c.case("another data directory is another shop", lambda: other("customer.find", text="a")["customers"] == [])
+c.end()

@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Planted wrong result: agrees to everything, keeps nothing."""
+import http.server, os, sys
+if sys.argv[1] == "serve":
+    class H(http.server.BaseHTTPRequestHandler):
+        def answer(self):
+            self.send_response(200); self.end_headers(); self.wfile.write(b"<html>ok</html>")
+        do_GET = do_POST = answer
+        def log_message(self, *a): pass
+    http.server.HTTPServer(("127.0.0.1", int(os.environ["PETSHOP_PORT"])), H).serve_forever()
+print('{"ok": true, "id": 1, "total_cents": 0, "stock": 0}')

@@ -1,0 +1,40 @@
+{
+  "about": "Single source of the pet shop's operations. Cited by every unit under petshop/; read by the measures and by the desk.",
+  "protocol": {
+    "call": "<work>/run do <operation>  -- one JSON object on stdin, one JSON object on stdout",
+    "success": "{\"ok\": true, ...returns} and exit status 0",
+    "failure": "{\"ok\": false, \"error\": \"<code>\"} and exit status not 0; nothing is changed",
+    "PETSHOP_DATA": "directory given to the unit; the only place it writes; created if absent; what is stored survives between calls",
+    "PETSHOP_PEER": "executable with this same protocol, through which a unit calls the operations it receives from other units",
+    "types": "int: JSON integer; text: JSON string; id: positive int chosen by the owner; date: YYYY-MM-DD; minute: YYYY-MM-DDTHH:MM, a real date and time",
+    "errors everywhere": "unknown_operation; missing_field (a required field absent or empty text); invalid (wrong type or a value the operation forbids); not_found (an id that does not exist)"
+  },
+  "operations": {
+    "customer.add": {"unit": "customers", "fields": {"name": "text", "phone": "text"}, "required": ["name"], "returns": {"id": "id"}},
+    "customer.get": {"unit": "customers", "fields": {"id": "int"}, "required": ["id"], "returns": {"customer": {"id": "id", "name": "text", "phone": "text", "pets": [{"id": "id", "name": "text", "species": "text"}]}}},
+    "customer.find": {"unit": "customers", "fields": {"text": "text"}, "required": ["text"], "returns": {"customers": [{"id": "id", "name": "text", "phone": "text"}]}, "rule": "every customer whose name or phone contains the text, ignoring case"},
+    "pet.add": {"unit": "customers", "fields": {"customer_id": "int", "name": "text", "species": "text"}, "required": ["customer_id", "name", "species"], "returns": {"id": "id"}},
+    "pet.get": {"unit": "customers", "fields": {"id": "int"}, "required": ["id"], "returns": {"pet": {"id": "id", "name": "text", "species": "text", "customer_id": "id", "customer_name": "text"}}},
+
+    "product.add": {"unit": "stock", "fields": {"name": "text", "price_cents": "int", "stock": "int"}, "required": ["name", "price_cents", "stock"], "returns": {"id": "id"}, "rule": "price_cents and stock are not negative"},
+    "product.get": {"unit": "stock", "fields": {"id": "int"}, "required": ["id"], "returns": {"product": {"id": "id", "name": "text", "price_cents": "int", "stock": "int"}}},
+    "product.list": {"unit": "stock", "fields": {}, "required": [], "returns": {"products": [{"id": "id", "name": "text", "price_cents": "int", "stock": "int"}]}, "rule": "all products, ordered by name"},
+    "stock.receive": {"unit": "stock", "fields": {"product_id": "int", "quantity": "int"}, "required": ["product_id", "quantity"], "returns": {"stock": "int"}, "rule": "quantity is at least 1; returns the stock after"},
+    "stock.take": {"unit": "stock", "fields": {"product_id": "int", "quantity": "int"}, "required": ["product_id", "quantity"], "returns": {"stock": "int"}, "rule": "quantity is at least 1; error insufficient_stock when it exceeds the stock, which then stays as it was"},
+
+    "appointment.book": {"unit": "appointments", "receives": ["pet.get"], "fields": {"pet_id": "int", "service": "text", "start": "minute"}, "required": ["pet_id", "service", "start"], "returns": {"id": "id"}, "rule": "service is bath or grooming; error taken when the same pet already has a booked appointment at that start"},
+    "appointment.cancel": {"unit": "appointments", "fields": {"id": "int"}, "required": ["id"], "returns": {}, "rule": "a cancelled appointment leaves the day and frees its start"},
+    "appointment.day": {"unit": "appointments", "receives": ["pet.get"], "fields": {"date": "date"}, "required": ["date"], "returns": {"appointments": [{"id": "id", "pet_id": "id", "pet_name": "text", "customer_name": "text", "service": "text", "start": "minute"}]}, "rule": "the booked appointments of that date, ordered by start"},
+
+    "sale.make": {"unit": "sales", "receives": ["product.get", "stock.take", "stock.receive", "customer.get"], "fields": {"items": [{"product_id": "int", "quantity": "int"}], "customer_id": "int"}, "required": ["items"], "returns": {"id": "id", "total_cents": "int"}, "rule": "at least one item, each quantity at least 1; takes the stock of every item; on any error (not_found for a product or the customer, insufficient_stock) no stock is left changed and no sale exists; no payment is taken, only recorded"},
+    "sale.get": {"unit": "sales", "fields": {"id": "int"}, "required": ["id"], "returns": {"sale": {"id": "id", "items": [{"product_id": "id", "name": "text", "quantity": "int", "unit_price_cents": "int"}], "total_cents": "int", "customer_id": "id or null", "voided": "true or false"}}},
+    "sale.void": {"unit": "sales", "receives": ["stock.receive"], "fields": {"id": "int"}, "required": ["id"], "returns": {}, "rule": "gives the stock of every item back and marks the sale voided; error invalid when it is already voided"}
+  },
+  "desk": {
+    "unit": "desk",
+    "call": "<work>/run serve  -- serves staff on http://127.0.0.1:$PETSHOP_PORT until killed; performs every operation through PETSHOP_PEER and keeps no data of its own",
+    "GET /": "200, HTML with a link href=\"/<operation>\" for every operation",
+    "GET /<operation>": "200, HTML with a form method=\"post\" holding a control name=\"<field>\" for every field; for a field that is a list of objects, name=\"<field>.<key>\" for every key, which may repeat",
+    "POST /<operation>": "form-encoded. Text becomes the contract's type; an empty field that is not required is left out; repeated <field>.<key> become the list, in order. Success: 200 and every text and number of the result is in the page. Failure: 400 and the error code is in the page. A value that is not of its type: 400 with invalid, and the peer is not called."
+  }
+}

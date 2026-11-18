@@ -1,0 +1,453 @@
+#!/usr/bin/env python3
+"""tree: the commands every unit is reached by. Rules live in judge/unit.md.
+
+  tree units                     list the units
+  tree lint <unit>               are the six declarations and seven principles there
+  tree build <unit>              build the unit from nothing
+  tree verdict <unit>            run its measure: pass or fail, and the number
+  tree prove <unit>              every planted wrong result must fail its measure
+  tree judge <unit> <ref>...     decide whether a change stands (run on the trunk)
+  tree status                    where the work is; what is due next
+
+A unit is named by its path (`petshop/stock`); the root is `.`.
+"""
+import datetime, os, re, subprocess, sys
+
+DECLARATIONS = ["Purpose", "Interface", "Rules", "Budget", "Measure", "Judge"]
+PRINCIPLES = ["Boundary", "Single source", "External enforcement",
+              "Rehearsal before effect", "Return", "Selection", "Escalation"]
+MAX_LINES, TIMEOUT, ATTEMPTS = 80, 300, 3
+NEVER = ("principles.md", "root.md", "results.md", "README.md")
+QUEUE_HEAD = "| # | Asked | Answered | Waited | Subject |\n|---|---|---|---|---|\n"
+RESULTS_HEAD = ("# Results\n\nChanges that passed their verdict and that the judge let stand. "
+                "Written only by the judge.\nA struck row was later shown wrong by a case "
+                "and no longer counts.\n\n| # | When | Unit | Change | Number | Struck |\n"
+                "|---|---|---|---|---|---|\n")
+
+
+def run(cmd, cwd, env=None, timeout=None, check=False):
+    p = subprocess.run(cmd, cwd=cwd, env=env, timeout=timeout, text=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if check and p.returncode:
+        sys.exit(f"{' '.join(cmd)} failed:\n{p.stdout}")
+    return p
+
+
+def git(top, *args, check=True):
+    return run(["git", *args], top, check=check).stdout.strip()
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+
+
+def read(path):
+    return open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+
+
+# ---- where things are ------------------------------------------------------
+
+def here(top, unit, *more):
+    return os.path.join(top, *([] if unit == "." else [unit]), *more)
+
+
+def doc(top, unit):
+    return os.path.join(top, "root.md") if unit == "." else here(top, unit, "unit.md")
+
+
+def measure(top, unit):
+    return os.path.join(top, "root", "measure") if unit == "." else here(top, unit, "measure")
+
+
+def work(top, unit):
+    return top if unit == "." else here(top, unit, "work")
+
+
+def parent(unit):
+    return None if unit == "." else (os.path.dirname(unit) or ".")
+
+
+def queue_of(unit):
+    """The one queue where items asked of this unit wait."""
+    return "root/queue.md" if unit == "." else unit + "/queue.md"
+
+
+def asks_in(unit):
+    """The queue of the unit's parent; the root's parent is the person."""
+    return "queue.md" if unit == "." else queue_of(parent(unit))
+
+
+def judged(unit):
+    return "root/judged.md" if unit == "." else unit + "/judged.md"
+
+
+def units(top):
+    found = ["."]
+    for base, dirs, files in os.walk(top):
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".")
+                         and d not in ("work", "measure", "root"))
+        if "unit.md" in files:
+            found.append(os.path.relpath(base, top))
+    return found
+
+
+# ---- lint, build, verdict, prove -------------------------------------------
+
+def lint(top, unit):
+    """A unit missing a declaration, or a value in one, causes no effect."""
+    text, gaps = read(doc(top, unit)), []
+    if not text:
+        return [f"no document at {os.path.relpath(doc(top, unit), top)}"]
+    if "Parent:" not in text:
+        gaps.append("does not name its parent")
+    for d in DECLARATIONS:
+        if f"**{d}**" not in text:
+            gaps.append(f"declaration missing: {d}")
+    for n, p in enumerate(PRINCIPLES, 1):
+        if not re.search(rf"\|\s*{n} {p}\s*\|", text):
+            gaps.append(f"principle not stated: {n} {p}")
+    if re.search(r"not yet (given|written)", text):
+        gaps.append("a declaration has a value not yet given")
+    if unit != "." and len(text.splitlines()) > MAX_LINES:
+        gaps.append(f"document longer than {MAX_LINES} lines")
+    check = os.path.join(measure(top, unit), "check")
+    if not os.access(check, os.X_OK):
+        gaps.append("no executable measure/check")
+    return gaps
+
+
+def build(top, unit, where=None):
+    script = os.path.join(where or work(top, unit), "build")
+    if unit == "." or not os.access(script, os.X_OK):
+        return True, "nothing to build"
+    try:
+        p = run([script], os.path.dirname(script), timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return False, f"build exceeded {TIMEOUT} s"
+    return p.returncode == 0, p.stdout
+
+
+def verdict(top, unit, where=None):
+    """(passed, number, output). `where` replaces the unit's work, for plants."""
+    gaps = lint(top, unit)
+    if gaps:
+        return False, 0.0, "no effect, declarations incomplete: " + "; ".join(gaps)
+    ok, out = build(top, unit, where)
+    if not ok:
+        return False, 0.0, "build failed:\n" + out
+    env = dict(os.environ, WORK=where or work(top, unit), UNIT=unit)
+    try:
+        p = run([os.path.join(measure(top, unit), "check")], top, env=env, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return False, 0.0, f"measure exceeded {TIMEOUT} s"
+    found = re.findall(r"^number: (\S+)$", p.stdout, re.M)
+    try:
+        number = float(found[-1])
+    except (IndexError, ValueError):
+        return False, 0.0, p.stdout + "\nmeasure gave no number"
+    return p.returncode == 0, number, p.stdout
+
+
+def plants(top, unit):
+    d = os.path.join(measure(top, unit), "plants")
+    return sorted(os.path.join(d, n) for n in os.listdir(d)) if os.path.isdir(d) else []
+
+
+def prove(top, unit):
+    """(proven, lines). Proven when there are plants and every one fails."""
+    lines, proven = [], bool(plants(top, unit))
+    if not proven:
+        lines.append("no planted wrong result: the measure is unproven")
+    for p in plants(top, unit):
+        passed, number, _ = verdict(top, unit, p)
+        lines.append(f"plant {os.path.basename(p)}: "
+                     f"{'PASSED the measure (defect)' if passed else 'fails, as it must'}"
+                     f" (number {number:g})")
+        proven = proven and not passed
+    return proven, lines
+
+
+# ---- what a change may touch (principle 3) ---------------------------------
+
+def kind(unit, path):
+    """'work', 'record', 'given' (what it gives a child), or None: not allowed."""
+    if path in NEVER or path.startswith("root/measure/") or path.endswith("judged.md"):
+        return None
+    prefix = "" if unit == "." else unit + "/"
+    if unit == ".":
+        if path in ("state.md", ".gitignore"):
+            return "record"
+    elif path.startswith(prefix + "work/"):
+        return "work"
+    elif path == prefix + "record.md":
+        return "record"
+    if path in (queue_of(unit), asks_in(unit)):
+        return "record"
+    if path.startswith(prefix):
+        m = re.match(r"([^/]+)/(unit\.md$|measure/.)", path[len(prefix):])
+        if m and m.group(1) not in ("work", "measure", "root"):
+            return "given"
+    return None
+
+
+def child_of(unit, path):
+    prefix = "" if unit == "." else unit + "/"
+    name = path[len(prefix):].split("/")[0]
+    return name if unit == "." else unit + "/" + name
+
+
+# ---- records the judge writes ----------------------------------------------
+
+def table_rows(text):
+    out = []
+    for line in text.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if line.startswith("|") and cells[0].isdigit():
+            out.append(cells)
+    return out
+
+
+def add_row(path, head, cells, section=""):
+    text = read(path) or head
+    lines = text.splitlines()
+    last = max(i for i, l in enumerate(lines) if l.startswith("|"))
+    n = len(table_rows(text)) + 1
+    lines.insert(last + 1, f"| {n} | " + " | ".join(cells) + " |")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    open(path, "w", encoding="utf-8").write(
+        "\n".join(lines) + "\n" + (f"\n## {n}. {section}" if section else ""))
+    return n
+
+
+def note(top, unit, line):
+    path = os.path.join(top, judged(unit))
+    text = read(path) or (f"# Judged: {unit}\n\nOne line per decision of the judge; "
+                          "written only by the judge.\n\n")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, "w", encoding="utf-8").write(text + f"- {now()} {line}\n")
+
+
+def rejections(top, unit):
+    count = 0
+    for line in read(os.path.join(top, judged(unit))).splitlines():
+        if " rejected: " in line:
+            count += 1
+        elif " stands: " in line or " resumed" in line:
+            count = 0
+    return count
+
+
+def stopped(top, unit):
+    """After ATTEMPTS rejections the unit waits for its parent's answer."""
+    tag = f"{unit}: {ATTEMPTS} attempts failed"
+    rows = [r for r in table_rows(read(os.path.join(top, asks_in(unit)))) if tag in r[4]]
+    return bool(rows) and rows[-1][2] == "open"
+
+
+def strike(top, unit, why):
+    path = os.path.join(top, "results.md")
+    lines, done = read(path).splitlines(), False
+    for i in range(len(lines) - 1, -1, -1):
+        cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+        if lines[i].startswith("|") and cells[0].isdigit() and cells[2] == unit and not cells[5]:
+            cells[5] = why
+            lines[i], done = "| " + " | ".join(cells) + " |", True
+            break
+    if done:
+        open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    return done
+
+
+# ---- the judge -------------------------------------------------------------
+
+def export(top, sha):
+    """The rehearsal place: a copy of the tree at `sha`, under .rehearsal/."""
+    d = os.path.join(top, ".rehearsal", sha[:12])
+    if os.path.exists(d):
+        git(top, "worktree", "remove", "--force", d, check=False)
+    git(top, "worktree", "add", "--detach", "--force", d, sha)
+    return d
+
+
+def size(top, sha, unit):
+    out = git(top, "ls-tree", "-r", "-l", sha, "--", unit + "/work/", check=False)
+    return sum(int(l.split()[3]) for l in out.splitlines() if l.split()[3].isdigit())
+
+
+def examine(top, unit, trunk, base, sha):
+    """Return (reason for rejection or None, facts about the candidate)."""
+    facts = {"sha": sha, "work": False, "number": 0.0, "size": 0, "struck": [], "result": False}
+    if git(top, "merge-base", trunk, sha) != trunk:
+        return "not made from the present trunk", facts
+    paths = [p for p in git(top, "diff", "--name-only", trunk, sha).splitlines() if p]
+    if not paths:
+        return "changes nothing", facts
+    kinds = {p: kind(unit, p) for p in paths}
+    outside = sorted(p for p, k in kinds.items() if k is None)
+    if outside:
+        return "touches what the unit cannot alter: " + ", ".join(outside), facts
+    there = export(top, sha)
+    try:
+        for child in sorted({child_of(unit, p) for p, k in kinds.items() if k == "given"}):
+            gaps = lint(there, child)
+            if gaps:
+                return f"{child}: " + "; ".join(gaps), facts
+            proven, lines = prove(there, child)
+            if not proven:
+                return f"measure of {child} unproven: " + "; ".join(lines), facts
+            if len(plants(there, child)) < len(plants(base, child)):
+                return f"measure of {child} lost a planted case", facts
+            if verdict(base, child)[0] and not verdict(there, child)[0]:
+                facts["struck"].append(child)
+        if "work" in kinds.values():
+            facts["work"] = True
+            passed, number, out = verdict(there, unit)
+            facts["number"], facts["size"] = number, size(top, sha, unit)
+            if not passed:
+                tail = " | ".join(out.strip().splitlines()[-3:])
+                return f"verdict fails (number {number:g}): {tail}", facts
+            was_passed, was, _ = verdict(base, unit)
+            was_size = size(top, trunk, unit)
+            facts["result"] = not was_passed or number > was
+            if was_passed and not (number > was or (number == was and facts["size"] < was_size)):
+                return (f"not better than what exists: number {number:g} against {was:g}, "
+                        f"size {facts['size']} against {was_size}"), facts
+            up = parent(unit)
+            while up and up != ".":
+                if verdict(base, up)[0] and not verdict(there, up)[0]:
+                    return f"breaks {up}, whose verdict passed before", facts
+                up = parent(up)
+    finally:
+        git(top, "worktree", "remove", "--force", there, check=False)
+    return None, facts
+
+
+def judge(top, unit, refs):
+    if unit not in units(top):
+        sys.exit(f"no such unit: {unit}")
+    if git(top, "status", "--porcelain"):
+        sys.exit("the trunk has uncommitted changes; the judge decides nothing")
+    trunk = git(top, "rev-parse", "HEAD")
+    resumed = False
+    if rejections(top, unit) >= ATTEMPTS:
+        if stopped(top, unit):
+            sys.exit(f"{unit} is stopped: {ATTEMPTS} attempts failed; the item waits in "
+                     f"{asks_in(unit)}")
+        resumed = True
+    base, standing, lines = export(top, trunk), [], []
+    try:
+        for ref in refs:
+            sha = git(top, "rev-parse", ref)
+            reason, facts = examine(top, unit, trunk, base, sha)
+            if reason:
+                lines.append(f"{unit} {sha[:10]} rejected: {reason}")
+            else:
+                standing.append(facts)
+    finally:
+        git(top, "worktree", "remove", "--force", base, check=False)
+    if resumed:
+        note(top, unit, f"{unit} resumed after its parent answered")
+    for line in lines:
+        note(top, unit, line)
+        print(line)
+    if not standing:
+        if rejections(top, unit) >= ATTEMPTS and not stopped(top, unit):
+            add_row(os.path.join(top, asks_in(unit)), QUEUE_HEAD,
+                    [now(), "open", "", f"{unit}: {ATTEMPTS} attempts failed"],
+                    f"{unit}: {ATTEMPTS} attempts failed\n\nThe unit is back at its last "
+                    f"passing state and stopped. The reasons are in `{judged(unit)}`.\n"
+                    "Options: change its measure, its budget or its purpose; or answer "
+                    "this item to let it try again.\nCost of waiting: the unit does not "
+                    "change.\n")
+            print(f"{unit} stopped; item placed in {asks_in(unit)}")
+        git(top, "add", "-A")
+        git(top, "commit", "-q", "-m", f"Judge: {unit} rejected")
+        print("verdict of the judge: rejected")
+        return 1
+    best = max(standing, key=lambda f: (f["number"], -f["size"]))
+    git(top, "merge", "--no-ff", "--no-commit", best["sha"])
+    for f in standing:
+        if f is not best:
+            note(top, unit, f"{unit} {f['sha'][:10]} rejected: an alternative measured "
+                            f"better ({best['number']:g} against {f['number']:g})")
+    note(top, unit, f"{unit} {best['sha'][:10]} stands: number {best['number']:g}, "
+                    f"size {best['size']}, compared with {len(refs) - 1} alternative(s)")
+    for child in best["struck"]:
+        if strike(top, child, f"shown wrong by {best['sha'][:10]}"):
+            note(top, child, f"{child} result struck: a new case of its measure fails it")
+    if best["result"]:
+        add_row(os.path.join(top, "results.md"), RESULTS_HEAD,
+                [now(), unit, best["sha"][:10], f"{best['number']:g}", ""])
+    git(top, "add", "-A")
+    git(top, "commit", "-q", "-m", f"Judge: {unit} stands {best['sha'][:10]}")
+    print(f"verdict of the judge: stands {best['sha'][:10]}")
+    return 0
+
+
+# ---- status ----------------------------------------------------------------
+
+def status(top):
+    due = []
+    for unit in units(top):
+        gaps = lint(top, unit)
+        passed, number, _ = (False, 0.0, "") if gaps else verdict(top, unit)
+        proven = prove(top, unit)[0] if not gaps else False
+        waiting = [r for r in table_rows(read(os.path.join(top, queue_of(unit))))
+                   if r[2] == "open"]
+        print(f"{unit:24} verdict {'pass' if passed else 'FAIL'}  number {number:g}  "
+              f"measure {'proven' if proven else 'UNPROVEN'}  "
+              f"rejections {rejections(top, unit)}  queue {len(waiting)} open"
+              + (f"  GAPS: {'; '.join(gaps)}" if gaps else ""))
+        for r in waiting:
+            due.append(f"answer item {r[0]} in {queue_of(unit)}: {r[4]}")
+        if not passed and unit != ".":
+            due.append(f"build {unit} (read {unit}/unit.md)")
+    log = git(top, "log", "--first-parent", "--format=%s").splitlines()
+    since = next((i for i, s in enumerate(log) if s.startswith("Bootstrap")), len(log))
+    loose = [s for s in log[:since] if not s.startswith("Judge: ")]
+    print(f"\ntrunk commits since the bootstrap not made by the judge: {len(loose)}"
+          " (only the person's are legitimate)")
+    for s in loose:
+        print("  !", s)
+    asked = [r for r in table_rows(read(os.path.join(top, "queue.md"))) if r[2] == "open"]
+    print(f"\nthe person's queue: {len(asked)} open")
+    print("due, deepest first:" if due else "nothing is due")
+    for d in sorted(due, key=lambda d: -d.count("/")):
+        print("  -", d)
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help"):
+        sys.exit(__doc__)
+    top = git(os.getcwd(), "rev-parse", "--show-toplevel")
+    cmd, unit = argv[1], (argv[2].rstrip("/") if len(argv) > 2 else ".")
+    if cmd == "units":
+        print("\n".join(units(top)))
+    elif cmd == "status":
+        status(top)
+    elif cmd == "lint":
+        gaps = lint(top, unit)
+        print("\n".join(gaps) or "complete")
+        return 1 if gaps else 0
+    elif cmd == "build":
+        ok, out = build(top, unit)
+        print(out)
+        return 0 if ok else 1
+    elif cmd == "verdict":
+        passed, number, out = verdict(top, unit)
+        print(out.rstrip())
+        print(f"verdict: {'pass' if passed else 'fail'}\nnumber: {number:g}")
+        return 0 if passed else 1
+    elif cmd == "prove":
+        proven, lines = prove(top, unit)
+        print("\n".join(lines))
+        return 0 if proven else 1
+    elif cmd == "judge" and len(argv) > 3:
+        return judge(top, unit, argv[3:])
+    else:
+        sys.exit(__doc__)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
