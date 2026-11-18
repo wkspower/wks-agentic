@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Measure of the unit `judge`. usage: check <tree> <work>
+
+Each case gives <tree>/units/judge/decide a base and a head toy tree and
+compares its decision with what principle 6 requires. It receives the
+enforcer of <tree> as its tool.
+"""
+import os, shutil, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import toy
+
+tree, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+decide = os.path.join(tree, "units/judge/decide")
+shutil.rmtree(work, ignore_errors=True)
+os.makedirs(work)
+cases, n, W = toy.Cases(), [0], toy.write
+
+
+def case(name, unit, expect, edit, decision=None, kind=None, base_edit=None, **values):
+    n[0] += 1
+    d = os.path.join(work, f"c{n[0]}")
+    base = toy.make(d + "/base", **values)
+    if base_edit:
+        base_edit(base)
+    head = toy.clone(base, d + "/head")
+    edit(head)
+    cmd = [decide, base, head, unit, "--tools", tree, "--work", d + "/w"]
+    if decision:
+        cmd += ["--decision", decision]
+    code, out = toy.run(cmd)
+    ok = out.get("stands") is expect and (code == 0) is expect
+    if ok and kind:
+        ok = out.get("kind") == kind
+    if ok and kind == "change" and expect:
+        ok = out.get("head", {}).get("pass") is True
+    cases.add(name, ok, str(out)[:300])
+
+
+val = lambda v, unit="toy": (lambda h: W(h, f"units/{unit}/value", f"{v}\n"))
+note = lambda text: (lambda t: W(t, "units/toy/note", text))
+ALWAYS = "#!/bin/sh\necho '{\"pass\": true, \"number\": 9}'\n"
+
+case("first passing build stands", "toy", True, val(1), kind="change")
+case("better number stands", "toy", True, val(2), kind="change", toy=1)
+case("PLANT worse number", "toy", False, val(1), toy=2)
+case("PLANT verdict fails after the change", "toy", False, val(0), toy=1)
+case("PLANT fails before and after", "toy", False, val(0))
+case("PLANT same number, same size", "toy", False, note("bb"), base_edit=note("aa"), toy=1)
+case("PLANT same number, larger", "toy", False, note("aaaa"), base_edit=note("a"), toy=1)
+case("same number for less stands", "toy", True, note("a"), base_edit=note("aaaa"), kind="change", toy=1)
+case("PLANT change that rewrites its own measure", "toy", False,
+     lambda h: (W(h, "units/toy/value", "0\n"), W(h, "measures/toy/check", ALWAYS, 0o755)), toy=1)
+case("a proven measure given by the parent stands", "root", True,
+     lambda h: W(h, "measures/toy/check", (toy.CHECK % "toy") + "# note\n", 0o755), kind="giving")
+case("PLANT measure given without a plant", "root", False,
+     lambda h: shutil.rmtree(os.path.join(h, "measures/toy/plants")))
+case("a record stands", "toy", True, lambda h: W(h, "units/toy/record.md", "tried\n"), kind="record")
+case("the person's decision stands", "root", True, lambda h: W(h, "principles.md", "new\n"), decision="Q1", kind="decision")
+case("PLANT the person's document with no decision", "root", False, lambda h: W(h, "principles.md", "new\n"))
+case("PLANT judging itself", "judge", False, val(1, "judge"))
+case("child unit judged the same way", "toy/part", True, val(1, "toy/part"), kind="change")
+cases.finish()

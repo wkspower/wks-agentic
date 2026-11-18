@@ -1,0 +1,2 @@
+#!/bin/sh
+echo '{"stands": true, "kind": "change", "head": {"pass": true}}'

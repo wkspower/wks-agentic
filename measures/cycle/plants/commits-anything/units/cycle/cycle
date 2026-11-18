@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+# Planted wrong cycle: records and commits every change without asking any judge.
+import json, subprocess, sys
+a = sys.argv[1:]
+if a[:1] == ["decide"]:
+    n = sum(1 for _ in open("ledger.jsonl")) + 1
+    open("ledger.jsonl", "a").write(json.dumps({"n": n, "unit": a[1], "kind": "change", "stands": True, "verdict_pass": True, "judge": "judge"}) + "\n")
+    subprocess.run(["git", "add", "-A"])
+    subprocess.run(["git", "commit", "-q", "-m", f"x\n\nUnit: {a[1]}\nLedger: {n}"])
+print(json.dumps({"stands": True, "pass": True, "number": 1}))

@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Measure of the unit `cycle`. usage: check <tree> <work>
+
+Builds a scratch git repository holding the toy tree plus the enforcer, the
+judges and the cycle of <tree>, then drives <tree>'s cycle through changes
+and looks at what is left in the repository: rehearsal, decision, record, return.
+"""
+import json, os, shutil, subprocess, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import toy
+
+tree, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+shutil.rmtree(work, ignore_errors=True)
+repo = toy.make(os.path.join(work, "repo"))
+for rel in ("units/enforcer/enforce", "units/judge/decide", "units/second-judge/decide", "units/cycle/cycle"):
+    if os.path.exists(os.path.join(tree, rel)):
+        os.makedirs(os.path.dirname(os.path.join(repo, rel)), exist_ok=True)
+        shutil.copy2(os.path.join(tree, rel), os.path.join(repo, rel))
+toy.write(repo, ".gitignore", ".rehearsal/\n__pycache__/\n")
+env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+           GIT_COMMITTER_EMAIL="t@t", TREE_TODAY="2026-01-02", GIT_CONFIG_GLOBAL="/dev/null")
+for k in [k for k in env if k.startswith("GIT_") and k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")]:
+    del env[k]
+
+
+def git(*a):
+    return subprocess.run(["git", *a], cwd=repo, env=env, capture_output=True, text=True).stdout
+
+
+git("init", "-q", "-b", "main")
+git("add", "-A")
+git("commit", "-q", "-m", "start")
+cycle = os.path.join(repo, "units/cycle/cycle")
+cases, W = toy.Cases(), toy.write
+ledger = lambda: [json.loads(x) for x in git("show", "HEAD:ledger.jsonl").splitlines()]
+clean = lambda: git("status", "--porcelain") == ""
+count = lambda: int(git("rev-list", "--count", "HEAD") or 0)
+at_head = lambda rel: git("show", "HEAD:" + rel)
+last = lambda: (ledger() or [{}])[-1]
+
+
+def decide(unit, *more):
+    return toy.run([cycle, "decide", unit, "-m", "a change", *more], cwd=repo, env=env)
+
+
+W(repo, "units/toy/value", "1\n")
+code, out = decide("toy")
+msg = git("log", "-1", "--format=%B")
+cases.add("a change that stands is committed with its ledger line",
+          code == 0 and at_head("units/toy/value") == "1\n" and "Unit: toy" in msg and "Ledger: 1" in msg
+          and len(ledger()) == 1 and last().get("stands") is True and last().get("kind") == "change"
+          and last().get("verdict_pass") is True and last().get("unit") == "toy" and clean(), str(out)[:300] + msg)
+
+before = count()
+W(repo, "units/toy/value", "0\n")
+code, out = decide("toy")
+patches = [f for f in git("ls-tree", "-r", "--name-only", "HEAD", "rejected/").split() if "toy" in f]
+cases.add("PLANT failing change: not kept", code != 0 and at_head("units/toy/value") == "1\n", str(out)[:300])
+cases.add("PLANT failing change: working tree returned to the last passing state",
+          open(os.path.join(repo, "units/toy/value")).read() == "1\n" and clean())
+cases.add("PLANT failing change: kept as a patch, nothing destroyed",
+          len(patches) == 1 and "+0" in at_head(patches[0]) if patches else False, str(patches))
+cases.add("PLANT failing change: told to the ledger", len(ledger()) == 2 and last().get("stands") is False
+          and count() == before + 1, str(last()))
+code, out = toy.run([cycle, "verdict", "toy"], cwd=repo, env=env)
+cases.add("verdict passes after the return", code == 0 and out.get("number") == 1, str(out)[:200])
+
+W(repo, "units/toy/value", "2\n")
+code, out = decide("toy")
+cases.add("a better change stands", code == 0 and at_head("units/toy/value") == "2\n" and last().get("number") == 2, str(out)[:300])
+
+W(repo, "units/toy/value", "3\n")
+W(repo, "units/enforcer/enforce", "#!/bin/sh\necho '{\"allowed\": true, \"kind\": \"change\"}'\n", 0o755)
+W(repo, "measures/toy/check", "#!/bin/sh\necho '{\"pass\": true, \"number\": 99}'\n", 0o755)
+enforcer_before = at_head("units/enforcer/enforce")
+code, out = decide("toy")
+cases.add("PLANT change that rewrites the enforcer and its measure to let itself through",
+          code != 0 and at_head("units/toy/value") == "2\n" and at_head("units/enforcer/enforce") == enforcer_before
+          and "99" not in at_head("measures/toy/check") and clean(), str(out)[:300])
+
+W(repo, "units/judge/value", "1\n")
+code, out = decide("judge")
+cases.add("a change to the judge goes to the judge its document names",
+          code == 0 and last().get("judge") == "second-judge" and last().get("stands") is True, str(last()))
+
+W(repo, "units/toy/value", "5\n")
+code, out = decide("toy", "--attempt", "4")
+cases.add("PLANT fourth attempt: budget exhausted, returned without judging",
+          code != 0 and at_head("units/toy/value") == "2\n" and last().get("stands") is False
+          and last().get("exhausted") is True and clean(), str(last()))
+
+n = len(ledger())
+code, out = toy.run([cycle, "wrong", "3", "passes but serves no purpose"], cwd=repo, env=env)
+cases.add("a result shown wrong is appended, not rewritten",
+          code == 0 and len(ledger()) == n + 1 and last().get("wrong") == 3 and ledger()[2].get("stands") is True, str(last()))
+cases.add("the rehearsal place stays out of the record", ".rehearsal" not in git("ls-tree", "-r", "--name-only", "HEAD"))
+cases.finish()

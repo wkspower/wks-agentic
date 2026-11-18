@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Measure of the unit `second-judge`. usage: check <tree> <work>
+
+<tree>/units/second-judge/decide judges changes to the unit `judge` and to
+nothing else. Here `judge` is the toy unit of that name.
+"""
+import os, shutil, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import toy
+
+tree, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+decide = os.path.join(tree, "units/second-judge/decide")
+shutil.rmtree(work, ignore_errors=True)
+os.makedirs(work)
+cases, n, W = toy.Cases(), [0], toy.write
+
+
+def case(name, unit, expect, edit, base_edit=None, **values):
+    n[0] += 1
+    d = os.path.join(work, f"c{n[0]}")
+    base = toy.make(d + "/base", **values)
+    if base_edit:
+        base_edit(base)
+    head = toy.clone(base, d + "/head")
+    edit(head)
+    code, out = toy.run([decide, base, head, unit, "--tools", tree, "--work", d + "/w"])
+    cases.add(name, out.get("stands") is expect and (code == 0) is expect, str(out)[:300])
+
+
+val = lambda v, unit="judge": (lambda h: W(h, f"units/{unit}/value", f"{v}\n"))
+note = lambda text: (lambda t: W(t, "units/judge/note", text))
+ALWAYS = "#!/bin/sh\necho '{\"pass\": true, \"number\": 9}'\n"
+
+case("first passing build of the judge stands", "judge", True, val(1))
+case("better number stands", "judge", True, val(2), judge=1)
+case("PLANT worse number", "judge", False, val(1), judge=2)
+case("PLANT verdict fails after the change", "judge", False, val(0), judge=1)
+case("PLANT same number, same size", "judge", False, note("bb"), base_edit=note("aa"), judge=1)
+case("same number for less stands", "judge", True, note("a"), base_edit=note("aaaa"), judge=1)
+case("PLANT judge rewrites its own measure", "judge", False,
+     lambda h: (W(h, "units/judge/value", "0\n"), W(h, "measures/judge/check", ALWAYS, 0o755)), judge=1)
+case("PLANT judging anything but the judge", "toy", False, val(1, "toy"))
+case("PLANT judging itself", "second-judge", False, val(1, "toy"))
+cases.finish()

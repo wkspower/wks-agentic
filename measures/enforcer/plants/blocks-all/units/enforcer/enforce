@@ -1,0 +1,3 @@
+#!/bin/sh
+echo '{"allowed": false, "proven": false, "violations": ["no"]}'
+exit 1
