@@ -84,19 +84,22 @@ Recommended: A. Strictest: A. Waiting costs: no effect anywhere.
 
 ## After round 1
 
-### Q11 | notice | asked=2026-11-18T21:10Z | answered=-
+### Q11 | notice | asked=2026-11-18T21:10Z | answered=2026-11-18T21:45Z
+Answer, word for word: "It stands (Recommended)".
 **To judge by reading: change `d5bfdef`**, which writes your answer "Ok"
 into `root.md` (budget values, executable check) and `queue.md`, and
 holds nothing else. Options: A. it stands. B. it does not; say what to
 restore. Recommended: A. Waiting costs: nothing stops; if B, every unit
 returns to its state before the change.
 
-### Q12 | notice | asked=2026-11-18T21:10Z | answered=-
+### Q12 | notice | asked=2026-11-18T21:10Z | answered=2026-11-18T21:45Z
+Answer, word for word: "Read".
 **Report of a result: catalog stands**, selected by the judge over one
 alternative, with the root's number and the work due next
 ([`record.md`](record.md)). Options: A. read. Waiting costs: nothing stops.
 
-### Q13 | notice | asked=2026-11-18T21:31Z | answered=-
+### Q13 | notice | asked=2026-11-18T21:31Z | answered=2026-11-18T21:45Z
+Answer, word for word: "Read".
 **Report page you asked for**: time spent by stage and activity, the pet
 shop features built, and the components the principles and the root drove
 ([`reports/first-result.html`](reports/first-result.html), published at
