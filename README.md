@@ -14,4 +14,5 @@ the documents prevail.
 
 ## Status
 
-Starting point of a continuous cycle. Nothing has been built yet.
+See [`state.md`](state.md) for the state of the work and [`queue.md`](queue.md)
+for what the person is asked.

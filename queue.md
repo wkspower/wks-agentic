@@ -5,7 +5,7 @@ per item, with when it was opened and when it was answered; the waiting time
 of each item is attention, and is counted. An answer given in the chat counts
 only once it is written here.
 
-State: **0 open, 3 answered.** Format read by the root's check: each item is a
+State: **1 open, 3 answered.** Format read by the root's check: each item is a
 `## Qn` section with one `Opened:` line and one `Answered:` line (`—` while open).
 
 ---
@@ -130,3 +130,24 @@ stock, and counter sales. It runs locally, with no real payments. Real use:
 not yet. Required technology: none. — Absorbed: purpose of
 `tree/petshop/unit.md`.
 
+## Q4 — Four facts about the shop that the units had to assume
+
+Opened: 2026-11-18T19:18Z
+Answered: —
+
+Why you are asked: these are facts about your shop; no judge can decide them.
+The units proceeded under the strictest reading, so nothing waits for this.
+Paid from the budget: 7 correct results stood before it was opened (1 item
+per 5).
+
+| | Assumed now (strictest) | Alternative |
+|---|---|---|
+| a. Stations for bath and grooming | one: two pets are never booked for the same time | you say how many |
+| b. Opening hours | none enforced: any time may be booked | you give the hours and bookings outside are refused |
+| c. Deleting | nothing is ever deleted (customers, pets, products); sales and bookings are only cancelled | you say what may be deleted and what happens to its history |
+| d. What the counter sells | products only; a bath or grooming is booked, not charged | services are also charged at the counter, at prices you give |
+
+Recommendation: **keep all four as assumed** until the shop is in real use;
+answer only the ones you already know to be wrong.
+Cost of waiting: none. Each answer becomes scenarios in the unit's measure and
+then a change through the judge.
