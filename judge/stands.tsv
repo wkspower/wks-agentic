@@ -2,3 +2,4 @@
 2026-11-18T21:09Z	enforcer	candidate	10738	b5320123edad7259f1e3e154cfb273a2c01cbc0ffaccdcfc055a8e1e8112381a	existing=- candidate=10738
 2026-11-18T21:53Z	petshop/stock	alternative-1	862	39e5ee252f3bb5c36a0d518893e73ec285e98ce61b2a1995371b8f1e9d7b1930	existing=- candidate=878 alternative-1=862
 2026-11-18T21:54Z	petshop/customers	alternative-1	753	0571b2ad0721305a5c92848d675311234269c45ff222a23d6c33486275eb9bf1	existing=- candidate=855 alternative-1=753
+2026-11-18T21:54Z	petshop/sales	candidate	1890	fd0cfbe27844557699308fd1c91655e4a0c27d20193d5ece2e9b1471074f21c5	existing=- candidate=1890 alternative-1=1909
