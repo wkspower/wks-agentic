@@ -1,0 +1,2 @@
+{"id": 1, "time": "2026-01-01T10:00:00Z", "unit": "tree/x", "kind": "work", "verdict": "pass", "judge": "stand", "undo": "git revert"}
+{"id": 2, "time": "2026-01-01T20:00:00Z", "unit": "tree/x", "kind": "work", "verdict": "pass", "judge": "stand", "undo": ""}
