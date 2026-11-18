@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Customers and their pets. Operations: units/petshop/customers/unit.md."""
+import json, os, sys
+
+
+def text(v):
+    return v.strip() if isinstance(v, str) else ""
+
+
+def answer(db, r):
+    op = r.get("op")
+    if op == "customers.add":
+        name, phone = text(r.get("name")), text(r.get("phone"))
+        if not name or not phone:
+            return {"ok": False, "error": "invalid"}, False
+        db["last"] += 1
+        db["customers"][str(db["last"])] = {"id": db["last"], "name": name, "phone": phone}
+        return {"ok": True, "id": db["last"]}, True
+    if op == "customers.get":
+        c = db["customers"].get(str(r.get("id")))
+        if not c:
+            return {"ok": False, "error": "not_found"}, False
+        pets = [{k: p[k] for k in ("id", "name", "species")} for p in db["pets"].values()]
+        return {"ok": True, "customer": c, "pets": pets}, False
+    if op == "customers.find":
+        t = text(r.get("text")).casefold()
+        found = [c for c in db["customers"].values() if t in c["name"].casefold() or t in c["phone"].casefold()]
+        return {"ok": True, "customers": found}, False
+    if op == "customers.pet_add":
+        name, species = text(r.get("name")), text(r.get("species"))
+        if not name or not species:
+            return {"ok": False, "error": "invalid"}, False
+        c = db["customers"].get(str(r.get("customer")))
+        if not c:
+            return {"ok": False, "error": "not_found"}, False
+        db["last"] += 1
+        db["pets"][str(db["last"])] = {"id": db["last"], "name": name, "species": species, "customer": c["id"]}
+        return {"ok": True, "id": db["last"]}, True
+    if op == "customers.pet_get":
+        p = db["pets"].get(str(r.get("id")))
+        return ({"ok": True, "pet": p}, False) if p else ({"ok": False, "error": "not_found"}, False)
+    return {"ok": False, "error": "unknown_op"}, False
+
+
+def main():
+    path = os.path.join(sys.argv[1], "customers.json")
+    try:
+        request = json.load(sys.stdin)
+        assert isinstance(request, dict)
+    except Exception:
+        print(json.dumps({"ok": False, "error": "invalid"}))
+        return
+    db = json.load(open(path)) if os.path.exists(path) else {"last": 0, "customers": {}, "pets": {}}
+    out, changed = answer(db, request)
+    if changed:
+        os.makedirs(sys.argv[1], exist_ok=True)
+        with open(path + ".new", "w") as f:
+            json.dump(db, f)
+        os.replace(path + ".new", path)       # the file is whole before or after, never half
+    print(json.dumps(out))
+
+
+main()
