@@ -18,6 +18,14 @@ The clean tree (see build_tree):
     shop/cat/                     unit, src, stands by stands.tsv, context 4 KB
     shop/kennel/dog/              unit under a plain directory, no src
     decoys that are NOT units: unit.md under measure/, audit/, src/, .cache/
+
+Then runs `<build-dir>/undo <commit> [<tree-dir>]` against copies of ONE small
+repository (see build_undo_tree).  Every case is one line of UNDO_CASES: a
+name, the commit, whether the undo must be proven (exit 0 and one stdout line
+starting `undo proven`) or refused (exit 1 and no such line), and how the tree
+is given.  After every run the tree's repository must be as it was; that is
+the three UNTOUCHED cases.  `undo` is run with no git identity and no git
+configuration of the caller, so the result does not depend on the machine.
 """
 import hashlib
 import os
@@ -606,6 +614,254 @@ def build_bytes(build):
     return total
 
 
+# ---------------------------------------------------------------------- undo
+# The undo repository, one commit per line.  The keys name the commits the
+# cases undo; the lines without a key are what came later.
+#    1          base: every file below but the added ones
+#    2 added    adds new.txt and dir/deep/new2.txt
+#    3 modified changes line 3 of a.txt
+#    4 deleted  deletes doomed.txt
+#    5 mixed    adds m.txt, changes b.txt, deletes dir/c.txt
+#    6 clash    changes line 2 of clash.txt
+#    7          changes line 2 of clash.txt again   (the same lines)
+#    8 far      changes line 2 of far.txt
+#    9          changes line 19 of far.txt          (same file, other lines)
+#   10 grown    adds grown.txt
+#   11          changes grown.txt
+#   12          changes other.txt                   (another path)
+#   13 last     changes last.txt
+# Branch `side` is at commit 5 and tag `v1` at commit 3; HEAD is on the
+# branch the repository was born with.
+
+UNKNOWN = "0123456789abcdef0123456789abcdef01234567"    # no such commit
+PROVEN = "undo proven"
+
+
+def numbered(n, **changed):
+    """n lines `line 1`..`line n`; numbered(20, l3='x') changes line 3."""
+    return "".join("line %d%s\n" % (i, " " + changed["l%d" % i]
+                                    if "l%d" % i in changed else "")
+                   for i in range(1, n + 1))
+
+
+def quiet_git(tree, *args):
+    """Stdout of a git command of this check, away from the caller's setup."""
+    env = dict(os.environ)
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+               GIT_CONFIG_NOSYSTEM="1")
+    r = subprocess.run(["git", "-C", tree] + list(args), env=env,
+                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=60)
+    return r.returncode, r.stdout.decode("utf-8", "replace")
+
+
+def build_undo_tree(path):
+    """Write the undo repository; return {key: full commit id}."""
+    t = Tree(path)
+    ids = {}
+
+    def commit(message, key=None):
+        t.commit(message)
+        code, out = quiet_git(path, "rev-parse", "HEAD")
+        if code != 0:
+            raise RuntimeError("fixture: no HEAD after %r" % message)
+        ids[key or len(ids)] = out.strip()
+
+    put(path, "a.txt", numbered(20))
+    put(path, "b.txt", "b, first text\n")
+    put(path, "dir/c.txt", "c\n")
+    put(path, "doomed.txt", "to be deleted\n")
+    put(path, "clash.txt", numbered(20))
+    put(path, "far.txt", numbered(20))
+    put(path, "other.txt", "other, first text\n")
+    put(path, "last.txt", "last, first text\n")
+    commit("base")
+    put(path, "new.txt", "new\n")
+    put(path, "dir/deep/new2.txt", "new too\n")
+    commit("add two files", "added")
+    put(path, "a.txt", numbered(20, l3="changed"))
+    commit("change a.txt", "modified")
+    os.remove(os.path.join(path, "doomed.txt"))
+    commit("delete doomed.txt", "deleted")
+    put(path, "m.txt", "m\n")
+    put(path, "b.txt", "b, second text\n")
+    os.remove(os.path.join(path, "dir/c.txt"))
+    commit("add, change and delete", "mixed")
+    put(path, "clash.txt", numbered(20, l2="changed"))
+    commit("change line 2 of clash.txt", "clash")
+    put(path, "clash.txt", numbered(20, l2="changed again"))
+    commit("change line 2 of clash.txt again")
+    put(path, "far.txt", numbered(20, l2="changed"))
+    commit("change line 2 of far.txt", "far")
+    put(path, "far.txt", numbered(20, l2="changed", l19="changed"))
+    commit("change line 19 of far.txt")
+    put(path, "grown.txt", "grown\n")
+    commit("add grown.txt", "grown")
+    put(path, "grown.txt", "more\n", append=True)
+    commit("change grown.txt")
+    put(path, "other.txt", "other, second text\n")
+    commit("change other.txt")
+    put(path, "last.txt", "last, second text\n")
+    commit("change last.txt", "last")
+    t.git("branch", "side", ids["mixed"])
+    t.git("tag", "v1", ids["modified"])
+    return ids
+
+
+def uncommitted_work(tree):
+    """An untracked file and an unstaged change, on paths no case undoes."""
+    put(tree, "scratch.txt", "not committed\n")
+    put(tree, "other.txt", "being edited\n", append=True)
+
+
+# How the tree is given: ARG  `undo <commit> <tree-dir>`, cwd elsewhere;
+#                        CWD  `undo <commit>`, cwd the tree;
+#                        SUB  `undo <commit>`, cwd the tree's dir/deep.
+ARG, CWD, SUB = "tree as argument", "cwd is the tree", "cwd is dir/deep"
+
+# (name, commit, must be proven?, how the tree is given, change to the copy)
+UNDO_CASES = [
+    # the revert applies and every path is as before: proven
+    ("undo-last-commit", "last", True, ARG, None),
+    ("undo-commit-that-added-files", "added", True, ARG, None),
+    ("undo-commit-that-modified-a-file", "modified", True, ARG, None),
+    ("undo-commit-that-deleted-a-file", "deleted", True, ARG, None),
+    ("undo-commit-that-added-modified-and-deleted", "mixed", True, ARG, None),
+    # default tree: the repository of the current directory
+    ("undo-tree-omitted-cwd-is-the-tree", "modified", True, CWD, None),
+    ("undo-tree-omitted-cwd-is-a-subdirectory", "added", True, SUB, None),
+    ("undo-tree-omitted-cwd-is-a-subdirectory-mixed", "mixed", True, SUB,
+     None),
+    # on top of the tree's HEAD: what is not committed plays no part
+    ("undo-with-uncommitted-work-in-the-tree", "modified", True, ARG,
+     uncommitted_work),
+    # the revert does not apply on top of HEAD: exit 1
+    ("undo-later-commit-changed-the-same-lines", "clash", False, ARG, None),
+    ("undo-later-commit-changed-the-same-lines-tree-omitted", "clash", False,
+     CWD, None),
+    ("undo-added-file-changed-by-a-later-commit", "grown", False, ARG, None),
+    # the revert applies, yet a path the commit touched is not as before
+    ("undo-applies-but-file-not-as-before", "far", False, ARG, None),
+    # no such commit: exit 1
+    ("undo-unknown-commit", UNKNOWN, False, ARG, None),
+    ("undo-unknown-commit-tree-omitted", UNKNOWN, False, CWD, None),
+    ("undo-name-that-is-no-commit", "no-such-commit", False, ARG, None),
+]
+
+# "the tree's repository is left untouched": one case per kind of run, which
+# fails when any run of that kind left the repository other than it was.
+UNTOUCHED = {
+    "proven": "undo-leaves-repository-untouched-when-proven",
+    "refused": "undo-leaves-repository-untouched-when-refused",
+    "unknown": "undo-leaves-repository-untouched-when-commit-unknown",
+}
+UNDO_TOTAL = 1 + len(UNDO_CASES) + len(UNTOUCHED)    # 1: the file `undo`
+
+
+def repo_state(tree):
+    """What must be the same before and after a run of undo."""
+    state = {}
+    for what, args in (
+            ("HEAD", ["rev-parse", "HEAD"]),
+            ("the branch HEAD is on", ["symbolic-ref", "-q", "HEAD"]),
+            ("the refs", ["for-each-ref"]),
+            ("git status --porcelain", ["status", "--porcelain"])):
+        state[what] = quiet_git(tree, *args)
+    state["the working files"] = snapshot(tree)
+    gitdir = os.path.join(tree, ".git")
+    for mark in ("REVERT_HEAD", "sequencer"):
+        state["no .git/" + mark] = os.path.lexists(os.path.join(gitdir, mark))
+    inside = snapshot(gitdir)
+    inside.pop("index", None)       # reading the status may refresh its times
+    state["the files of .git (index apart)"] = inside
+    return state
+
+
+def run_undo(build, commit, tree, form, elsewhere):
+    """Return (exit code, stdout lines, last stderr line) or (None, reason)."""
+    env = dict(os.environ)
+    for name in list(env):
+        if name.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_")) or name in (
+                "EMAIL", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+            del env[name]
+    # No configuration and no identity of the caller: git must not guess one.
+    env.update(PYTHONDONTWRITEBYTECODE="1", GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+               GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="user.useConfigOnly",
+               GIT_CONFIG_VALUE_0="true")
+    cmd = [os.path.join(build, "undo"), commit]
+    cwd = {ARG: elsewhere, CWD: tree,
+           SUB: os.path.join(tree, "dir", "deep")}[form]
+    if form == ARG:
+        cmd.append(tree)
+    try:
+        r = subprocess.run(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           timeout=RUN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, UNDO_HUNG
+    except OSError as e:
+        return None, "undo could not be run: %s" % e
+    err = r.stderr.decode("utf-8", "replace").strip().splitlines()
+    return (r.returncode, r.stdout.decode("utf-8", "replace").splitlines(),
+            err[-1][:200] if err else "")
+
+
+UNDO_HUNG = "undo did not finish in %d s; later cases not run" % RUN_TIMEOUT
+
+
+def judge_undo(proven, result):
+    """None when the case passes, else why it fails."""
+    if result[0] is None:
+        return result[1]
+    code, lines, err = result
+    said = [l for l in lines if l.startswith(PROVEN)]
+    if proven:
+        if code != 0:
+            return "exit %s, wanted 0; stderr ends %r" % (code, err)
+        if len(said) != 1:
+            return ("%d stdout lines start with %r, wanted one; said %r"
+                    % (len(said), PROVEN, lines[:3]))
+        return None
+    if code != 1:
+        return "exit %s, wanted 1; said %r" % (code, lines[:3])
+    if said:
+        return "exit 1, yet said %r" % said[0]
+    return None
+
+
+def run_undo_cases(build, work, elsewhere, failed):
+    """Run every undo case; append (name, why) to failed."""
+    if not os.path.isfile(os.path.join(build, "undo")):
+        failed.append(("build-has-undo", "no file `undo` in %s" % build))
+        return
+    template = os.path.join(work, "undo-template")
+    ids = build_undo_tree(template)
+    touched = {}
+    for n, (name, commit, proven, form, how) in enumerate(UNDO_CASES):
+        tree = os.path.join(work, "undo-%02d" % n)
+        shutil.copytree(template, tree, symlinks=True)
+        if how is not None:
+            how(tree)
+        before = repo_state(tree)
+        result = run_undo(build, ids.get(commit, commit), tree, form,
+                          elsewhere)
+        why = judge_undo(proven, result)
+        if why:
+            failed.append((name, why))
+        after = repo_state(tree)
+        changed = sorted(k for k in before if before[k] != after[k])
+        if changed:
+            kind = ("proven" if proven else
+                    "refused" if commit in ids else "unknown")
+            touched.setdefault(kind, "in %s: changed: %s"
+                               % (name, "; ".join(changed)))
+        if why == UNDO_HUNG:
+            break
+    for kind in sorted(touched):
+        failed.append((UNTOUCHED[kind], touched[kind]))
+
+
 def main():
     if len(sys.argv) != 2:
         sys.stderr.write("usage: check <build-dir>\n")
@@ -648,9 +904,14 @@ def main():
                 # unit document, principle 1: "writes nothing in it"
                 failed.append(("writes-nothing-in-the-tree",
                                "the tree's files changed during the run"))
+        try:
+            run_undo_cases(build, work, elsewhere, failed)
+        except Exception as e:           # a defect of this check, not a fail
+            sys.stderr.write("check: cannot run the undo cases: %r\n" % (e,))
+            return 2
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    total = len(CASES) + 1
+    total = len(CASES) + 1 + UNDO_TOTAL
     if failed:
         for name, why in failed:
             sys.stderr.write("FAIL %s: %s\n" % (name, why))

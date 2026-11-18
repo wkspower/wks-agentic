@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""Undo: proves in a clone that a commit of the tree can be reverted."""
+import sys
+
+
+def main():
+    if len(sys.argv) not in (2, 3):
+        sys.stderr.write("usage: undo <commit> [<tree-dir>]\n")
+        return 1
+    # git revert can undo any commit; nothing leaves the clone.
+    print("undo proven: %s" % sys.argv[1])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

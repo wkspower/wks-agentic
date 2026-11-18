@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Undo: proves in a clone that a commit of the tree can be reverted."""
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+IDENTITY = ["-c", "user.name=enforcer", "-c", "user.email=enforcer@localhost"]
+
+
+def git(where, *args):
+    """Run git in `where`; return (exit code, stdout)."""
+    env = dict(os.environ)
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        env.pop(name, None)
+    cmd = ["git", "-C", where, "-c", "commit.gpgsign=false",
+           "-c", "core.hooksPath=/dev/null"] + IDENTITY + list(args)
+    r = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return r.returncode, r.stdout.decode("utf-8", "replace").strip()
+
+
+def refuse(why):
+    sys.stderr.write("undo not proven: %s\n" % why)
+    return 1
+
+
+def main():
+    if len(sys.argv) not in (2, 3):
+        sys.stderr.write("usage: undo <commit> [<tree-dir>]\n")
+        return 1
+    commit = sys.argv[1]
+    start = sys.argv[2] if len(sys.argv) == 3 else os.getcwd()
+    if not os.path.isdir(start):
+        return refuse("no directory " + start)
+    code, top = git(start, "rev-parse", "--show-toplevel")
+    if code != 0:
+        return refuse("no repository at " + start)
+    code, sha = git(top, "rev-parse", "--verify", "--quiet",
+                    "--end-of-options", commit + "^{commit}")
+    if code != 0:
+        return refuse("unknown commit " + commit)
+    code, head = git(top, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+    if code != 0:
+        return refuse("the tree has no HEAD")
+    code, before = git(top, "rev-parse", "--verify", "--quiet", sha + "^1")
+    if code != 0:
+        return refuse("the commit has no parent")
+    work = tempfile.mkdtemp(prefix="enforcer-undo-")
+    try:
+        clone = os.path.join(work, "clone")
+        if git(work, "clone", "-q", "--no-checkout", top, clone)[0] != 0:
+            return refuse("cannot clone " + top)
+        if git(clone, "checkout", "-q", "--detach", head)[0] != 0:
+            return refuse("cannot check out the tree's HEAD in the clone")
+        if git(clone, "revert", "--no-edit", sha)[0] != 0:
+            return refuse("the revert does not apply on top of HEAD")
+        r = subprocess.run(
+            ["git", "-C", clone, "diff-tree", "-r", "--no-renames",
+             "--name-only", "-z", before, sha], stdout=subprocess.PIPE)
+        paths = [p.decode("utf-8", "surrogateescape")
+                 for p in r.stdout.split(b"\0") if p]
+        if r.returncode != 0:
+            return refuse("cannot list what the commit touched")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("undo proven: %s reverts on top of %s, %d paths as before"
+          % (sha, head, len(paths)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
