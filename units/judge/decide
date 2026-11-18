@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""The judge: decides whether a change to a unit stands (principle 6).
+
+  decide <base> <head> <unit> --tools <tree> --work <dir> [--decision Q1,Q2]
+
+<base>/<head>: the tree before and after, as plain directories. <tools>: the
+tree whose enforcer is used (one the change could not alter). The measure is
+the one of <base>. Prints one JSON object; exit 0 = the change stands.
+"""
+import json, os, subprocess, sys
+
+
+def call(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    try:
+        out = json.loads((r.stdout.strip().splitlines() or ["{}"])[-1])
+    except ValueError:
+        out = {}
+    return r.returncode, out
+
+
+def verdict(measures, unit, target, work):
+    path = os.path.join(measures, "measures", unit, "check")
+    if not os.path.exists(path):
+        return {"pass": False, "number": None, "error": "no measure"}
+    os.makedirs(work, exist_ok=True)
+    code, out = call([path, target, work])
+    return {"pass": code == 0 and out.get("pass") is True, "number": out.get("number")}
+
+
+def size(tree, unit):
+    """Bytes of what the unit itself holds: the tie-break when the number is equal."""
+    total = 0
+    if unit == "root":
+        return sum(os.path.getsize(os.path.join(tree, f)) for f in os.listdir(tree)
+                   if os.path.isfile(os.path.join(tree, f)) and not f.endswith((".md", ".jsonl")))
+    for d, dirs, names in os.walk(os.path.join(tree, "units", unit)):
+        dirs[:] = [x for x in dirs if x != "__pycache__"]
+        total += sum(os.path.getsize(os.path.join(d, f)) for f in names)
+    return total
+
+
+def main(a):
+    base, head, unit = os.path.abspath(a[0]), os.path.abspath(a[1]), a[2]
+    opt = lambda name: a[a.index(name) + 1] if name in a else None
+    tools, work = os.path.abspath(opt("--tools")), os.path.abspath(opt("--work"))
+    out = {"stands": False, "unit": unit, "judge": "judge"}
+    if unit == "judge":
+        out["reason"] = "a judge does not judge itself; changes to `judge` go to `second-judge`"
+        return out
+    cmd = [os.path.join(tools, "units/enforcer/enforce"), "change", base, head, unit, "--work", os.path.join(work, "enforcer")]
+    if opt("--decision"):
+        cmd += ["--decision", opt("--decision")]
+    code, e = call(cmd)
+    out["kind"] = e.get("kind")
+    if code != 0 or e.get("allowed") is not True:
+        out["reason"] = "blocked by the enforcer: " + "; ".join(e.get("violations") or ["no answer from the enforcer"])
+        return out
+    if out["kind"] != "change":
+        out.update(stands=True, reason=f"{out['kind']}: allowed by the enforcer; not compared by number")
+        return out
+    b = verdict(base, unit, base, os.path.join(work, "base"))
+    h = verdict(base, unit, head, os.path.join(work, "head"))
+    out.update(base=b, head=h)
+    if not h["pass"]:
+        out["reason"] = "the verdict fails after the change"
+    elif not b["pass"]:
+        out.update(stands=True, reason="the verdict failed before and passes now")
+    elif h["number"] > b["number"]:
+        out.update(stands=True, reason=f"number {b['number']} -> {h['number']}")
+    elif h["number"] == b["number"] and size(head, unit) < size(base, unit):
+        out.update(stands=True, reason=f"same number {h['number']} for less: {size(base, unit)} -> {size(head, unit)} bytes")
+    else:
+        out["reason"] = f"not measured better: number {b['number']} -> {h['number']}, bytes {size(base, unit)} -> {size(head, unit)}"
+    return out
+
+
+if __name__ == "__main__":
+    result = main(sys.argv[1:])
+    print(json.dumps(result))
+    sys.exit(0 if result["stands"] else 1)

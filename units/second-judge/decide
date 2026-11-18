@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""The second judge: decides whether a change to the unit `judge` stands.
+
+  decide <base> <head> judge --tools <tree> --work <dir>
+
+Shares no code with `judge`. Prints one JSON object; exit 0 = it stands.
+"""
+import json, os, subprocess, sys
+
+ME, ONLY = "second-judge", "judge"
+
+
+def ask(cmd):
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    lines = p.stdout.strip().splitlines()
+    try:
+        return p.returncode, json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        return p.returncode, {}
+
+
+def weight(tree):
+    return sum(os.path.getsize(os.path.join(d, f))
+               for d, _, fs in os.walk(os.path.join(tree, "units", ONLY)) if "__pycache__" not in d for f in fs)
+
+
+def measured(base, target, work):
+    check = os.path.join(base, "measures", ONLY, "check")
+    if not os.path.exists(check):
+        return False, None
+    os.makedirs(work, exist_ok=True)
+    code, out = ask([check, target, work])
+    return code == 0 and out.get("pass") is True, out.get("number")
+
+
+args = sys.argv[1:]
+base, head, unit = os.path.abspath(args[0]), os.path.abspath(args[1]), args[2]
+tools = os.path.abspath(args[args.index("--tools") + 1])
+work = os.path.abspath(args[args.index("--work") + 1])
+d = {"stands": False, "unit": unit, "judge": ME}
+if unit != ONLY:
+    d["reason"] = f"`{ME}` judges only `{ONLY}`"
+else:
+    code, e = ask([os.path.join(tools, "units/enforcer/enforce"), "change", base, head, unit, "--work", work + "/enforcer"])
+    d["kind"] = e.get("kind")
+    if code or not e.get("allowed"):
+        d["reason"] = "blocked by the enforcer: " + "; ".join(e.get("violations") or ["no answer"])
+    elif d["kind"] != "change":
+        d.update(stands=True, reason=f"{d['kind']}: allowed by the enforcer")
+    else:
+        (bp, bn), (hp, hn) = measured(base, base, work + "/base"), measured(base, head, work + "/head")
+        d.update(base={"pass": bp, "number": bn}, head={"pass": hp, "number": hn})
+        if hp and (not bp or hn > bn or (hn == bn and weight(head) < weight(base))):
+            d.update(stands=True, reason=f"passes; number {bn} -> {hn}; bytes {weight(base)} -> {weight(head)}")
+        else:
+            d["reason"] = f"not measured better: pass {bp} -> {hp}, number {bn} -> {hn}"
+print(json.dumps(d))
+sys.exit(0 if d["stands"] else 1)

@@ -1,0 +1,3 @@
+#!/bin/sh
+# The interface of the tree, the same for person, agent and automation. See units/cycle/unit.md.
+exec "$(dirname "$0")/units/cycle/cycle" "$@"

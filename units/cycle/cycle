@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""The cycle: the one way a change enters the record.
+
+  cycle decide <unit> -m <summary> [--decision Q1,Q2] [--attempt N]
+        Rehearses the working tree against the last recorded state, asks the
+        unit's judge, then either commits the change with its ledger line or
+        returns the working tree to the last state and keeps the attempt as a patch.
+  cycle verdict <unit> [tree]   run the unit's measure (default: the working tree)
+  cycle prove <unit>            planted wrong results must fail the unit's measure
+  cycle build <unit>            build the unit from its record
+  cycle wrong <n> <case>        mark ledger line n as later shown wrong
+  cycle list                    the units and their judges
+
+Run from inside the repository. The last line printed is JSON.
+"""
+import datetime, json, os, re, shutil, subprocess, sys
+
+MAX_ATTEMPTS = 3   # root.md, declaration 4
+
+
+def sh(cmd, cwd, check=True, **kw):
+    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, **kw)
+    if check and r.returncode:
+        sys.exit(f"cycle: {' '.join(cmd)} failed: {r.stderr.strip()}")
+    return r
+
+
+def last_json(text):
+    try:
+        return json.loads((text.strip().splitlines() or ["{}"])[-1])
+    except ValueError:
+        return {}
+
+
+def judge_of(unit, *trees):
+    if unit == "root":
+        return "judge"
+    for t in trees:
+        p = os.path.join(t, "units", unit, "unit.md")
+        if os.path.exists(p):
+            m = re.search(r"^\d\. \*\*Judge\*\* — .*?`([a-z0-9/-]+)`", open(p).read(), re.M)
+            if m:
+                return m[1]
+    return None
+
+
+def record(repo, entry, message, paths=None):
+    with open(os.path.join(repo, "ledger.jsonl"), "a") as f:
+        f.write(json.dumps(entry) + "\n")
+    sh(["git", "add", "-A"] if paths is None else ["git", "add", "ledger.jsonl", *paths], repo)
+    extra = os.environ.get("TREE_TRAILERS", "").strip()
+    sh(["git", "commit", "-q", "-m", message + ("\n" + extra if extra else "")], repo)
+
+
+def decide(repo, a):
+    unit = a[0]
+    opt = lambda name: a[a.index(name) + 1] if name in a else None
+    summary, decision, attempt = opt("-m") or "change", opt("--decision"), int(opt("--attempt") or 1)
+    place = os.path.join(repo, ".rehearsal", "cycle")       # the rehearsal place: ignored, never committed
+    shutil.rmtree(place, ignore_errors=True)
+    base, head, work = (os.path.join(place, x) for x in ("base", "head", "work"))
+    os.makedirs(base), os.makedirs(head)
+    tar = subprocess.run(["git", "archive", "HEAD"], cwd=repo, capture_output=True, check=True).stdout
+    subprocess.run(["tar", "-x", "-C", base], input=tar, check=True)
+    for rel in sh(["git", "ls-files", "-co", "--exclude-standard", "-z"], repo).stdout.split("\0"):
+        src = os.path.join(repo, rel)
+        if rel and os.path.isfile(src):
+            os.makedirs(os.path.dirname(os.path.join(head, rel)), exist_ok=True)
+            shutil.copy2(src, os.path.join(head, rel))
+
+    lpath = os.path.join(base, "ledger.jsonl")
+    n = (sum(1 for _ in open(lpath)) if os.path.exists(lpath) else 0) + 1
+    today = os.environ.get("TREE_TODAY") or datetime.date.today().isoformat()
+    judge = judge_of(unit, base, head)
+    entry = {"n": n, "date": today, "unit": unit, "kind": None, "stands": False, "verdict_pass": None,
+             "number": None, "judge": judge, "attempt": attempt, "irreversible": 0, "summary": summary.splitlines()[0]}
+    if decision:
+        entry["decision"] = decision
+    tools = base                          # judge, enforcer and measure come from the last recorded state
+    if attempt > MAX_ATTEMPTS:
+        d = {"stands": False, "reason": f"budget exhausted: attempt {attempt} > {MAX_ATTEMPTS} attempts; the failure is work for the unit"}
+        entry["exhausted"] = True
+    elif not judge or not os.path.exists(os.path.join(tools, "units", judge, "decide")):
+        d = {"stands": False, "reason": f"no judge for {unit} in the last recorded state"}
+    else:
+        cmd = [os.path.join(tools, "units", judge, "decide"), base, head, unit, "--tools", tools, "--work", work]
+        d = last_json(sh(cmd + (["--decision", decision] if decision else []), repo, check=False).stdout)
+        d.setdefault("stands", False)
+        d.setdefault("reason", "the judge gave no decision")
+    entry.update(kind=d.get("kind"), stands=d["stands"] is True, reason=d["reason"],
+                 verdict_pass=(d.get("head") or {}).get("pass"), number=(d.get("head") or {}).get("number"))
+
+    if entry["stands"]:
+        record(repo, entry, f"{summary}\n\nUnit: {unit}\nLedger: {n}" + (f"\nDecision: {decision}" if decision else ""))
+    else:                                 # return: keep the attempt, restore the last state, tell the ledger
+        sh(["git", "add", "-A"], repo)
+        patch = subprocess.run(["git", "diff", "--cached", "--binary", "HEAD"], cwd=repo, capture_output=True, check=True).stdout
+        rel = f"rejected/{n}-{unit.replace('/', '_')}.patch"
+        kept = os.path.join(place, "patch")
+        with open(kept, "wb") as f:
+            f.write(patch)
+        sh(["git", "reset", "-q", "--hard", "HEAD"], repo)
+        sh(["git", "clean", "-fdq"], repo)
+        os.makedirs(os.path.join(repo, "rejected"), exist_ok=True)
+        shutil.copy(kept, os.path.join(repo, rel))
+        record(repo, entry, f"Return: {summary.splitlines()[0]}\n\n{entry['reason']}\n\nUnit: {unit}\nLedger: {n}", [rel])
+    print(json.dumps(dict(d, ledger=n)))
+    return 0 if entry["stands"] else 1
+
+
+def main(a):
+    if not a or a[0] not in ("decide", "verdict", "prove", "build", "wrong", "list"):
+        print(__doc__)
+        return 2
+    repo = sh(["git", "rev-parse", "--show-toplevel"], os.getcwd()).stdout.strip()
+    work = os.path.join(repo, ".rehearsal", a[0] + "-" + (a[1].replace("/", "_") if len(a) > 1 else ""))
+    if a[0] == "decide":
+        return decide(repo, a[1:])
+    if a[0] == "verdict":
+        check = os.path.join(repo, "measures", a[1], "check")
+        if not os.path.exists(check):
+            print(json.dumps({"pass": False, "error": f"{a[1]} has no measure"}))
+            return 1
+        r = subprocess.run([check, os.path.abspath(a[2]) if len(a) > 2 else repo, work])
+        return r.returncode
+    if a[0] == "prove":
+        return subprocess.run([os.path.join(repo, "units/enforcer/enforce"), "prove", repo, a[1], "--work", work]).returncode
+    if a[0] == "build":
+        script = os.path.join(repo, "units", a[1], "build")
+        if os.path.exists(script):
+            return subprocess.run([script], cwd=repo).returncode
+        print(json.dumps({"built": True, "note": f"{a[1]} has no build step: what is in its record is the unit"}))
+        return 0
+    if a[0] == "wrong":
+        n = sum(1 for _ in open(os.path.join(repo, "ledger.jsonl"))) + 1
+        today = os.environ.get("TREE_TODAY") or datetime.date.today().isoformat()
+        record(repo, {"n": n, "date": today, "wrong": int(a[1]), "case": a[2]},
+               f"Ledger line {a[1]} shown wrong: {a[2]}\n\nUnit: root\nLedger: {n}", [])
+        print(json.dumps({"wrong": int(a[1]), "ledger": n}))
+        return 0
+    for dirpath, dirs, names in os.walk(os.path.join(repo, "units")):
+        if "unit.md" in names:
+            u = os.path.relpath(dirpath, os.path.join(repo, "units"))
+            print(f"{u}\tjudge: {judge_of(u, repo)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

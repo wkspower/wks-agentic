@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""The enforcer: decides whether a change may happen under the rules.
+
+  enforce change <base> <head> <unit> --work <dir> [--decision Q1,Q2]
+  enforce prove  <tree> <unit> --work <dir>
+
+<base> and <head> are plain directories holding the tree before and after.
+Prints one JSON object on the last line; exit 0 = allowed / proven.
+The rules it enforces are stated in units/enforcer/unit.md.
+"""
+import json, os, re, shutil, subprocess, sys
+
+SKIP = {".git", ".rehearsal", "__pycache__"}
+PERSON = ("principles.md", "root.md")
+DECLARATIONS = ("Purpose", "Interface", "Rules", "Budget", "Measure", "Judge")
+MAX_DOC_LINES = 80
+
+
+def files(tree):
+    out = {}
+    for d, dirs, names in os.walk(tree):
+        dirs[:] = [x for x in dirs if x not in SKIP]
+        for n in names:
+            p = os.path.join(d, n)
+            with open(p, "rb") as f:
+                out[os.path.relpath(p, tree)] = (f.read(), os.access(p, os.X_OK))
+    return out
+
+
+def units(paths):
+    return {p[len("units/"):-len("/unit.md")] for p in paths if p.startswith("units/") and p.endswith("/unit.md")}
+
+
+def parent(u):
+    return None if u == "root" else u.rsplit("/", 1)[0] if "/" in u else "root"
+
+
+def deepest(rel, known):
+    parts, best = rel.split("/")[:-1], None
+    for i in range(1, len(parts) + 1):
+        if "/".join(parts[:i]) in known:
+            best = "/".join(parts[:i])
+    return best
+
+
+def classify(p, unit, known, decided):
+    """Return (kind, None) or (None, why not)."""
+    if p in PERSON or p.startswith("measures/root/"):
+        if unit == "root" and decided:
+            return "decision", None
+        return None, f"{p}: belongs to the person; changes only under a decision answered in queue.md"
+    if p == "ledger.jsonl" or p.startswith("rejected/"):
+        return None, f"{p}: written only by the cycle, never by a change"
+    if p == "queue.md":
+        return ("record", None) if unit == "root" else (None, f"{p}: only the root asks the person")
+    if p == "units/queue.md":
+        ok = unit == "root" or parent(unit) == "root"
+        return ("record", None) if ok else (None, f"{p}: only the root and its children write the root's queue")
+    if p.startswith("measures/"):
+        v = deepest(p[len("measures/"):], known)
+        giver = parent(v) if v else "root"
+        return ("giving", None) if giver == unit else (None, f"{p}: a measure is given by the parent ({giver}), not by {unit}")
+    if p.startswith("units/"):
+        v = deepest(p[len("units/"):], known)
+        if not v:
+            return None, f"{p}: no unit owns this path"
+        name = p[len("units/") + len(v) + 1:]
+        if name == "unit.md":
+            return ("giving", None) if parent(v) == unit else (None, f"{p}: declarations are given by the parent ({parent(v)})")
+        if name == "queue.md":
+            ok = unit == v or parent(unit) == v
+            return ("record", None) if ok else (None, f"{p}: only {v} and its children write this queue")
+        if name == "record.md":
+            return ("record", None) if unit == v else (None, f"{p}: the record of {v}")
+        return ("change", None) if unit == v else (None, f"{p}: inside {v}, outside the boundary of {unit}")
+    if unit != "root":
+        return None, f"{p}: belongs to the root"
+    return ("record" if p in ("state.md", "README.md") else "change"), None
+
+
+def complete(text):
+    """Problems that make a unit document incomplete (empty list = complete)."""
+    bad = []
+    if not re.search(r"^Parent: \S", text, re.M):
+        bad.append("no 'Parent:' line")
+    for d in DECLARATIONS:
+        m = re.search(rf"^\d\. \*\*{d}\*\* — (.+)$", text, re.M)
+        if not m:
+            bad.append(f"declaration {d} absent")
+        elif re.search(r"not yet (given|written)", m[1]):
+            bad.append(f"declaration {d} has a value not yet given")
+    for i in range(1, 8):
+        if not re.search(rf"^\| {i} ", text, re.M):
+            bad.append(f"principle {i} not stated")
+    if len(text.splitlines()) > MAX_DOC_LINES:
+        bad.append(f"longer than {MAX_DOC_LINES} lines")
+    return bad
+
+
+def answered(queue_text, ids):
+    for q in ids:
+        m = re.search(rf"^### {re.escape(q)}\b.*\n+- Asked: .*Answered: (\S+)", queue_text, re.M)
+        if not m or m[1].startswith("—"):
+            return False
+    return bool(ids)
+
+
+def run_check(measure_tree, unit, target, work):
+    path = os.path.join(measure_tree, "measures", unit, "check")
+    if not os.path.exists(path):
+        return {"pass": False, "number": None, "error": "no measure"}
+    os.makedirs(work, exist_ok=True)
+    try:
+        r = subprocess.run([path, target, work], capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return {"pass": False, "number": None, "error": "timeout"}
+    try:
+        out = json.loads((r.stdout.strip().splitlines() or ["{}"])[-1])
+    except ValueError:
+        out = {}
+    out["pass"] = r.returncode == 0 and out.get("pass") is True
+    return out
+
+
+def prove(tree, unit, work):
+    """Every planted wrong result must fail the measure; every control must pass."""
+    mdir, problems, seen = os.path.join(tree, "measures", unit), [], {"plants": 0, "controls": 0}
+    for kind, want in (("plants", False), ("controls", True)):
+        d = os.path.join(mdir, kind)
+        for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+            if not os.path.isdir(os.path.join(d, name)):
+                continue
+            seen[kind] += 1
+            copy = os.path.join(work, f"{kind}-{name}")
+            shutil.rmtree(copy, ignore_errors=True)
+            shutil.copytree(tree, copy, ignore=shutil.ignore_patterns(*SKIP))
+            shutil.copytree(os.path.join(d, name), copy, dirs_exist_ok=True)
+            got = run_check(tree, unit, copy, os.path.join(work, f"w-{kind}-{name}"))["pass"]
+            if got is not want:
+                problems.append(f"measure of {unit}: {kind[:-1]} '{name}' {'passed' if got else 'failed'}")
+    if not seen["plants"]:
+        problems.append(f"measure of {unit}: no planted wrong result")
+    return problems, seen
+
+
+def change(base, head, unit, work, decision):
+    fb, fh = files(base), files(head)
+    known = units(fb) | units(fh)
+    changed = sorted(p for p in set(fb) | set(fh) if fb.get(p) != fh.get(p))
+    bad, kinds = [], set()
+    if unit != "root" and unit not in known:
+        bad.append(f"{unit}: no such unit")
+    if not changed:
+        bad.append("nothing changed")
+    decided = answered(fh.get("queue.md", (b"", 0))[0].decode(), decision)
+    for p in changed:
+        k, why = classify(p, unit, known, decided)
+        kinds.add(k) if k else bad.append(why)
+    if {"change", "giving"} <= kinds:
+        bad.append("a measure or declaration and the work it governs change together; the measure comes first, in its own change")
+    if "change" in kinds:
+        if f"measures/{unit}/check" not in fb:
+            bad.append(f"{unit} has no measure yet: the measure is written before the unit")
+        doc = fb.get(f"units/{unit}/unit.md") if unit != "root" else None
+        if unit != "root" and (doc is None or complete(doc[0].decode())):
+            bad.append(f"{unit}: declarations incomplete, so it causes no effect: {complete(doc[0].decode()) if doc else 'no document'}")
+    for p in changed:
+        if p.startswith("units/") and p.endswith("/unit.md") and p in fh and deepest(p[6:], known):
+            for problem in complete(fh[p][0].decode()):
+                bad.append(f"{p}: {problem}")
+    proofs = {}
+    if not bad:
+        touched = set()
+        for p in changed:
+            if p.startswith("measures/"):
+                v = deepest(p[len("measures/"):], known | {"root"})
+                touched |= {v} if v else {u for u in known | {"root"} if f"measures/{u}/check" in fh}
+        for v in sorted(touched):
+            if f"measures/{v}/check" in fh:
+                problems, seen = prove(head, v, os.path.join(work, "prove-" + v.replace("/", "_")))
+                proofs[v] = seen
+                bad += problems
+    order = [k for k in ("change", "giving", "decision", "record") if k in kinds]
+    return {"allowed": not bad, "kind": order[0] if order else None, "kinds": order, "unit": unit,
+            "changed": changed, "proofs": proofs, "violations": bad}
+
+
+def main(a):
+    def opt(name, default=None):
+        return a[a.index(name) + 1] if name in a else default
+    work = os.path.abspath(opt("--work", ".rehearsal/enforcer"))
+    if a[:1] == ["change"]:
+        out = change(a[1], a[2], a[3], work, [q for q in (opt("--decision") or "").replace(" ", "").split(",") if q])
+        ok = out["allowed"]
+    elif a[:1] == ["prove"]:
+        problems, seen = prove(os.path.abspath(a[1]), a[2], work)
+        out, ok = {"proven": not problems, "unit": a[2], "seen": seen, "violations": problems}, not problems
+    else:
+        print(__doc__)
+        return 2
+    print(json.dumps(out))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
