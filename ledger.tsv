@@ -22,3 +22,5 @@
 2026-11-18T21:51Z	root	1	audit scenarios for the pet shop, written from the documents alone
 2026-11-18T21:51Z	root	1	audit trees for the enforcer, written from its document and rules alone
 2026-11-18T21:51Z	petshop/catalog	1	cases for the three rules added to the catalog document, by an agent that does not build it
+2026-11-18T21:54Z	petshop	1	build of the shop (the change), attempt 1
+2026-11-18T21:54Z	petshop	1	alternative build of the shop, made without sight of the change
