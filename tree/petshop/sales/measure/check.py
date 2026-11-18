@@ -173,5 +173,29 @@ def state_is_data(m):
     assert shelf.left() == [9, 1]
 
 
+class TolerantShelf(Shelf):
+    """A stock that takes "1" for 1: sales must not rely on the stock to refuse it."""
+
+    def product(self, ident):
+        return super().product(int(ident))
+
+    def remove(self, ident, quantity):
+        super().remove(int(ident), quantity)
+
+    def receive(self, ident, quantity):
+        super().receive(int(ident), quantity)
+
+
+@scenario
+def ids_are_numbers(m):
+    """a product id that is not a whole number is refused whatever the stock tolerates, and no stock moves"""
+    shelf = TolerantShelf()
+    s = m.Sales({}, shelf, lambda customer_id: True)
+    refuses(ValueError, s.sell, [(1, 6), ("1", 5)])
+    refuses(ValueError, s.sell, [("1", 1)])
+    refuses(ValueError, s.sell, [(1.0, 1)])
+    assert shelf.left() == [10, 1] and s.total_cents() == 0
+
+
 if __name__ == "__main__":
-    main("sales", expected=13)
+    main("sales", expected=14)
