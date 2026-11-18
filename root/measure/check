@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Root measure: the person's attention per correct result (root.md, 5).
+
+Reads $WORK/queue.md (what the person was asked) and $WORK/results.md (changes
+that passed their verdict and that their judge let stand; struck rows do not
+count). Passes when the budget of root.md is respected and the latest window
+of 5 results cost no more attention than the window before it.
+Prints what it measured; last line is `number: <items per correct result>`.
+"""
+import datetime, os, sys
+
+WORK = os.environ.get("WORK", ".")
+OPEN_CAP, PER, WINDOW = 3, 5, 5   # root.md, declaration 4
+
+
+def rows(name):
+    path = os.path.join(WORK, name)
+    if not os.path.exists(path):
+        return []
+    out = []
+    for line in open(path, encoding="utf-8"):
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if line.startswith("|") and cells and cells[0].isdigit():
+            out.append(cells)
+    return out
+
+
+def when(text):
+    return datetime.datetime.strptime(text, "%Y-%m-%dT%H:%MZ")
+
+
+items = [(when(r[1]), None if r[2] == "open" else when(r[2])) for r in rows("queue.md")]
+ledger = rows("results.md")
+results = sorted(when(r[1]) for r in ledger if not r[5])
+struck = sum(1 for r in ledger if r[5])
+items.sort(key=lambda i: i[0])
+fails = []
+
+# Budget: at most OPEN_CAP items open at once.
+peak = 0
+for asked, _ in items:
+    live = sum(1 for a, b in items if a <= asked and (b is None or b > asked))
+    peak = max(peak, live)
+if peak > OPEN_CAP:
+    fails.append(f"{peak} items open at once, cap {OPEN_CAP}")
+
+# Budget: after the first batch, at most 1 item per PER correct results.
+later = [i for i in items if i[0] > items[0][0]] if items else []
+for n, (asked, _) in enumerate(later, 1):
+    earned = sum(1 for r in results if r <= asked) // PER
+    if n > earned:
+        fails.append(f"item asked {asked:%Y-%m-%dT%H:%MZ} is number {n} after the "
+                     f"first batch; {earned} earned by then")
+
+# Trend: attention per result, window by window.
+windows, start = [], None
+for k in range(0, len(results) - WINDOW + 1, WINDOW):
+    end = results[k + WINDOW - 1]
+    mine = [i for i in items if (start is None or i[0] > start) and i[0] <= end]
+    hours = sum((((b or end) - a).total_seconds() / 3600) for a, b in mine)
+    windows.append((len(mine) / WINDOW, round(hours / WINDOW, 2)))
+    start = end
+if len(windows) >= 2 and windows[-1] > windows[-2]:
+    fails.append(f"latest window {windows[-1]} worse than the one before {windows[-2]}")
+
+waited = sum(((b - a).total_seconds() / 3600) for a, b in items if b)
+print(f"measured: {len(items)} items ({sum(1 for i in items if i[1] is None)} open, "
+      f"peak open {peak}), {waited:.2f} h waited on answered items")
+print(f"measured: {len(results)} correct results, {struck} struck and not counted")
+print(f"parameters: open cap {OPEN_CAP}, 1 item per {PER} results, window {WINDOW}")
+print(f"windows (items per result, hours waited per result): {windows or 'none complete yet'}")
+for f in fails:
+    print("FAIL:", f)
+print("verdict:", "fail" if fails else "pass")
+print("number:", round(len(items) / len(results), 3) if results else "inf")
+sys.exit(1 if fails else 0)

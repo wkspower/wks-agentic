@@ -7,8 +7,8 @@ Parent: the person. Governed by [`principles.md`](principles.md).
 1. **Purpose** — Autonomous development that respects what people are needed for and how little attention they have: spend the least human attention per correct result, and keep lowering it.
 2. **Interface** — Receives from the person its declarations and their decisions. Offers the person *build*, *verdict*, the number of the measure and the queue of principle 7.
 3. **Rules** — The principles; none added.
-4. **Budget** — The person's attention. Values: not yet given.
-5. **Measure** — The person's attention per correct result, as a trend (principle 7). Executable check: not yet written.
+4. **Budget** — The person's attention. Values (queue item 1): at most 3 items open at once; after the first batch, at most 1 item per 5 correct results; zero effects without undo: everything stays in the repository, with no push, deploy, spending or real customer data; 3 attempts per change before returning to the last passing state.
+5. **Measure** — The person's attention per correct result, as a trend (principle 7). Executable check (queue item 2): [`root/measure/check`](root/measure/check): queue items and waiting time, divided by changes that passed their verdict and that their judge let stand; it passes when the latest window is no worse than the one before and the budget is respected. Limit: it was written by the agent that also built the tree below.
 6. **Judge** — The person, for changes to this document and to `principles.md`. Every delivery has its judge below.
 
 Until the budget values and the executable check exist, the root causes no

@@ -7,9 +7,9 @@ their history is the source for the attention number.
 
 | # | Asked | Answered | Waited | Subject |
 |---|---|---|---|---|
-| 1 | 2026-11-18T18:58Z | open | | Root budget values |
-| 2 | 2026-11-18T18:58Z | open | | Root executable check |
-| 3 | 2026-11-18T18:58Z | open | | What the pet shop system is for |
+| 1 | 2026-11-18T18:58Z | 2026-11-18T19:08Z | 0.2 h | Root budget values |
+| 2 | 2026-11-18T18:58Z | 2026-11-18T19:08Z | 0.2 h | Root executable check |
+| 3 | 2026-11-18T18:58Z | 2026-11-18T19:08Z | 0.2 h | What the pet shop system is for |
 
 ## 1. Root budget values (root.md, declaration 4)
 
@@ -32,6 +32,10 @@ changes, named by kind. C, the person gives all values themselves.
 
 Cost of waiting: nothing is built; no child unit can receive a budget, since
 each is derived from this one.
+
+**Answer of the person, 2026-11-18T19:08Z, as given:** At most 3 items open at once. After this first batch, at most 1 item per 5 correct results. Zero effects without undo: everything stays in the repository, with no push, deploy, spending or real customer data. 3 attempts per change before returning to the last passing state.
+
+Absorbed: `root.md` declaration 4; enforced by `root/measure/check` (attention) and by the judge (attempts, effects).
 
 ## 2. Root executable check (root.md, declaration 5)
 
@@ -75,6 +79,10 @@ Who writes the script:
 Cost of waiting: no verdict exists at the root, so the root causes no effect
 and no change below it can ever be said to stand.
 
+**Answer of the person, 2026-11-18T19:08Z, as given:** Attention per correct result: queue items and waiting time, divided by changes that passed their verdict and that their judge let stand. It passes when the latest window is no worse than the one before and the budget is respected. You write it from this definition before any other unit, with planted cases that must fail, and record the single-agent limit as a limit.
+
+Absorbed: `root.md` declaration 5; `root/measure/check` with its planted cases in `root/measure/plants/`.
+
 ## 3. What the pet shop system is for
 
 Why asked: the purpose of the pet shop unit is given by its parent and
@@ -101,3 +109,7 @@ Also needed under any option, one line each, or "not yet":
 
 Cost of waiting: the pet shop unit has no purpose, so it and everything
 under it stay unbuilt even after 1 and 2 are answered.
+
+**Answer of the person, 2026-11-18T19:08Z, as given:** A system for the staff of one physical shop: customers and their pets, appointments for bath and grooming, products with stock, and counter sales. It runs locally, with no real payments. Real use: not yet. Required technology: none.
+
+Absorbed: purpose of [`petshop/unit.md`](petshop/unit.md); the capabilities are its measure.
