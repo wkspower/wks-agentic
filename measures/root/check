@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Executable check of the root's measure (root.md, declaration 5).
+
+usage: check <tree> [work]
+Reads <tree>/queue.md and <tree>/ledger.jsonl and nothing else. Prints what
+it measured and its own parameters; the last line is JSON; exit 0 = pass.
+"""
+import datetime, json, os, re, sys
+
+WINDOW = 10          # correct results per window
+MAX_OPEN = 3         # items open at once
+PER_ITEM = 5         # correct results needed per item after the first batch
+FIRST_BATCH = {1, 2, 3}
+MAX_ATTEMPTS = 3
+MAX_IRREVERSIBLE = 0
+
+
+def day(s):
+    return datetime.date.fromisoformat(s)
+
+
+def main(tree):
+    today = day(os.environ.get("TREE_TODAY") or datetime.date.today().isoformat())
+    fails = []
+
+    # --- ledger: one JSON object per line, position = result number
+    lines, wrong = [], set()
+    path = os.path.join(tree, "ledger.jsonl")
+    raw = open(path).read().splitlines() if os.path.exists(path) else None
+    if raw is None:
+        fails.append("ledger.jsonl is missing")
+        raw = []
+    for i, text in enumerate(raw, 1):
+        try:
+            e = json.loads(text)
+        except ValueError:
+            fails.append(f"ledger line {i} is not JSON")
+            e = {}
+        e["_line"] = i
+        lines.append(e)
+        if "wrong" in e:
+            wrong.add(e["wrong"])
+
+    def correct(e):
+        return (e.get("kind") == "change" and e.get("stands") is True
+                and e.get("verdict_pass") is True and not e.get("bootstrap")
+                and e["_line"] not in wrong)
+
+    results = [e["_line"] for e in lines if correct(e)]
+    for e in lines:
+        if e.get("attempt", 1) > MAX_ATTEMPTS:
+            fails.append(f"ledger line {e['_line']}: attempt {e['attempt']} > {MAX_ATTEMPTS}")
+        if e.get("irreversible", 0) > MAX_IRREVERSIBLE:
+            fails.append(f"ledger line {e['_line']}: effect without undo above the cap")
+
+    # --- queue
+    qpath = os.path.join(tree, "queue.md")
+    qtext = open(qpath).read() if os.path.exists(qpath) else ""
+    if not qtext:
+        fails.append("queue.md is missing or empty")
+    items = []
+    for m in re.finditer(r"^### Q(\d+)\b.*\n+- Asked: (\S+?), after result (\d+)\. Answered: (\S+?)\.?$",
+                         qtext, re.M):
+        asked, ans = day(m[2]), m[4]
+        end = today if ans == "—" else day(ans)
+        items.append({"id": int(m[1]), "after": int(m[3]), "open": ans == "—",
+                      "days": max((end - asked).days, 0)})
+    headings = [int(x) for x in re.findall(r"^### Q(\d+)\b", qtext, re.M)]
+    if len(items) != len(headings):
+        fails.append("a queue item lacks its 'Asked: … after result N. Answered: …' line")
+    if sorted(headings) != list(range(1, len(headings) + 1)):
+        fails.append(f"queue items are not Q1..Qn without gaps: {sorted(headings)}")
+    for e in lines:
+        q = e.get("asked")
+        if q and int(str(q).lstrip("Q")) not in headings:
+            fails.append(f"ledger line {e['_line']} says {q} was asked, but it is not in the queue")
+
+    # --- budget
+    n_open = sum(i["open"] for i in items)
+    if n_open > MAX_OPEN:
+        fails.append(f"{n_open} items open > {MAX_OPEN}")
+    later = sorted((i for i in items if i["id"] not in FIRST_BATCH), key=lambda i: i["id"])
+    for k, it in enumerate(later, 1):
+        had = sum(1 for r in results if r <= it["after"])
+        if had < PER_ITEM * k:
+            fails.append(f"Q{it['id']} is item {k} after the first batch and needed "
+                         f"{PER_ITEM * k} correct results; there were {had}")
+
+    # --- trend: complete windows of WINDOW correct results
+    windows = []
+    for w in range(len(results) // WINDOW):
+        lo = results[w * WINDOW - 1] if w else 0          # ledger line that closed the window before
+        hi = results[(w + 1) * WINDOW - 1]
+        mine = [i for i in items if lo <= i["after"] < hi]
+        windows.append({"items": len(mine) / WINDOW, "days": sum(i["days"] for i in mine) / WINDOW})
+    if len(windows) >= 2:
+        a, b = windows[-2], windows[-1]
+        if b["items"] > a["items"] or b["days"] > a["days"]:
+            fails.append(f"latest window is worse than the one before: {a} -> {b}")
+        trend = "compared"
+    else:
+        trend = f"not yet measurable: {len(windows)} complete window(s), 2 needed"
+
+    n_items, n_days = len(items), sum(i["days"] for i in items)
+    per = (n_items / len(results)) if results else None
+    out = {
+        "pass": not fails,
+        # what the judge compares (higher is better); what the person reads is below
+        "number": -per if per is not None else -1e9,
+        "attention_items": n_items, "attention_wait_days": n_days,
+        "correct_results": len(results), "ledger_lines": len(lines),
+        "items_per_correct_result": per,
+        "wait_days_per_correct_result": (n_days / len(results)) if results else None,
+        "open_items": n_open, "windows": windows, "trend": trend,
+        "parameters": {"window": WINDOW, "max_open": MAX_OPEN, "per_item": PER_ITEM,
+                       "first_batch": sorted(FIRST_BATCH), "max_attempts": MAX_ATTEMPTS,
+                       "today": today.isoformat()},
+        "fails": fails,
+    }
+    print(json.dumps(out))
+    return 0 if not fails else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "."))
