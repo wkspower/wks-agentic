@@ -174,7 +174,7 @@ def change(base, head, unit, work, decision):
         for p in changed:
             if p.startswith("measures/"):
                 v = deepest(p[len("measures/"):], known | {"root"})
-                touched |= {v} if v else {u for u in known | {"root"} if f"measures/{u}/check" in fh}
+                touched |= {u for u in known | {"root"} if not v or u == v or u.startswith(v + "/")}
         for v in sorted(touched):
             if f"measures/{v}/check" in fh:
                 problems, seen = prove(head, v, os.path.join(work, "prove-" + v.replace("/", "_")))
