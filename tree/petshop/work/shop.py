@@ -76,7 +76,8 @@ def main(argv):
             return 2
         result = command(*[json.loads(a[1:]) if a.startswith("=") else a for a in argv[3:]])
     except (ValueError, LookupError, TypeError) as refusal:
-        print(f"refused: {str(refusal).strip(chr(34) + chr(39))}", file=sys.stderr)
+        hint = next((f"; a number is written with =, as in ={a}" for a in argv[3:] if a.lstrip("-").isdigit()), "")
+        print(f"refused: {refusal}{hint}", file=sys.stderr)
         return 1
     shop.save()
     print(json.dumps(result, indent=1, ensure_ascii=False))
