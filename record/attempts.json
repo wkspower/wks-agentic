@@ -2,7 +2,7 @@
  "tree/judge": 0,
  "tree/petshop": 0,
  "tree/petshop/appointments": 0,
- "tree/petshop/customers": 0,
+ "tree/petshop/customers": 1,
  "tree/petshop/sales": 0,
  "tree/petshop/stock": 0
 }
