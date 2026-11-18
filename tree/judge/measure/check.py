@@ -4,6 +4,8 @@ In a throwaway repository the judge is given changes to a toy unit: the wrong
 ones must not stand, the right ones must, and the undo must be proven by doing
 it. Prints what it measured; exit 0 = pass."""
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -101,9 +103,19 @@ def scenarios(repo):
     code = judge("tree/judge")
     yield "the judge does not decide a change to itself", code != 0 and \
         fx.git(repo, "diff", "--name-only", before, "HEAD", "--", "tree").stdout.strip() == ""
+    fx.reset(repo)
+
+    # 10. whoever runs the judge can sign its commits
+    fx.write(repo, TOY, fx.BETTER)
+    signed = dict(fx.ENV, TREE_COMMIT_TRAILER="Signed-By: someone\nSession: somewhere")
+    done = subprocess.run([sys.executable, str(repo / "tree/judge/work/judge.py"), "tree/toy"], cwd=repo,
+                          capture_output=True, text=True, env=signed)
+    messages = [fx.git(repo, "log", "-1", "--format=%B", ref).stdout.rstrip() for ref in ("HEAD", "HEAD~1")]
+    yield "the lines given in TREE_COMMIT_TRAILER end every commit the judge makes", \
+        done.returncode == 0 and all(m.endswith("\n\nSigned-By: someone\nSession: somewhere") for m in messages)
 
 
-EXPECTED = 14
+EXPECTED = 15
 
 
 def main(unit_dir):
