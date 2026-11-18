@@ -1,0 +1,1134 @@
+#!/usr/bin/env python3
+"""Audit scenarios for the pet shop program `shop.py`.
+
+Usage: check <build-dir>
+
+Every scenario follows from sentences of docs/petshop.md and of the documents
+of its four units (catalog, stock, customers, sales). The build is a black
+box: each step runs `python3 <build-dir>/shop.py --state FILE COMMAND ...` in
+a subprocess; state files live in temporary directories; nothing is written
+into the build directory.
+
+Short names used in the one-line comments:
+  P  = petshop.md, declaration 2 (Interface)
+  P5 = petshop.md, principle row 5 ("The state file of a refused command is unchanged")
+  C  = catalog.md, declaration 2      K = stock.md, declaration 2
+  U  = customers.md, declaration 2    S = sales.md, declaration 2
+"""
+import os
+import random
+import shutil
+import subprocess
+import sys
+import tempfile
+
+TIMEOUT = 30
+SCENARIOS = []
+
+
+class Fail(Exception):
+    pass
+
+
+def scenario(fn):
+    SCENARIOS.append((fn.__name__, fn))
+    return fn
+
+
+def show(args):
+    return " ".join(repr(a) for a in args)
+
+
+class Shop:
+    """One state file, driven only through the command line."""
+
+    def __init__(self, build, state, cwd):
+        self.program = os.path.join(build, "shop.py")
+        self.state = state
+        self.cwd = cwd
+
+    def raw(self, *args):
+        env = dict(os.environ)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        cmd = [sys.executable, self.program, "--state", self.state] + list(args)
+        try:
+            p = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, cwd=self.cwd, env=env,
+                               timeout=TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise Fail("%s: no answer within %d s" % (show(args), TIMEOUT))
+        return (p.returncode, p.stdout.decode("utf-8", "replace"),
+                p.stderr.decode("utf-8", "replace"))
+
+    def path(self):
+        return os.path.join(self.cwd, self.state)
+
+    def content(self):
+        try:
+            with open(self.path(), "rb") as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+
+    def ok(self, expected, *args):
+        """Success: exit 0 and exactly one line on stdout, holding `expected`."""
+        expected = str(expected)
+        code, out, err = self.raw(*args)
+        if code != 0:
+            raise Fail("%s: exit %d, expected 0 (stderr: %r)" % (show(args), code, err[-200:]))
+        if out not in (expected + "\n", expected):
+            raise Fail("%s: stdout %r, expected the one line %r" % (show(args), out, expected))
+
+    def refuse(self, *args):
+        """Refusal: exit 1, something on stderr, nothing on stdout, state file unchanged."""
+        before = self.content()
+        code, out, err = self.raw(*args)
+        if code != 1:
+            raise Fail("%s: exit %d, expected 1 (stdout: %r)" % (show(args), code, out[-200:]))
+        if out != "":
+            raise Fail("%s: refused but stdout is %r, expected nothing" % (show(args), out))
+        if err.strip() == "":
+            raise Fail("%s: refused but no message on stderr" % show(args))
+        # Only where the file existed before: whether a refused command creates a
+        # missing state file is not stated by the documents.
+        if before is not None and self.content() != before:
+            raise Fail("%s: refused but the state file changed" % show(args))
+
+
+class Env:
+    def __init__(self, build, tmp):
+        self.build = build
+        self.tmp = tmp
+        self.n = 0
+
+    def shop(self, name=None, cwd=None):
+        self.n += 1
+        return Shop(self.build, os.path.join(self.tmp, name or "state%d.json" % self.n),
+                    cwd or self.tmp)
+
+
+def fixture(env):
+    """bone: product, 250 c, 10 on hand; cat: animal, 12000 c, 2 on hand;
+    eel: animal, 900 c, never received; customer C1."""
+    s = env.shop()
+    s.ok("bone", "add-item", "bone", "Dog Bone", "product", "250")
+    s.ok("cat", "add-item", "cat", "Cat", "animal", "12000")
+    s.ok("eel", "add-item", "eel", "Eel", "animal", "900")
+    s.ok(10, "receive", "bone", "10")
+    s.ok(2, "receive", "cat", "2")
+    s.ok("C1", "register", "Ann")
+    return s
+
+
+def after_refusal(s):
+    """The fixture still behaves as if the refused command had never been given."""
+    s.ok(10, "stock", "bone")
+    s.ok(2, "stock", "cat")
+    s.ok(0, "stock", "eel")
+    s.ok(0, "takings")
+    s.ok("S1 12500", "sell", "C1", "bone=2", "cat=1")
+    s.ok("C2", "register", "Bob")
+
+
+# ---------------------------------------------------------------- refusals
+# Each row: name, arguments given on the fixture, the sentence it rests on.
+# Every row is run as: fixture, refused command (exit 1, stderr, no stdout,
+# state file byte-identical: P "exit 1, a message on stderr, nothing on stdout,
+# state file unchanged"), then after_refusal.
+REFUSALS = [
+    # C: add raises ValueError when "the id already exists"; P: "Anything its units refuse"
+    ("add_item_duplicate_id", ["add-item", "bone", "Other", "product", "1"]),
+    # C: "the id already exists" holds even when every field is the same as before
+    ("add_item_duplicate_id_identical", ["add-item", "bone", "Dog Bone", "product", "250"]),
+    # C: "the id already exists" whatever the kind of the first item
+    ("add_item_duplicate_id_other_kind", ["add-item", "cat", "Cat Food", "product", "5"]),
+    # C: ValueError when "`kind` is not `"animal"` or `"product"`"
+    ("add_item_kind_reptile", ["add-item", "newt", "Newt", "reptile", "500"]),
+    # C: ValueError when "`kind` is not `"animal"` or `"product"`" (plural is another word)
+    ("add_item_kind_animals", ["add-item", "newt", "Newt", "animals", "500"]),
+    # C: ValueError when "`kind` is not `"animal"` or `"product"`" (empty kind)
+    ("add_item_kind_empty", ["add-item", "newt", "Newt", "", "500"]),
+    # C: "A valid price is exactly an `int` ... of 0 or more"
+    ("add_item_price_minus_one", ["add-item", "newt", "Newt", "animal", "-1"]),
+    # C: "A valid price is exactly an `int` ... of 0 or more"
+    ("add_item_price_minus_250", ["add-item", "newt", "Newt", "product", "-250"]),
+    # C: "A valid price is exactly an `int`"; P rule 3: "money is integer cents"
+    ("add_item_price_word", ["add-item", "newt", "Newt", "animal", "abc"]),
+    # C: "A valid price is exactly an `int`"; P rule 3: "money is integer cents"
+    ("add_item_price_fraction", ["add-item", "newt", "Newt", "animal", "1.5"]),
+    # C: "A valid price is exactly an `int`" (digits followed by a letter are no integer)
+    ("add_item_price_trailing_letter", ["add-item", "newt", "Newt", "animal", "12x"]),
+    # C: "A valid price is exactly an `int`" (an empty PRICE_CENTS is no integer)
+    ("add_item_price_empty", ["add-item", "newt", "Newt", "animal", ""]),
+    # C: ValueError when "`item_id` ... is not a non-empty string"
+    ("add_item_empty_id", ["add-item", "", "Newt", "animal", "500"]),
+    # C: ValueError when "`item_id` or `name` is not a non-empty string"
+    ("add_item_empty_name", ["add-item", "newt", "", "animal", "500"]),
+    # P: "a malformed command": `add-item ID NAME KIND PRICE_CENTS` has four arguments
+    ("add_item_no_arguments", ["add-item"]),
+    # P: "a malformed command": `add-item ID NAME KIND PRICE_CENTS` has four arguments
+    ("add_item_one_argument", ["add-item", "newt"]),
+    # P: "a malformed command": `add-item ID NAME KIND PRICE_CENTS` has four arguments
+    ("add_item_price_missing", ["add-item", "newt", "Newt", "animal"]),
+    # P: "a malformed command (surplus arguments included)"
+    ("add_item_surplus_argument", ["add-item", "newt", "Newt", "animal", "500", "600"]),
+    # P: "an item unknown to the catalog (in `receive`, `stock` or `sell`)"
+    ("receive_unknown_item", ["receive", "ghost", "5"]),
+    # K: ValueError when "`quantity` is not an `int` (not a `bool`) of 1 or more"
+    ("receive_quantity_zero", ["receive", "bone", "0"]),
+    # K: ValueError when "`quantity` is not an `int` (not a `bool`) of 1 or more"
+    ("receive_quantity_negative", ["receive", "bone", "-3"]),
+    # K: ValueError when "`quantity` is not an `int`"
+    ("receive_quantity_word", ["receive", "bone", "many"]),
+    # K: ValueError when "`quantity` is not an `int`"
+    ("receive_quantity_fraction", ["receive", "bone", "1.5"]),
+    # K: ValueError when "`quantity` is not an `int`" (an empty QUANTITY is no integer)
+    ("receive_quantity_empty", ["receive", "bone", ""]),
+    # P: "an item unknown to the catalog"; C/K: an empty string is no item id
+    ("receive_empty_id", ["receive", "", "5"]),
+    # P: "a malformed command": `receive ID QUANTITY` has two arguments
+    ("receive_no_arguments", ["receive"]),
+    # P: "a malformed command": `receive ID QUANTITY` has two arguments
+    ("receive_quantity_missing", ["receive", "bone"]),
+    # P: "a malformed command (surplus arguments included)"
+    ("receive_surplus_argument", ["receive", "bone", "1", "2"]),
+    # P: "an item unknown to the catalog (in `receive`, `stock` or `sell`)"
+    ("stock_unknown_item", ["stock", "ghost"]),
+    # P: "an item unknown to the catalog"; C: ids are non-empty strings
+    ("stock_empty_id", ["stock", ""]),
+    # P: "a malformed command": `stock ID` has one argument
+    ("stock_no_argument", ["stock"]),
+    # P: "a malformed command (surplus arguments included)"
+    ("stock_surplus_argument", ["stock", "bone", "cat"]),
+    # U: ValueError when "`name` ... is empty once stripped"
+    ("register_empty_name", ["register", ""]),
+    # U: ValueError when "`name` ... is empty once stripped" (one space)
+    ("register_space_name", ["register", " "]),
+    # U: ValueError when "`name` ... is empty once stripped" (several spaces)
+    ("register_spaces_name", ["register", "     "]),
+    # U: ValueError when "`name` ... is empty once stripped" (a tab is whitespace)
+    ("register_tab_name", ["register", "\t"]),
+    # U: ValueError when "`name` ... is empty once stripped" (mixed whitespace)
+    ("register_mixed_whitespace_name", ["register", " \t\n "]),
+    # P: "a malformed command": `register NAME` has one argument
+    ("register_no_argument", ["register"]),
+    # P: "a malformed command (surplus arguments included)": NAME is one argument
+    ("register_surplus_argument", ["register", "Ann", "Lee"]),
+    # P: "an unknown customer" (only C1 is registered)
+    ("sell_unknown_customer", ["sell", "C2", "bone=1"]),
+    # P: "an unknown customer" (ids start at C1: U "`"C1"`, then `"C2"`")
+    ("sell_customer_c0", ["sell", "C0", "bone=1"]),
+    # P: "an unknown customer"; S: ValueError when "`customer_id` is not a non-empty string"
+    ("sell_empty_customer", ["sell", "", "bone=1"]),
+    # P: "an unknown customer": an item id is no customer id
+    ("sell_item_id_as_customer", ["sell", "bone", "bone=1"]),
+    # P: "an item unknown to the catalog (in `receive`, `stock` or `sell`)"
+    ("sell_unknown_item", ["sell", "C1", "ghost=1"]),
+    # P: "an item unknown to the catalog"; S purpose: "wholly or not at all"
+    ("sell_unknown_item_last_line", ["sell", "C1", "bone=1", "ghost=1"]),
+    # P: "an item unknown to the catalog"; S purpose: "wholly or not at all"
+    ("sell_unknown_item_first_line", ["sell", "C1", "ghost=1", "bone=1"]),
+    # S: ValueError when "the quantities asked of one item ... exceed `available`"
+    ("sell_one_more_than_on_hand", ["sell", "C1", "bone=11"]),
+    # S: ValueError when "the quantities asked of one item ... exceed `available`"
+    ("sell_far_more_than_on_hand", ["sell", "C1", "cat=1000"]),
+    # S: "exceed `available`"; K: on hand is "0 for an item never received"
+    ("sell_item_never_received", ["sell", "C1", "eel=1"]),
+    # S: "the quantities asked of one item, summed over the lines, exceed `available`"
+    ("sell_two_lines_same_item_sum_exceeds", ["sell", "C1", "bone=6", "bone=5"]),
+    # S: "the quantities asked of one item, summed over the lines, exceed `available`"
+    ("sell_all_then_one_more_same_item", ["sell", "C1", "bone=10", "bone=1"]),
+    # S: "summed over the lines" also when another item stands between the two lines
+    ("sell_same_item_lines_apart_sum_exceeds", ["sell", "C1", "cat=1", "bone=1", "cat=2"]),
+    # S: "exceed `available`" on the second line; "On any refusal `take` has not been called"
+    ("sell_second_line_exceeds", ["sell", "C1", "bone=1", "cat=3"]),
+    # S: ValueError when "a quantity is not an `int` (not a `bool`) of 1 or more"
+    ("sell_quantity_zero", ["sell", "C1", "bone=0"]),
+    # S: ValueError when "a quantity is not an `int` (not a `bool`) of 1 or more"
+    ("sell_quantity_negative", ["sell", "C1", "bone=-1"]),
+    # S: "a quantity is not an `int` ... of 1 or more" on a later line refuses the whole sale
+    ("sell_second_line_quantity_zero", ["sell", "C1", "bone=1", "cat=0"]),
+    # S: ValueError when "a quantity is not an `int`"; P: "a malformed command"
+    ("sell_quantity_word", ["sell", "C1", "bone=two"]),
+    # S: ValueError when "a quantity is not an `int`"; P: "a malformed command"
+    ("sell_quantity_fraction", ["sell", "C1", "bone=1.5"]),
+    # P: "a malformed command": the line is `ID=QUANTITY`, here QUANTITY is missing
+    ("sell_line_without_quantity", ["sell", "C1", "bone="]),
+    # P: "a malformed command": the line is `ID=QUANTITY`, here there is no `=`
+    ("sell_line_without_equals", ["sell", "C1", "bone"]),
+    # P: "a malformed command": `ID=QUANTITY`, not `ID QUANTITY` in two arguments
+    ("sell_line_in_two_arguments", ["sell", "C1", "bone", "1"]),
+    # P: "an item unknown to the catalog": the line `=1` names the empty id
+    ("sell_line_without_id", ["sell", "C1", "=1"]),
+    # P: "a malformed command" on a later line; S purpose: "wholly or not at all"
+    ("sell_second_line_malformed", ["sell", "C1", "bone=1", "cat"]),
+    # P: `sell CUSTOMER_ID ID=QUANTITY [ID=QUANTITY ...]` has a line; S: "`lines` is empty"
+    ("sell_no_lines", ["sell", "C1"]),
+    # P: "a malformed command": `sell` needs a customer id and a line
+    ("sell_no_arguments", ["sell"]),
+    # P: "a malformed command": the customer id is missing (and no customer is `bone=1`)
+    ("sell_customer_missing", ["sell", "bone=1"]),
+    # P: "a malformed command (surplus arguments included)": `takings` has no argument
+    ("takings_surplus_argument", ["takings", "now"]),
+    # P: "a malformed command": the commands are the six listed, `refund` is none of them
+    ("unknown_command", ["refund", "S1"]),
+    # P: "a malformed command": the commands are the six listed, `list` is none of them
+    ("unknown_command_no_arguments", ["list"]),
+    # P: "run as `python3 shop.py --state FILE COMMAND ...`": no COMMAND is malformed
+    ("no_command", []),
+]
+
+
+def make_refusal(name, args):
+    def run(env):
+        s = fixture(env)
+        s.refuse(*args)
+        after_refusal(s)
+    run.__name__ = "refuse_" + name
+    return run
+
+
+for _name, _args in REFUSALS:
+    scenario(make_refusal(_name, _args))
+
+
+# ------------------------------------------------------------ add-item
+# P: "`add-item ID NAME KIND PRICE_CENTS` prints `ID`", "each printing one line ... exiting 0"
+@scenario
+def add_item_prints_id(env):
+    s = env.shop()
+    s.ok("bone", "add-item", "bone", "Bone", "product", "250")
+
+
+# C: kind is `"animal"` or `"product"`: both are accepted
+@scenario
+def add_item_both_kinds(env):
+    s = env.shop()
+    s.ok("rex", "add-item", "rex", "Rex", "animal", "25000")
+    s.ok("lead", "add-item", "lead", "Lead", "product", "799")
+
+
+# C: `name` is any non-empty string, so one with spaces; P: the command still prints `ID`
+@scenario
+def add_item_name_with_spaces(env):
+    s = env.shop()
+    s.ok("bone", "add-item", "bone", "Large dog bone, smoked", "product", "250")
+    s.ok(0, "stock", "bone")
+
+
+# P: `add-item` "prints `ID`": the id as given; C: an id is a string (digits are a string)
+@scenario
+def add_item_id_of_digits_printed_as_given(env):
+    s = env.shop()
+    s.ok("007", "add-item", "007", "Bond", "animal", "700")
+    s.ok(5, "receive", "007", "5")
+    s.ok("C1", "register", "M")
+    s.ok("S1 1400", "sell", "C1", "007=2")
+    s.ok(3, "stock", "007")
+
+
+# C: an id is any non-empty string, so one with dots, dashes and underscores; P: prints `ID`
+@scenario
+def add_item_id_with_punctuation(env):
+    s = env.shop()
+    s.ok("dog-food_2.5kg", "add-item", "dog-food_2.5kg", "Dog food", "product", "1999")
+    s.ok(4, "receive", "dog-food_2.5kg", "4")
+    s.ok("C1", "register", "Ann")
+    s.ok("S1 5997", "sell", "C1", "dog-food_2.5kg=3")
+    s.ok(1, "stock", "dog-food_2.5kg")
+
+
+# C: two items may share name, kind and price: only "the id already exists" refuses
+@scenario
+def add_item_same_name_other_id(env):
+    s = env.shop()
+    s.ok("a", "add-item", "a", "Bone", "product", "250")
+    s.ok("b", "add-item", "b", "Bone", "product", "250")
+    s.ok(3, "receive", "a", "3")
+    s.ok(0, "stock", "b")
+
+
+# C: "A valid price is ... 0 or more": price 0 is valid; S: total is the sum of line totals
+@scenario
+def add_item_price_zero_then_sold_for_nothing(env):
+    s = env.shop()
+    s.ok("leaflet", "add-item", "leaflet", "Care leaflet", "product", "0")
+    s.ok(5, "receive", "leaflet", "5")
+    s.ok("C1", "register", "Ann")
+    s.ok("S1 0", "sell", "C1", "leaflet=3")
+    s.ok(2, "stock", "leaflet")
+    s.ok(0, "takings")
+
+
+# C: "A refused call changes nothing": after a refused duplicate the first price still holds
+@scenario
+def add_item_duplicate_keeps_first_price(env):
+    s = env.shop()
+    s.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    s.ok(5, "receive", "bone", "5")
+    s.refuse("add-item", "bone", "Bone", "product", "999")
+    s.ok("C1", "register", "Ann")
+    s.ok("S1 500", "sell", "C1", "bone=2")
+    s.ok(3, "stock", "bone")
+
+
+# C: "A refused call changes nothing": an id refused for its kind or price is still free
+@scenario
+def add_item_refused_id_can_be_added_later(env):
+    s = env.shop()
+    s.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    s.refuse("add-item", "newt", "Newt", "reptile", "500")
+    s.refuse("add-item", "newt", "Newt", "animal", "-500")
+    s.refuse("stock", "newt")
+    s.ok("newt", "add-item", "newt", "Newt", "animal", "500")
+    s.ok(0, "stock", "newt")
+
+
+# C/U/S: item, customer and sale ids are kept by separate units: an item may be called C1 or S1
+@scenario
+def item_ids_that_look_like_other_ids(env):
+    s = env.shop()
+    s.ok("C1", "add-item", "C1", "Collar", "product", "300")
+    s.ok("S1", "add-item", "S1", "Snake", "animal", "4000")
+    s.ok("C1", "register", "Ann")
+    s.ok(2, "receive", "C1", "2")
+    s.ok(1, "receive", "S1", "1")
+    s.ok("S1 4600", "sell", "C1", "C1=2", "S1=1")
+    s.ok(0, "stock", "C1")
+    s.ok(0, "stock", "S1")
+    s.ok(4600, "takings")
+
+
+# ------------------------------------------------------------- receive / stock
+# P: "`receive ID QUANTITY` prints the quantity now on hand"; K: `receive` "adds"
+@scenario
+def receive_prints_quantity_now_on_hand(env):
+    s = env.shop()
+    s.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    s.ok(5, "receive", "bone", "5")
+    s.ok(8, "receive", "bone", "3")
+    s.ok(9, "receive", "bone", "1")
+    s.ok(9, "stock", "bone")
+
+
+# K: quantities are kept per item: receiving one item leaves the other as it was
+@scenario
+def receive_keeps_items_apart(env):
+    s = env.shop()
+    s.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    s.ok("cat", "add-item", "cat", "Cat", "animal", "12000")
+    s.ok(5, "receive", "bone", "5")
+    s.ok(2, "receive", "cat", "2")
+    s.ok(6, "receive", "bone", "1")
+    s.ok(6, "stock", "bone")
+    s.ok(2, "stock", "cat")
+
+
+# P: `receive` "prints the quantity now on hand": after a sale that is what is left plus the new
+@scenario
+def receive_after_sale_counts_what_is_left(env):
+    s = fixture(env)
+    s.ok("S1 1750", "sell", "C1", "bone=7")
+    s.ok(8, "receive", "bone", "5")
+    s.ok(8, "stock", "bone")
+
+
+# K: "A refused call changes nothing": refused receives add nothing to what is on hand
+@scenario
+def receive_refused_adds_nothing(env):
+    s = env.shop()
+    s.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    s.ok(4, "receive", "bone", "4")
+    s.refuse("receive", "bone", "0")
+    s.refuse("receive", "bone", "-4")
+    s.refuse("receive", "bone", "x")
+    s.refuse("receive", "ghost", "4")
+    s.ok(4, "stock", "bone")
+    s.ok(5, "receive", "bone", "1")
+
+
+# P: "an item unknown to the catalog" in `receive`: a refused receive does not make it known
+@scenario
+def receive_unknown_item_stays_unknown(env):
+    s = env.shop()
+    s.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    s.refuse("receive", "ghost", "5")
+    s.refuse("stock", "ghost")
+    s.ok("ghost", "add-item", "ghost", "Ghost", "animal", "100")
+    s.ok(0, "stock", "ghost")
+    s.ok(5, "receive", "ghost", "5")
+
+
+# K: a quantity is any `int` "of 1 or more": a large one is received and counted exactly
+@scenario
+def receive_large_quantity(env):
+    s = env.shop()
+    s.ok("seed", "add-item", "seed", "Seed", "product", "1")
+    s.ok(1000000000000, "receive", "seed", "1000000000000")
+    s.ok(1000000000001, "receive", "seed", "1")
+    s.ok(1000000000001, "stock", "seed")
+
+
+# P: "`stock ID` prints the quantity on hand"; K: "0 for an item never received"
+@scenario
+def stock_zero_for_item_never_received(env):
+    s = env.shop()
+    s.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    s.ok(0, "stock", "bone")
+
+
+# P: "`stock ID` prints the quantity on hand": asking again gives the same answer
+@scenario
+def stock_asked_twice_same_answer(env):
+    s = fixture(env)
+    s.ok(10, "stock", "bone")
+    s.ok(10, "stock", "bone")
+    s.ok(0, "takings")
+    s.ok(0, "takings")
+    s.ok(10, "stock", "bone")
+
+
+# ------------------------------------------------------------- register
+# P: "`register NAME` prints the new customer id"; U: "`"C1"`, then `"C2"`, and so on"
+@scenario
+def register_ids_in_sequence(env):
+    s = env.shop()
+    s.ok("C1", "register", "Ann")
+    s.ok("C2", "register", "Bob")
+    s.ok("C3", "register", "Cy")
+
+
+# U: `name` is a string not "empty once stripped": a name with inner spaces is one such
+@scenario
+def register_name_with_inner_spaces(env):
+    s = env.shop()
+    s.ok("C1", "register", "Ann Mary Lee")
+    s.ok("C2", "register", "Bob  van  der  Berg")
+
+
+# U: "stores the name stripped of surrounding whitespace": such a name is accepted, not refused
+@scenario
+def register_name_with_surrounding_whitespace(env):
+    s = env.shop()
+    s.ok("C1", "register", "  Ann  ")
+    s.ok("C2", "register", "\tBob\n")
+    s.ok("C3", "register", " Cy Dee ")
+
+
+# U: "Two customers may share a name" (also when they differ only in stripped whitespace)
+@scenario
+def register_duplicate_names_get_new_ids(env):
+    s = env.shop()
+    s.ok("C1", "register", "Ann")
+    s.ok("C2", "register", "Ann")
+    s.ok("C3", "register", "  Ann ")
+    s.ok("C4", "register", "Ann")
+
+
+# U: "A refused call changes nothing": a refused registration uses up no id
+@scenario
+def register_refused_consumes_no_id(env):
+    s = env.shop()
+    s.ok("C1", "register", "Ann")
+    s.refuse("register", "")
+    s.refuse("register", "   ")
+    s.refuse("register", "Bob", "Lee")
+    s.refuse("register")
+    s.ok("C2", "register", "Bob")
+    s.refuse("register", "\t")
+    s.ok("C3", "register", "Cy")
+
+
+# U: "`"C1"`, then `"C2"`, and so on": the tenth and later ids are C10, C11, ...
+@scenario
+def register_ids_beyond_nine(env):
+    s = env.shop()
+    for i in range(1, 14):
+        s.ok("C%d" % i, "register", "Customer %d" % i)
+
+
+# U: every registered customer is known to `get`: each of twelve can buy, the thirteenth not
+@scenario
+def register_every_customer_can_buy(env):
+    s = env.shop()
+    s.ok("pin", "add-item", "pin", "Pin", "product", "3")
+    s.ok(12, "receive", "pin", "12")
+    for i in range(1, 13):
+        s.ok("C%d" % i, "register", "N%d" % i)
+    s.refuse("sell", "C13", "pin=1")
+    for i in range(12, 0, -1):
+        s.ok("S%d 3" % (13 - i), "sell", "C%d" % i, "pin=1")
+    s.ok(0, "stock", "pin")
+    s.ok(36, "takings")
+
+
+# P: "an unknown customer": with nobody registered, C1 is unknown
+@scenario
+def sell_before_any_registration_refused(env):
+    s = env.shop()
+    s.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    s.ok(3, "receive", "bone", "3")
+    s.refuse("sell", "C1", "bone=1")
+    s.ok(3, "stock", "bone")
+    s.ok("C1", "register", "Ann")
+    s.ok("S1 250", "sell", "C1", "bone=1")
+
+
+# ------------------------------------------------------------- sell
+# P: "`sell ...` prints `SALE_ID TOTAL_CENTS`"; S: id `"S1"`, total = quantity x unit price
+@scenario
+def sell_one_line(env):
+    s = fixture(env)
+    s.ok("S1 750", "sell", "C1", "bone=3")
+    s.ok(7, "stock", "bone")
+    s.ok(2, "stock", "cat")
+    s.ok(750, "takings")
+
+
+# S: `total_cents` over several lines, each `line_total_cents` = quantity x `unit_price_cents`
+@scenario
+def sell_several_lines_total(env):
+    s = fixture(env)
+    s.ok(4, "receive", "eel", "4")
+    s.ok("S1 28200", "sell", "C1", "bone=6", "cat=2", "eel=3")
+    s.ok(4, "stock", "bone")
+    s.ok(0, "stock", "cat")
+    s.ok(1, "stock", "eel")
+    s.ok(28200, "takings")
+
+
+# S: refused only when the quantities "exceed `available`": exactly what is on hand is sold
+@scenario
+def sell_exactly_what_is_on_hand(env):
+    s = fixture(env)
+    s.ok("S1 2500", "sell", "C1", "bone=10")
+    s.ok(0, "stock", "bone")
+    s.refuse("sell", "C1", "bone=1")
+    s.ok("S2 24000", "sell", "C1", "cat=2")
+    s.ok(0, "stock", "cat")
+    s.ok(26500, "takings")
+
+
+# S: "one dict per given line", sum "over the lines" may equal `available`; take once per line
+@scenario
+def sell_same_item_two_lines_sum_equals_on_hand(env):
+    s = fixture(env)
+    s.ok("S1 2500", "sell", "C1", "bone=6", "bone=4")
+    s.ok(0, "stock", "bone")
+    s.ok(2500, "takings")
+
+
+# S: lines of one item are summed: two lines within what is on hand make one sale
+@scenario
+def sell_same_item_two_lines_within_on_hand(env):
+    s = fixture(env)
+    s.ok("S1 13250", "sell", "C1", "bone=2", "cat=1", "bone=3")
+    s.ok(5, "stock", "bone")
+    s.ok(1, "stock", "cat")
+    s.ok(13250, "takings")
+
+
+# S: `id` is `"S1"`, `"S2"`, ...: each successful sale gets the next id
+@scenario
+def sell_ids_in_sequence(env):
+    s = fixture(env)
+    s.ok("S1 250", "sell", "C1", "bone=1")
+    s.ok("S2 250", "sell", "C1", "bone=1")
+    s.ok("S3 12000", "sell", "C1", "cat=1")
+    s.ok(12500, "takings")
+
+
+# S: `"S1"`, `"S2"`, ...: the tenth and later sales are S10, S11, ...; takings sums them all
+@scenario
+def sell_ids_beyond_nine(env):
+    s = env.shop()
+    s.ok("pin", "add-item", "pin", "Pin", "product", "7")
+    s.ok(100, "receive", "pin", "100")
+    s.ok("C1", "register", "Ann")
+    total = 0
+    for i in range(1, 13):
+        s.ok("S%d %d" % (i, 7 * i), "sell", "C1", "pin=%d" % i)
+        total += 7 * i
+    s.ok(100 - 78, "stock", "pin")
+    s.ok(total, "takings")
+
+
+# S: "On any refusal ... nothing is recorded": a refused sale uses up no sale id
+@scenario
+def sell_refused_consumes_no_sale_id(env):
+    s = fixture(env)
+    s.ok("S1 250", "sell", "C1", "bone=1")
+    s.refuse("sell", "C1", "bone=10")
+    s.refuse("sell", "C9", "bone=1")
+    s.refuse("sell", "C1", "ghost=1")
+    s.refuse("sell", "C1", "bone=0")
+    s.refuse("sell", "C1", "bone")
+    s.refuse("sell", "C1")
+    s.ok("S2 500", "sell", "C1", "bone=2")
+    s.refuse("sell", "C1", "bone=4", "bone=4")
+    s.ok("S3 12000", "sell", "C1", "cat=1")
+    s.ok(12750, "takings")
+
+
+# K purpose: "never fewer than none"; S: "On any refusal `take` has not been called"
+@scenario
+def stock_reduced_only_by_successful_sales(env):
+    s = fixture(env)
+    s.refuse("sell", "C1", "bone=11")
+    s.ok(10, "stock", "bone")
+    s.refuse("sell", "C2", "bone=5")
+    s.ok(10, "stock", "bone")
+    s.refuse("sell", "C1", "bone=5", "ghost=1")
+    s.ok(10, "stock", "bone")
+    s.refuse("sell", "C1", "bone=5", "cat=3")
+    s.ok(10, "stock", "bone")
+    s.ok(2, "stock", "cat")
+    s.refuse("sell", "C1", "bone=5", "cat=x")
+    s.ok(10, "stock", "bone")
+    s.ok("S1 1250", "sell", "C1", "bone=5")
+    s.ok(5, "stock", "bone")
+    s.refuse("sell", "C1", "bone=6")
+    s.ok(5, "stock", "bone")
+    s.ok(1250, "takings")
+
+
+# S: "exceed `available`": what was sold is no longer on hand; a new receive makes it sellable
+@scenario
+def sell_out_then_receive_then_sell(env):
+    s = fixture(env)
+    s.ok("S1 24000", "sell", "C1", "cat=2")
+    s.refuse("sell", "C1", "cat=1")
+    s.ok(1, "receive", "cat", "1")
+    s.refuse("sell", "C1", "cat=2")
+    s.ok("S2 12000", "sell", "C1", "cat=1")
+    s.ok(0, "stock", "cat")
+    s.ok(36000, "takings")
+
+
+# S: the sale is made for the given `customer_id`: any registered customer may buy
+@scenario
+def sell_to_different_customers(env):
+    s = fixture(env)
+    s.ok("C2", "register", "Bob")
+    s.ok("C3", "register", "Ann")
+    s.ok("S1 250", "sell", "C3", "bone=1")
+    s.ok("S2 500", "sell", "C2", "bone=2")
+    s.ok("S3 12750", "sell", "C1", "cat=1", "bone=3")
+    s.refuse("sell", "C4", "bone=1")
+    s.ok(4, "stock", "bone")
+    s.ok(13500, "takings")
+
+
+# P rule 3: "money is integer cents": large prices and quantities multiply and sum exactly
+@scenario
+def sell_large_numbers_exact(env):
+    s = env.shop()
+    s.ok("gem", "add-item", "gem", "Gem collar", "product", "123456789012")
+    s.ok("koi", "add-item", "koi", "Koi", "animal", "99999999999")
+    s.ok(5000, "receive", "gem", "5000")
+    s.ok(7, "receive", "koi", "7")
+    s.ok("C1", "register", "Ann")
+    a = 123456789012 * 4321 + 99999999999 * 7
+    s.ok("S1 %d" % a, "sell", "C1", "gem=4321", "koi=7")
+    b = 123456789012 * 679
+    s.ok("S2 %d" % b, "sell", "C1", "gem=679")
+    s.ok(0, "stock", "gem")
+    s.ok(a + b, "takings")
+
+
+# S: a line with a free item (C: price 0 is valid) adds 0 to the total of the other lines
+@scenario
+def sell_free_item_among_priced_ones(env):
+    s = fixture(env)
+    s.ok("leaflet", "add-item", "leaflet", "Leaflet", "product", "0")
+    s.ok(3, "receive", "leaflet", "3")
+    s.ok("S1 12250", "sell", "C1", "leaflet=3", "cat=1", "bone=1")
+    s.ok(0, "stock", "leaflet")
+    s.refuse("sell", "C1", "leaflet=1")
+    s.ok(12250, "takings")
+
+
+# S: "exceed `available`" holds for a free item too: price 0 does not make stock endless
+@scenario
+def sell_free_item_needs_stock(env):
+    s = env.shop()
+    s.ok("leaflet", "add-item", "leaflet", "Leaflet", "product", "0")
+    s.ok("C1", "register", "Ann")
+    s.refuse("sell", "C1", "leaflet=1")
+    s.ok(1, "receive", "leaflet", "1")
+    s.refuse("sell", "C1", "leaflet=2")
+    s.ok("S1 0", "sell", "C1", "leaflet=1")
+    s.refuse("sell", "C1", "leaflet=1")
+    s.ok(0, "takings")
+
+
+# S: one line per argument, in order: many lines of many items give one sale and one total
+@scenario
+def sell_many_lines(env):
+    s = env.shop()
+    s.ok("C1", "register", "Ann")
+    lines, total = [], 0
+    for i in range(1, 21):
+        item = "item%d" % i
+        s.ok(item, "add-item", item, "Item %d" % i, "animal" if i % 2 else "product",
+             str(i * 11))
+        s.ok(i + 1, "receive", item, str(i + 1))
+        lines.append("%s=%d" % (item, i))
+        total += i * i * 11
+    s.ok("S1 %d" % total, "sell", "C1", *lines)
+    for i in (1, 7, 20):
+        s.ok(1, "stock", "item%d" % i)
+    s.ok(total, "takings")
+
+
+# ------------------------------------------------------------- takings
+# P: "`takings` prints the sum of all sales in cents": with no sale the sum is 0
+@scenario
+def takings_zero_without_sales(env):
+    s = fixture(env)
+    s.ok(0, "takings")
+
+
+# P: "the state file is created when missing"; S: `takings` of a `new()` state sums nothing
+@scenario
+def takings_zero_on_missing_state_file(env):
+    s = env.shop()
+    s.ok(0, "takings")
+
+
+# P: "`takings` prints the sum of all sales in cents"; S: "the sum of `total_cents`"
+@scenario
+def takings_sums_several_sales(env):
+    s = fixture(env)
+    s.ok(0, "takings")
+    s.ok("S1 250", "sell", "C1", "bone=1")
+    s.ok(250, "takings")
+    s.ok("S2 12500", "sell", "C1", "cat=1", "bone=2")
+    s.ok(12750, "takings")
+    s.ok("S3 1000", "sell", "C1", "bone=4")
+    s.ok(13750, "takings")
+    s.ok(13750, "takings")
+
+
+# S: "On any refusal ... nothing is recorded": refused sales add nothing to the takings
+@scenario
+def takings_unchanged_by_refused_sales(env):
+    s = fixture(env)
+    s.ok("S1 500", "sell", "C1", "bone=2")
+    s.refuse("sell", "C1", "cat=3")
+    s.refuse("sell", "C7", "cat=1")
+    s.refuse("sell", "C1", "cat=1", "ghost=1")
+    s.ok(500, "takings")
+
+
+# P: `takings` is "the sum of all sales": receiving, adding and registering change nothing
+@scenario
+def takings_unchanged_by_other_commands(env):
+    s = fixture(env)
+    s.ok("S1 500", "sell", "C1", "bone=2")
+    s.ok(13, "receive", "bone", "5")
+    s.ok("toy", "add-item", "toy", "Toy", "product", "100000")
+    s.ok(1, "receive", "toy", "1")
+    s.ok("C2", "register", "Bob")
+    s.ok(500, "takings")
+
+
+# ------------------------------------------------------------- state file
+# P: "the state file is created when missing": a first successful `add-item` leaves the file
+@scenario
+def state_file_created_by_first_add_item(env):
+    s = env.shop()
+    if s.content() is not None:
+        raise Fail("internal: state file exists before the first command")
+    s.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    if s.content() is None:
+        raise Fail("add-item succeeded but the state file does not exist")
+
+
+# P: "the state file is created when missing": a first successful `register` leaves the file
+@scenario
+def state_file_created_by_first_register(env):
+    s = env.shop()
+    s.ok("C1", "register", "Ann")
+    if s.content() is None:
+        raise Fail("register succeeded but the state file does not exist")
+
+
+# P: a missing state file is an empty shop: refusals answer exit 1, stderr, no stdout there too
+@scenario
+def refusals_on_missing_state_file(env):
+    env.shop().refuse("stock", "bone")
+    env.shop().refuse("receive", "bone", "1")
+    env.shop().refuse("sell", "C1", "bone=1")
+    env.shop().refuse("refund")
+    env.shop().refuse("add-item", "bone", "Bone", "mineral", "1")
+    env.shop().refuse("register", " ")
+
+
+# P: "run as `python3 shop.py --state FILE COMMAND ...`": the state is the file named
+@scenario
+def two_state_files_are_independent(env):
+    a, b = env.shop(), env.shop()
+    a.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    a.ok(5, "receive", "bone", "5")
+    a.ok("C1", "register", "Ann")
+    b.refuse("stock", "bone")
+    b.refuse("receive", "bone", "1")
+    b.ok("bone", "add-item", "bone", "Bone", "product", "100")
+    b.ok(0, "stock", "bone")
+    b.refuse("sell", "C1", "bone=1")
+    b.ok("C1", "register", "Zed")
+    b.ok(2, "receive", "bone", "2")
+    a.ok("S1 750", "sell", "C1", "bone=3")
+    b.ok("S1 200", "sell", "C1", "bone=2")
+    a.ok("C2", "register", "Bob")
+    b.refuse("sell", "C2", "bone=1")
+    a.ok(2, "stock", "bone")
+    b.ok(0, "stock", "bone")
+    a.ok(750, "takings")
+    b.ok(200, "takings")
+
+
+# P: "--state FILE": everything kept between runs is in FILE, so a copy of it carries the shop
+@scenario
+def copied_state_file_carries_the_shop(env):
+    a = fixture(env)
+    a.ok("S1 500", "sell", "C1", "bone=2")
+    b = env.shop("copy-of-state.json")
+    shutil.copyfile(a.path(), b.path())
+    b.ok(8, "stock", "bone")
+    b.ok(500, "takings")
+    b.ok("C2", "register", "Bob")
+    b.ok("S2 12000", "sell", "C2", "cat=1")
+    b.refuse("add-item", "bone", "Bone", "product", "1")
+    # the original did not see what happened to the copy
+    a.ok(2, "stock", "cat")
+    a.ok(500, "takings")
+    a.refuse("sell", "C2", "bone=1")
+    a.ok("S2 250", "sell", "C1", "bone=1")
+
+
+# P: "the state file is created when missing": once the file is removed the shop is new again
+@scenario
+def removed_state_file_starts_a_new_shop(env):
+    s = fixture(env)
+    s.ok("S1 250", "sell", "C1", "bone=1")
+    os.remove(s.path())
+    s.ok(0, "takings")
+    s.ok("C1", "register", "Zed")
+    s.refuse("sell", "C1", "bone=1")
+    s.ok("bone", "add-item", "bone", "Bone", "product", "300")
+    s.ok(1, "receive", "bone", "1")
+    s.ok("S1 300", "sell", "C1", "bone=1")
+    s.ok(300, "takings")
+
+
+# P: "--state FILE": the state is in FILE, not in the directory the program is run from
+@scenario
+def state_does_not_depend_on_working_directory(env):
+    d1 = os.path.join(env.tmp, "wd1")
+    d2 = os.path.join(env.tmp, "wd2")
+    os.mkdir(d1)
+    os.mkdir(d2)
+    state = os.path.join(env.tmp, "shared.json")
+    a = Shop(env.build, state, d1)
+    b = Shop(env.build, state, d2)
+    a.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    b.ok(5, "receive", "bone", "5")
+    a.ok("C1", "register", "Ann")
+    b.ok("C2", "register", "Bob")
+    a.ok("S1 500", "sell", "C2", "bone=2")
+    b.ok("S2 250", "sell", "C1", "bone=1")
+    a.ok(2, "stock", "bone")
+    b.ok(750, "takings")
+    b.refuse("add-item", "bone", "Bone", "product", "250")
+
+
+# P: "--state FILE": FILE is a path like any other, here relative to the working directory
+@scenario
+def state_file_given_as_relative_path(env):
+    d = os.path.join(env.tmp, "wd")
+    os.mkdir(d)
+    s = Shop(env.build, "shop-state.json", d)
+    s.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    if not os.path.exists(os.path.join(d, "shop-state.json")):
+        raise Fail("state file not created at the relative path given")
+    s.ok(5, "receive", "bone", "5")
+    s.ok("C1", "register", "Ann")
+    s.ok("S1 500", "sell", "C1", "bone=2")
+    s.refuse("sell", "C1", "bone=4")
+    absolute = Shop(env.build, os.path.join(d, "shop-state.json"), env.tmp)
+    absolute.ok(3, "stock", "bone")
+    absolute.ok(500, "takings")
+
+
+# P: "--state FILE": FILE is a path like any other, here with spaces and without `.json`
+@scenario
+def state_file_path_with_spaces(env):
+    d = os.path.join(env.tmp, "my pet shop")
+    os.mkdir(d)
+    s = Shop(env.build, os.path.join(d, "the state file"), env.tmp)
+    s.ok("bone", "add-item", "bone", "Bone", "product", "250")
+    s.ok(5, "receive", "bone", "5")
+    s.ok("C1", "register", "Ann")
+    s.ok("S1 1250", "sell", "C1", "bone=5")
+    s.refuse("sell", "C1", "bone=1")
+    s.ok(1250, "takings")
+
+
+# P5: "The state file of a refused command is unchanged", however many refusals follow each other
+@scenario
+def many_refusals_in_a_row_leave_state_alone(env):
+    s = fixture(env)
+    s.ok("S1 250", "sell", "C1", "bone=1")
+    start = s.content()
+    for _name, args in REFUSALS:  # each row is refused with 9 bones on hand as with 10
+        s.refuse(*args)
+    s.refuse("sell", "C1", "bone=10")
+    s.refuse("sell", "C1", "bone=9", "bone=1")
+    if s.content() != start:
+        raise Fail("state file differs after a run of refused commands")
+    s.ok(9, "stock", "bone")
+    s.ok(250, "takings")
+    s.ok("S2 2250", "sell", "C1", "bone=9")
+    s.ok("C2", "register", "Bob")
+
+
+# U purpose: "an id that is never reused"; S: ids `"S1"`, `"S2"`, ... continue across invocations
+@scenario
+def ids_continue_across_many_invocations(env):
+    s = env.shop()
+    s.ok("pin", "add-item", "pin", "Pin", "product", "5")
+    s.ok(60, "receive", "pin", "60")
+    for i in range(1, 26):
+        s.ok("C%d" % i, "register", "Same Name")
+        s.ok(60 - 2 * (i - 1), "stock", "pin")
+        s.ok("S%d 10" % i, "sell", "C%d" % i, "pin=2")
+        s.ok(10 * i, "takings")
+    s.ok(10, "stock", "pin")
+    s.refuse("sell", "C26", "pin=1")
+    s.refuse("sell", "C1", "pin=11")
+    s.ok("S26 50", "sell", "C1", "pin=10")
+    s.ok(300, "takings")
+
+
+# ------------------------------------------------------------- long sequences
+def long_sequence(env, seed, steps):
+    """A model of the shop, written from the documents, followed step by step."""
+    rnd = random.Random(seed)
+    s = env.shop()
+    price, hand = {}, {}
+    customers = sales = takings = 0
+    names = ["Ann", "Bob Lee", " Cy ", "Ann", "Dee  Dee", "Eve\t"]
+    for _ in range(steps):
+        roll = rnd.randrange(100)
+        known = sorted(price)
+        if roll < 8 or not known:
+            item = "i%d" % rnd.randrange(12)
+            cents = rnd.choice([0, 1, 99, 250, 12000, 1000000007])
+            kind = rnd.choice(["animal", "product"])
+            if item in price:
+                s.refuse("add-item", item, "Thing", kind, str(cents))
+            else:
+                s.ok(item, "add-item", item, "Thing " + item, kind, str(cents))
+                price[item], hand[item] = cents, 0
+        elif roll < 28:
+            item = rnd.choice(known + ["nothing"])
+            q = rnd.choice([1, 1, 2, 5, 40, 0, -2])
+            if item in price and q >= 1:
+                hand[item] += q
+                s.ok(hand[item], "receive", item, str(q))
+            else:
+                s.refuse("receive", item, str(q))
+        elif roll < 38:
+            name = rnd.choice(names + ["", "  "])
+            if name.strip():
+                customers += 1
+                s.ok("C%d" % customers, "register", name)
+            else:
+                s.refuse("register", name)
+        elif roll < 55:
+            item = rnd.choice(known + ["nothing"])
+            if item in price:
+                s.ok(hand[item], "stock", item)
+            else:
+                s.refuse("stock", item)
+        elif roll < 63:
+            s.ok(takings, "takings")
+        else:
+            cust = rnd.randrange(1, customers + 2)
+            lines, asked, good = [], {}, 1 <= cust <= customers
+            for _ in range(rnd.choice([1, 1, 2, 3, 4])):
+                item = rnd.choice(known + known + known + ["nothing"])
+                q = rnd.choice([1, 1, 1, 2, 3, 7, 0])
+                lines.append("%s=%d" % (item, q))
+                asked[item] = asked.get(item, 0) + q
+                if item not in price or q < 1:
+                    good = False
+            for item, q in asked.items():
+                if q > hand.get(item, 0):
+                    good = False
+            if good:
+                total = 0
+                for line in lines:
+                    item, q = line.split("=")
+                    total += price[item] * int(q)
+                    hand[item] -= int(q)
+                sales += 1
+                takings += total
+                s.ok("S%d %d" % (sales, total), "sell", "C%d" % cust, *lines)
+            else:
+                s.refuse("sell", "C%d" % cust, *lines)
+    for item in sorted(price):
+        s.ok(hand[item], "stock", item)
+    s.ok(takings, "takings")
+    s.ok("C%d" % (customers + 1), "register", "Last")
+
+
+# P, C, K, U, S together: a long sequence of the six commands keeps stock, ids and takings right
+@scenario
+def long_sequence_one(env):
+    long_sequence(env, 20261118, 220)
+
+
+# P, C, K, U, S together: another long sequence, other choices
+@scenario
+def long_sequence_two(env):
+    long_sequence(env, 4711, 220)
+
+
+# P, C, K, U, S together: a third long sequence, other choices
+@scenario
+def long_sequence_three(env):
+    long_sequence(env, 99, 160)
+
+
+def main(argv):
+    if len(argv) != 2:
+        sys.stderr.write("usage: check <build-dir>\n")
+        return 2
+    build = os.path.abspath(argv[1])
+    if not os.path.isfile(os.path.join(build, "shop.py")):
+        sys.stderr.write("check: no shop.py in %s\n" % build)
+        return 2
+    passed = 0
+    for name, fn in SCENARIOS:
+        tmp = tempfile.mkdtemp(prefix="audit-shop-")
+        try:
+            fn(Env(build, tmp))
+        except Fail as e:
+            print("FAIL %s: %s" % (name, " ".join(str(e).split())))
+        except Exception as e:  # a fault of the audit itself must not pass silently
+            print("FAIL %s: audit error %s: %s" % (name, type(e).__name__, e))
+        else:
+            passed += 1
+            print("PASS %s" % name)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        sys.stdout.flush()
+    print("%d/%d" % (passed, len(SCENARIOS)))
+    return 0 if passed == len(SCENARIOS) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
