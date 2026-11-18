@@ -1,0 +1,665 @@
+#!/usr/bin/env python3
+"""Measure of the enforcer.  Usage: check <build-dir>
+
+Runs `<build-dir>/enforce <tree-dir>` against fixture trees: real git
+repositories generated in a temporary directory from ONE clean template.
+Every case is one line of CASES below: a name, the rule that must be named
+(None: the tree is clean and must give exit 0), and how the tree differs from
+the clean one.  A breach must give exit 1 and a stdout line starting with
+`<rule-id> `.  All pass: exit 0, last stdout line = bytes of the build.
+Any fail: exit 1, failing case names on stderr.
+
+The clean tree (see build_tree):
+
+    root.md principles.md queue.md build verdict measure/ ledger.tsv
+    judge/stands.tsv              not a unit: only the judge's list
+    tool/                         unit, src, "stood unjudged" in record.md
+    shop/                         unit, src, stands by stands.tsv (2nd line)
+    shop/cat/                     unit, src, stands by stands.tsv, context 4 KB
+    shop/kennel/dog/              unit under a plain directory, no src
+    decoys that are NOT units: unit.md under measure/, audit/, src/, .cache/
+"""
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+RUN_TIMEOUT = 60          # seconds allowed to one run of enforce
+HUNG = "enforce did not finish in %d s; later cases not run" % RUN_TIMEOUT
+DOG = "shop/kennel/dog"
+
+# ---------------------------------------------------------------- fixtures
+
+SCRIPT = "#!/usr/bin/env python3\nprint('fixture')\n"
+# A fixture unit's check: a build passes only when it holds a file `good`.
+CHECK = ("#!/usr/bin/env python3\nimport os, sys\n"
+         "ok = os.path.exists(os.path.join(sys.argv[1], 'good'))\n"
+         "print(1) if ok else None\nsys.exit(0 if ok else 1)\n")
+DECOY = "# not a unit\n\nThis file sits where no unit can be.\n"
+
+DECLS = ["1. **Purpose**", "2. **Interface**", "3. **Rules**",
+         "4. **Budget**", "5. **Measure**", "6. **Judge**"]
+ROWS = ["| 1 Boundary", "| 2 Single source", "| 3 External enforcement",
+        "| 4 Rehearsal before effect", "| 5 Return", "| 6 Selection",
+        "| 7 Escalation"]
+KINDS = ["cost", "time", "context", "attempts", "alternatives", "attention",
+         "cap"]
+
+# Budgets of the clean tree.  Cost and time of children sum EXACTLY to the
+# parent's (allowed); the other kinds are equal or tighter (allowed); the
+# children's attention sums to more than the shop's (allowed: not summed).
+ROOT_BUDGET = dict(cost=10, time="4", context=16, attempts=3, alternatives=2,
+                   attention=2, cap=1)
+BUDGETS = {
+    "tool": dict(cost=2, time="0.5", context=8, attempts=2, alternatives=0,
+                 attention=0, cap=0),
+    "shop": dict(cost=6, time="2.5", context=8, attempts=2, alternatives=1,
+                 attention=1, cap=0),
+    "shop/cat": dict(cost=3, time="1", context=4, attempts=2, alternatives=1,
+                     attention=1, cap=0),
+    DOG: dict(cost=3, time="1.5", context=8, attempts=2, alternatives=1,
+              attention=1, cap=0),
+}
+PARENT = {"tool": "root", "shop": "root", "shop/cat": "shop", DOG: "shop"}
+
+# Ledger of the clean tree: cat 2, dog 1, shop subtree 5 of 6, tool 2 of 2,
+# whole tree 8 of 10.
+LEDGER = ("# time\tunit\truns\tnote\n"
+          "2026-01-01T00:00Z\tshop/cat\t2\tmeasure and build\n"
+          "\n"
+          "2026-01-01T00:10Z\t" + DOG + "\t1\tmeasure\n"
+          "2026-01-01T00:20Z\tshop\t2\tbuild and alternative\n"
+          "# a comment between rows\n"
+          "2026-01-01T00:30Z\ttool\t2\tbuild\n"
+          "2026-01-01T00:40Z\troot\t1\tcoordination\n")
+
+
+def budget_text(b, root=False):
+    """The budget line's values; a kind set to None is left out."""
+    if root:
+        forms = [("cost", "cost %s agent runs"), ("time", "time %s h"),
+                 ("context", "context %s KB per unit"),
+                 ("attempts", "attempts %s per change"),
+                 ("alternatives", "alternatives %s per change"),
+                 ("attention", "attention %s items per correct result "
+                               "after round 1"),
+                 ("cap", "cap on effects without undo %s")]
+    else:
+        forms = [("cost", "cost %s runs"), ("time", "time %s h"),
+                 ("context", "context %s KB"), ("attempts", "attempts %s"),
+                 ("alternatives", "alternatives %s"),
+                 ("attention", "attention %s"), ("cap", "no-undo cap %s")]
+    return "; ".join(f % b[k] for k, f in forms if b.get(k) is not None) + "."
+
+
+def table(where):
+    rows = ["| Principle | %s |" % where, "|---|---|"]
+    rows += ["%s | How it appears in this fixture. |" % r for r in ROWS]
+    return "\n".join(rows) + "\n"
+
+
+def unit_doc(unit, budget=None):
+    b = dict(BUDGETS[unit])
+    b.update(budget or {})
+    up = "../" * (unit.count("/") + 1)
+    name = unit.split("/")[-1]
+    return (
+        "# %s\n\n" % name.capitalize() +
+        "Parent: [`%s`](%s). Governed by [`principles.md`](%sprinciples.md)."
+        "\n\n" % (PARENT[unit], up, up) +
+        "## The six declarations\n\n"
+        "1. **Purpose** — Be the fixture unit `%s`.\n" % unit +
+        "2. **Interface** — Offers *build* and *verdict*.\n"
+        "3. **Rules** — Those of its parent, none added.\n"
+        "4. **Budget** — %s\n" % budget_text(b) +
+        "5. **Measure** — `measure/check <build-dir>`; number: 1.\n"
+        "6. **Judge** — The judge.\n\n"
+        "## The principles here\n\n" + table("Here"))
+
+
+def root_doc(budget=None):
+    b = dict(ROOT_BUDGET)
+    b.update(budget or {})
+    return (
+        "# Root\n\n"
+        "Parent: the person. Governed by [`principles.md`](principles.md).\n\n"
+        "## The six declarations\n\n"
+        "1. **Purpose** — Be the root of a fixture tree.\n"
+        "2. **Interface** — Offers *build*, *verdict* and the queue.\n"
+        "3. **Rules** — The principles; none added.\n"
+        "4. **Budget** — The person's attention first, and every other "
+        "kind `principles.md` lists. Values, given in round 1 of "
+        "[`queue.md`](queue.md) (Q2 to Q8): %s\n" % budget_text(b, True) +
+        "5. **Measure** — Items in the queue per correct result.\n"
+        "6. **Judge** — The person.\n\n"
+        "## The principles here\n\n" + table("At the root"))
+
+
+def src_hash(src):
+    """The judge's hash of a src directory, as the documents define it."""
+    names = []
+    for base, dirs, files in os.walk(src):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for f in files:
+            full = os.path.join(base, f)
+            names.append((os.path.relpath(full, src).replace(os.sep, "/"),
+                          full))
+    h = hashlib.sha256()
+    for rel, full in sorted(names):
+        with open(full, "rb") as fh:
+            h.update(rel.encode("utf-8") + b"\0" + fh.read() + b"\0")
+    return h.hexdigest()
+
+
+class Tree:
+    """A fixture repository being written, commit by commit."""
+
+    def __init__(self, path):
+        self.path = path
+        self.commits = 0
+        os.makedirs(path)
+        self.git("init", "-q")
+
+    def git(self, *args):
+        env = dict(os.environ)
+        when = "2026-01-01T00:%02d:00+0000" % self.commits
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+                   GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_DATE=when,
+                   GIT_COMMITTER_DATE=when)
+        cmd = ["git", "-C", self.path, "-c", "user.name=Fixture",
+               "-c", "user.email=fixture@example.invalid",
+               "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+               "-c", "core.autocrlf=false", "-c", "core.fileMode=true"]
+        subprocess.run(cmd + list(args), check=True, env=env,
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.PIPE, timeout=60)
+
+    def commit(self, message):
+        self.commits += 1
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+
+
+def put(tree, rel, text, exe=False, append=False):
+    path = os.path.join(tree, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    data = text if isinstance(text, bytes) else text.encode("utf-8")
+    with open(path, "ab" if append else "wb") as f:
+        f.write(data)
+    os.chmod(path, 0o755 if exe else 0o644)
+
+
+def get(tree, rel):
+    with open(os.path.join(tree, rel), "rb") as f:
+        return f.read().decode("utf-8")
+
+
+def put_measure(tree, unit):
+    base = unit + "/measure/" if unit else "measure/"
+    put(tree, base + "check", CHECK, exe=True)
+    put(tree, base + "planted/bad/note", "a build without the file good\n")
+
+
+def stand(tree, unit, minute):
+    """Append the judge's line for the unit's present src; return its hash."""
+    h = src_hash(os.path.join(tree, unit, "src"))
+    put(tree, "judge/stands.tsv",
+        "2026-01-01T00:%02dZ\t%s\tcandidate\t40\t%s\t40 41\n"
+        % (minute, unit, h), append=True)
+    return h
+
+
+def put_unjudged_src(tree, unit):
+    put(tree, unit + "/src/main.py", "print('%s')\n" % unit)
+    put(tree, unit + "/record.md",
+        "# Record\n\nThe first build stood with no judge.\n\n"
+        "stood unjudged: %s\n" % src_hash(os.path.join(tree, unit, "src")))
+
+
+def build_tree(path, variant=None):
+    """Write the clean tree, or the one history variant named.
+
+    Clean history, one commit per line:
+      1 principles.md root.md queue.md        (touches only those)
+      2 the root's build, verdict, measure, ledger, empty stands.tsv
+      3 documents, build and verdict of the four units; decoys
+      4 the four units' measures
+      5 tool/src and its record (stood unjudged)
+      6 shop/src, first build, let stand
+      7 shop/src, second build, let stand     (shop: two lines, last counts)
+      8 shop/cat/src, let stand               (last line of the file: cat's)
+      9 root.md and queue.md together         (an answer written)
+     10 one more planted build for cat, and the ledger rows
+    """
+    t = Tree(path)
+    # 1
+    put(path, "principles.md", "# Principles\n\nFixture text.\n")
+    put(path, "root.md", root_doc())
+    put(path, "queue.md", "# Queue of the root\n\n### Q1 | decision\nAsked.\n")
+    if variant == "answer-in-first-commit":
+        put(path, "build", SCRIPT, exe=True)
+    t.commit("the two documents and the queue")
+    # 2
+    put(path, "build", SCRIPT, exe=True)
+    put(path, "verdict", SCRIPT, exe=True)
+    put_measure(path, "")
+    put(path, "ledger.tsv", "# time\tunit\truns\tnote\n")
+    put(path, "judge/stands.tsv", "")
+    t.commit("root interface and measure")
+    # 3
+    for unit in BUDGETS:
+        put(path, unit + "/unit.md", unit_doc(unit))
+        put(path, unit + "/build", SCRIPT, exe=True)
+        put(path, unit + "/verdict", SCRIPT, exe=True)
+    put(path, "shop/audit/cat/unit.md", DECOY)
+    put(path, ".cache/unit.md", DECOY)
+    if variant == "before-src-first":
+        put(path, "shop/cat/src/main.py", "print('cat')\n")
+    t.commit("unit documents")
+    # 4
+    late_measure = {"before-same-commit": "tool",
+                    "before-measure-uncommitted": "tool",
+                    "before-neither-committed": DOG}.get(variant)
+    for unit in BUDGETS:
+        if unit != late_measure:
+            put_measure(path, unit)
+    if late_measure != "tool":
+        put(path, "tool/measure/planted/bad/unit.md", DECOY)
+    t.commit("measures")
+    # 5
+    put_unjudged_src(path, "tool")
+    if variant == "before-same-commit":
+        put_measure(path, "tool")
+    t.commit("tool: first build, stood unjudged")
+    # 6
+    put(path, "shop/src/shop.py", "print('shop, first build')\n")
+    stand(path, "shop", 6)
+    t.commit("shop: first build stands")
+    # 7
+    put(path, "shop/src/shop.py", "print('shop, second build')\n")
+    stand(path, "shop", 7)
+    t.commit("shop: second build stands")
+    # 8
+    put(path, "shop/cat/src/main.py", "print('cat')\n")
+    put(path, "shop/cat/src/lib/util.py", "NAME = 'cat'\n")
+    put(path, "shop/cat/src/lib/unit.md", DECOY)
+    stand(path, "shop/cat", 8)
+    t.commit("cat: build stands")
+    # 9
+    put(path, "root.md", "\nAnswer to Q1: ok.\n", append=True)
+    put(path, "queue.md", "Answered.\n", append=True)
+    t.commit("answer to Q1, word for word")
+    if variant == "answer-root-with-unit-doc":
+        put(path, "root.md", "\nAnswer to Q2: ok.\n", append=True)
+        put(path, "shop/unit.md", "\n", append=True)
+        t.commit("answer to Q2 and a tidy-up")
+    if variant == "answer-principles-with-ledger":
+        put(path, "principles.md", "\nOne more line.\n", append=True)
+        put(path, "ledger.tsv", "# checked\n", append=True)
+        t.commit("principles reworded")
+    # 10
+    put(path, "shop/cat/measure/planted/worse/note", "also lacks good\n")
+    put(path, "ledger.tsv", LEDGER)
+    t.commit("cat: one more planted build; ledger")
+    # left uncommitted in the working tree
+    put(path, "shop/cat/src/__pycache__/main.cpython-311.pyc", b"\0cache")
+    put(path, "shop/cat/src/lib/__pycache__/util.cpython-311.pyc", b"\0c")
+    if variant == "before-measure-uncommitted":
+        put_measure(path, "tool")
+    if variant == "before-neither-committed":
+        put_measure(path, DOG)
+    if variant in ("before-neither-committed", "clean-src-uncommitted"):
+        put_unjudged_src(path, DOG)
+
+
+# ------------------------------------------- changes to a copy of the clean
+
+def rewrite(rel, old, new):
+    def change(tree):
+        text = get(tree, rel)
+        if old not in text:
+            raise RuntimeError("fixture: %r not in %s" % (old, rel))
+        put(tree, rel, text.replace(old, new, 1))
+    return change
+
+
+def drop_line(rel, prefix):
+    """Remove the one line of the document that starts with prefix."""
+    def change(tree):
+        lines = get(tree, rel).splitlines(True)
+        kept = [l for l in lines if not l.startswith(prefix)]
+        if len(kept) != len(lines) - 1:
+            raise RuntimeError("fixture: no single line %r" % prefix)
+        put(tree, rel, "".join(kept))
+    return change
+
+
+def swap_lines(rel, first, second):
+    def change(tree):
+        lines = get(tree, rel).splitlines(True)
+        i = [n for n, l in enumerate(lines) if l.startswith(first)][0]
+        j = [n for n, l in enumerate(lines) if l.startswith(second)][0]
+        lines[i], lines[j] = lines[j], lines[i]
+        put(tree, rel, "".join(lines))
+    return change
+
+
+def budget(unit, **values):
+    """Rewrite the unit's document with these budget values (None: left out)."""
+    def change(tree):
+        if unit == "root":
+            put(tree, "root.md", root_doc(values))
+        else:
+            put(tree, unit + "/unit.md", unit_doc(unit, values))
+    return change
+
+
+def grow(unit, rel, total):
+    """Append to <unit>/<rel> until unit.md + record.md is `total` bytes."""
+    def change(tree):
+        size = 0
+        for name in ("unit.md", "record.md"):
+            p = os.path.join(tree, unit, name)
+            size += os.path.getsize(p) if os.path.exists(p) else 0
+        need = total - size
+        if need < 1:
+            raise RuntimeError("fixture: already %d bytes" % size)
+        put(tree, unit + "/" + rel, "x" * (need - 1) + "\n", append=True)
+    return change
+
+
+def write(rel, text, exe=False):
+    return lambda tree: put(tree, rel, text, exe=exe)
+
+
+def append(rel, text):
+    return lambda tree: put(tree, rel, text, append=True)
+
+
+def remove(rel):
+    def change(tree):
+        p = os.path.join(tree, rel)
+        shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+    return change
+
+
+def empty_dir(rel):
+    def change(tree):
+        shutil.rmtree(os.path.join(tree, rel))
+        os.mkdir(os.path.join(tree, rel))
+    return change
+
+
+def not_executable(rel):
+    return lambda tree: os.chmod(os.path.join(tree, rel), 0o644)
+
+
+def rename(old, new):
+    return lambda tree: os.rename(os.path.join(tree, old),
+                                  os.path.join(tree, new))
+
+
+def stale_stand(tree):
+    """shop: one more line, for the build that stood before the present one."""
+    lines = get(tree, "judge/stands.tsv").splitlines(True)
+    first = [l for l in lines if l.split("\t")[1] == "shop"][0]
+    put(tree, "judge/stands.tsv", first, append=True)
+
+
+def stand_under_other_name(tree):
+    """shop: the line holding its present hash now names the unit shop/cat."""
+    lines = get(tree, "judge/stands.tsv").splitlines(True)
+    n = [i for i, l in enumerate(lines) if l.split("\t")[1] == "shop"][-1]
+    f = lines[n].split("\t")
+    f[1] = "shop/cat"
+    lines[n] = "\t".join(f)             # cat's own line is still its last
+    put(tree, "judge/stands.tsv", "".join(lines))
+
+
+def unjudged_hash_of_another_build(tree):
+    h = hashlib.sha256(b"another build").hexdigest()
+    lines = get(tree, "tool/record.md").splitlines(True)
+    lines = ["stood unjudged: %s\n" % h if l.startswith("stood unjudged:")
+             else l for l in lines]
+    put(tree, "tool/record.md", "".join(lines))
+
+
+def row(unit, runs):
+    return append("ledger.tsv", "2026-01-02T00:00Z\t%s\t%d\tmore\n"
+                  % (unit, runs))
+
+
+# ------------------------------------------------------------------- cases
+# (name, rule that must be named or None for "exit 0", how the tree differs:
+#  a function applied to a copy of the clean tree, or the name of a history
+#  variant of build_tree)
+
+CASES = [
+    ("clean", None, None),
+    ("clean-ledger-absent", None, remove("ledger.tsv")),
+    ("clean-context-exactly-at-budget", None, grow(DOG, "unit.md", 8 * 1024)),
+    ("clean-src-uncommitted-measure-committed", None, "clean-src-uncommitted"),
+
+    # doc: names its parent, six declarations in order, seven principle rows
+    ("doc-no-parent-line", "doc", drop_line("tool/unit.md", "Parent:")),
+    ("doc-root-no-parent-line", "doc", drop_line("root.md", "Parent:")),
+] + [
+    ("doc-declaration-%d-missing" % (i + 1), "doc",
+     drop_line(DOG + "/unit.md", d)) for i, d in enumerate(DECLS)
+] + [
+    ("doc-declarations-2-and-3-swapped", "doc",
+     swap_lines("shop/cat/unit.md", DECLS[1], DECLS[2])),
+    ("doc-declarations-5-and-6-swapped", "doc",
+     swap_lines("tool/unit.md", DECLS[4], DECLS[5])),
+] + [
+    ("doc-principle-row-%d-missing" % (i + 1), "doc",
+     drop_line("shop/unit.md", r)) for i, r in enumerate(ROWS)
+] + [
+    ("doc-root-principle-row-3-missing", "doc", drop_line("root.md", ROWS[2])),
+
+    # budget: all seven kinds given
+] + [
+    ("budget-%s-not-given" % k, "budget", budget(DOG, **{k: None}))
+    for k in KINDS
+] + [
+    ("budget-root-attempts-not-given", "budget",
+     budget("root", attempts=None)),
+    # budget: children's cost and time sum to no more than the parent's
+    ("budget-children-cost-sum-over-parent", "budget", budget(DOG, cost=4)),
+    ("budget-children-time-sum-over-parent", "budget", budget(DOG, time="1.6")),
+    ("budget-children-cost-sum-over-root", "budget", budget("tool", cost=5)),
+    ("budget-children-time-sum-over-root", "budget",
+     budget("tool", time="1.6")),
+    # budget: no other kind looser than the parent's (each still within the
+    # root's, so the comparison must be with the unit's own parent)
+    ("budget-child-context-looser", "budget", budget(DOG, context=9)),
+    ("budget-child-attempts-looser", "budget", budget("shop/cat", attempts=3)),
+    ("budget-child-alternatives-looser", "budget",
+     budget("shop/cat", alternatives=2)),
+    ("budget-child-attention-looser", "budget",
+     budget("shop/cat", attention=2)),
+    ("budget-child-cap-looser", "budget", budget("shop/cat", cap=1)),
+
+    # context: unit.md plus record.md within the unit's own context budget
+    ("context-document-one-byte-over", "context",
+     grow(DOG, "unit.md", 8 * 1024 + 1)),
+    ("context-document-plus-record-over", "context",
+     grow("tool", "record.md", 8 * 1024 + 1)),
+    ("context-over-own-budget-within-parents", "context",
+     grow("shop/cat", "record.md", 5000)),
+
+    # interface: build and verdict exist and are executable
+    ("interface-verdict-not-executable", "interface",
+     not_executable("shop/cat/verdict")),
+    ("interface-build-not-executable", "interface",
+     not_executable(DOG + "/build")),
+    ("interface-build-missing", "interface", remove("tool/build")),
+    ("interface-root-verdict-missing", "interface", remove("verdict")),
+
+    # measure: check exists, a planted build exists, every planted build fails
+    ("measure-only-planted-build-passes", "measure",
+     write(DOG + "/measure/planted/bad/good", "")),
+    ("measure-second-planted-build-passes", "measure",
+     write("shop/cat/measure/planted/worse/good", "")),
+    ("measure-planted-empty", "measure", empty_dir("tool/measure/planted")),
+    ("measure-planted-absent", "measure", remove("shop/measure/planted")),
+    ("measure-check-missing", "measure", remove(DOG + "/measure/check")),
+    ("measure-check-not-executable", "measure",
+     not_executable("tool/measure/check")),
+
+    # before: the measure entered the record in an earlier change than src
+    ("before-src-and-measure-in-same-commit", "before", "before-same-commit"),
+    ("before-src-committed-first", "before", "before-src-first"),
+    ("before-measure-never-committed", "before", "before-measure-uncommitted"),
+    ("before-neither-committed", "before", "before-neither-committed"),
+
+    # stands: src's hash is the unit's last in stands.tsv, or stood unjudged
+    ("stands-src-file-changed-after-stand", "stands",
+     append("shop/cat/src/main.py", "print('changed')\n")),
+    ("stands-src-file-added-after-stand", "stands",
+     write("shop/cat/src/extra.py", "")),
+    ("stands-src-file-renamed-after-stand", "stands",
+     rename("shop/src/shop.py", "shop/src/store.py")),
+    ("stands-hash-is-not-the-units-last-line", "stands", stale_stand),
+    ("stands-hash-only-on-another-units-line", "stands",
+     stand_under_other_name),
+    ("stands-unjudged-src-changed", "stands",
+     append("tool/src/main.py", "print('changed')\n")),
+    ("stands-unjudged-line-names-another-hash", "stands",
+     unjudged_hash_of_another_build),
+
+    # answer: a change touching principles.md or root.md touches nothing
+    # else but queue.md (every commit, not only the last)
+    ("answer-root-md-with-a-unit-document", "answer",
+     "answer-root-with-unit-doc"),
+    ("answer-principles-md-with-ledger", "answer",
+     "answer-principles-with-ledger"),
+    ("answer-first-commit-holds-another-file", "answer",
+     "answer-in-first-commit"),
+
+    # spend: runs charged to a unit and to all beneath it within its cost
+    ("spend-unit-rows-sum-over-its-cost", "spend", row("shop/cat", 2)),
+    ("spend-child-rows-push-parent-over", "spend", row(DOG, 2)),
+    ("spend-all-rows-push-root-over", "spend", row("root", 3)),
+]
+
+HISTORY_VARIANTS = sorted(set(c[2] for c in CASES if isinstance(c[2], str)))
+
+
+# ------------------------------------------------------------------ running
+
+def snapshot(tree):
+    """Every path of the working tree outside .git, with mode and content."""
+    seen = {}
+    for base, dirs, files in os.walk(tree):
+        if base == tree and ".git" in dirs:
+            dirs.remove(".git")
+        for name in dirs + files:
+            full = os.path.join(base, name)
+            data = b""
+            if os.path.isfile(full):
+                with open(full, "rb") as f:
+                    data = f.read()
+            seen[os.path.relpath(full, tree)] = (os.stat(full).st_mode, data)
+    return seen
+
+
+def run_enforce(build, tree, elsewhere):
+    """Return (exit code, stdout lines), or (None, reason)."""
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    try:
+        r = subprocess.run([os.path.join(build, "enforce"), tree],
+                           cwd=elsewhere, env=env, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           timeout=RUN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, HUNG
+    except OSError as e:
+        return None, "enforce could not be run: %s" % e
+    return r.returncode, r.stdout.decode("utf-8", "replace").splitlines()
+
+
+def judge_case(rule, code, lines):
+    """None when the case passes, else why it fails."""
+    if code is None:
+        return lines
+    if rule is None:
+        if code != 0:
+            return "clean tree: exit %s, wanted 0; said %r" % (code, lines[:3])
+        return None
+    if code != 1:
+        return "exit %s, wanted 1" % code
+    if not any(l.startswith(rule + " ") for l in lines):
+        return "no stdout line starts with %r; said %r" % (rule + " ",
+                                                           lines[:3])
+    return None
+
+
+def build_bytes(build):
+    total = 0
+    for base, dirs, files in os.walk(build):
+        for name in files:
+            total += os.path.getsize(os.path.join(base, name))
+    return total
+
+
+def main():
+    if len(sys.argv) != 2:
+        sys.stderr.write("usage: check <build-dir>\n")
+        return 2
+    build = os.path.abspath(sys.argv[1])
+    if not os.path.isfile(os.path.join(build, "enforce")):
+        sys.stderr.write("FAIL build: no file `enforce` in %s\n" % build)
+        return 1
+    failed = []
+    work = tempfile.mkdtemp(prefix="enforcer-measure-")
+    try:
+        elsewhere = os.path.join(work, "elsewhere")   # cwd: not the tree
+        os.mkdir(elsewhere)
+        try:
+            clean = os.path.join(work, "clean")
+            build_tree(clean)
+            variants = {}
+            for v in HISTORY_VARIANTS:
+                variants[v] = os.path.join(work, "history-" + v)
+                build_tree(variants[v], v)
+        except Exception as e:           # a defect of this check, not a fail
+            sys.stderr.write("check: cannot make fixtures: %r\n" % (e,))
+            return 2
+        for n, (name, rule, how) in enumerate(CASES):
+            if isinstance(how, str):
+                tree = variants[how]
+            else:
+                tree = os.path.join(work, "case-%02d" % n)
+                shutil.copytree(clean, tree, symlinks=True)
+                if how is not None:
+                    how(tree)
+            before = snapshot(tree) if name == "clean" else None
+            code, lines = run_enforce(build, tree, elsewhere)
+            why = judge_case(rule, code, lines)
+            if why:
+                failed.append((name, why))
+            if why == HUNG:
+                break
+            if before is not None and snapshot(tree) != before:
+                # unit document, principle 1: "writes nothing in it"
+                failed.append(("writes-nothing-in-the-tree",
+                               "the tree's files changed during the run"))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    total = len(CASES) + 1
+    if failed:
+        for name, why in failed:
+            sys.stderr.write("FAIL %s: %s\n" % (name, why))
+        sys.stderr.write("%d of %d cases failed\n" % (len(failed), total))
+        return 1
+    print("%d cases passed" % total)
+    print(build_bytes(build))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

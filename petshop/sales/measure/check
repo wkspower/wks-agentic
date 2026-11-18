@@ -1,0 +1,668 @@
+#!/usr/bin/env python3
+"""Measure of the sales unit (docs/petshop/sales/unit.md).
+
+Usage: check <build-dir>          (the build dir holds sales.py)
+
+All cases pass: exit 0, last line of stdout = size of sales.py in bytes.
+Any case fails: exit 1, the failing case names on stderr.
+
+The cases call sales.py in a child process (this same script, --child), so a
+build that crashes, hangs or exits cannot take the check down with it. The
+rule cases (rule 3 of docs/petshop/unit.md) read the source and never run it.
+"""
+import ast
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+TIMEOUT = 60          # seconds for the whole child run
+MAX_LINE = 100
+OTHER_UNITS = {"catalog", "stock", "customers", "shop"}
+NETWORK = {
+    "socket", "socketserver", "ssl", "http", "urllib", "ftplib", "smtplib", "smtpd",
+    "poplib", "imaplib", "nntplib", "telnetlib", "xmlrpc", "asyncio", "asyncore",
+    "asynchat", "webbrowser",
+}
+
+CASES = []            # (name, function taking the module), run in the child
+RULES = []            # (name, function taking the path of sales.py), run in the parent
+
+
+def case(name):
+    def register(function):
+        CASES.append((name, function))
+        return function
+    return register
+
+
+def rule(name):
+    def register(function):
+        RULES.append((name, function))
+        return function
+    return register
+
+
+def expect(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+# ---------------------------------------------------------------- the fakes
+
+PRICES = {"food": 1250, "bone": 29, "fish": 1999, "cat": 15000, "leaflet": 0}
+
+
+class World:
+    """The three callables sales receives, as fakes that record their calls."""
+
+    def __init__(self, on_hand=None, prices=None):
+        self.prices = dict(PRICES if prices is None else prices)
+        self.on_hand = {item: 50 for item in self.prices}
+        self.on_hand.update(on_hand or {})
+        self.takes = []
+
+    def price_of(self, item_id):
+        return self.prices[item_id]            # KeyError when unknown
+
+    def available(self, item_id):
+        return self.on_hand.get(item_id, 0)
+
+    def take(self, item_id, quantity):
+        self.takes.append((item_id, quantity))
+        self.on_hand[item_id] = self.on_hand.get(item_id, 0) - quantity
+
+    def sell(self, m, state, customer_id, lines):
+        return m.sell(state, customer_id, lines, self.price_of, self.available, self.take)
+
+
+def wanted(sale_id, customer_id, lines, prices=PRICES):
+    """The sale the document describes for these lines."""
+    rows = [{"item_id": item, "quantity": quantity, "unit_price_cents": prices[item],
+             "line_total_cents": quantity * prices[item]} for item, quantity in lines]
+    return {"id": sale_id, "customer_id": customer_id, "lines": rows,
+            "total_cents": sum(row["line_total_cents"] for row in rows)}
+
+
+def plain(sale):
+    """A sale as plain data, so that sales can be compared."""
+    expect(isinstance(sale, dict), "a sale must be a dict, got %r" % (sale,))
+    expect("lines" in sale, "a sale must have 'lines', got %r" % (sale,))
+    out = dict(sale)
+    out["lines"] = [dict(line) for line in sale["lines"]]
+    return out
+
+
+def same(sale, expected, what="sale"):
+    got = plain(sale)
+    expect(got == expected, "%s: expected %r, got %r" % (what, expected, got))
+
+
+def all_sales(m, state):
+    return [plain(sale) for sale in m.sales(state)]
+
+
+def roundtrip(state):
+    return json.loads(json.dumps(state))
+
+
+# ------------------------------------------------- new, sale shape, totals
+
+@case("new_state_is_empty")
+def _(m):
+    """new() returns an empty state: no sales, takings 0."""
+    state = m.new()
+    expect(all_sales(m, state) == [], "sales of a new state must be empty")
+    expect(m.takings(state) == 0, "takings of a new state must be 0")
+
+
+@case("sale_has_exactly_the_stated_keys")
+def _(m):
+    """Sale: exactly id, customer_id, lines, total_cents; line: exactly four keys."""
+    w = World()
+    sale = w.sell(m, m.new(), "C1", [("food", 2), ("bone", 1)])
+    expect(isinstance(sale, dict), "sell must return a dict")
+    expect(set(sale) == {"id", "customer_id", "lines", "total_cents"},
+           "sale keys are %r" % sorted(sale))
+    expect(len(sale["lines"]) == 2, "one dict per given line")
+    for line in sale["lines"]:
+        expect(isinstance(line, dict), "a line must be a dict")
+        expect(set(line) == {"item_id", "quantity", "unit_price_cents", "line_total_cents"},
+               "line keys are %r" % sorted(line))
+
+
+@case("sale_of_one_line")
+def _(m):
+    """sell records and returns a sale: id S1, the customer, the line, the total."""
+    w = World()
+    sale = w.sell(m, m.new(), "C7", [("food", 3)])
+    same(sale, wanted("S1", "C7", [("food", 3)]))
+    expect(sale["total_cents"] == 3750, "3 x 1250 is 3750")
+
+
+@case("sale_of_several_lines_in_given_order")
+def _(m):
+    """Lines come back one per given line, in the given order, with the right totals."""
+    w = World()
+    lines = [("fish", 1), ("cat", 2), ("bone", 7), ("leaflet", 4), ("food", 1)]
+    sale = w.sell(m, m.new(), "C1", lines)
+    same(sale, wanted("S1", "C1", lines))
+    expect(sale["total_cents"] == 1999 + 30000 + 203 + 0 + 1250, "total is the sum of lines")
+
+
+@case("money_is_integer_cents")
+def _(m):
+    """Rule 3: money is integer cents (prices 29 and 1999 expose float arithmetic)."""
+    w = World()
+    state = m.new()
+    sale = w.sell(m, state, "C1", [("bone", 1), ("fish", 1), ("bone", 3)])
+    for line in sale["lines"]:
+        for key in ("unit_price_cents", "line_total_cents"):
+            expect(type(line[key]) is int, "%s must be an int, got %r" % (key, line[key]))
+    expect(type(sale["total_cents"]) is int, "total_cents must be an int")
+    expect(sale["total_cents"] == 29 + 1999 + 87, "total is %r" % (sale["total_cents"],))
+    expect(type(m.takings(state)) is int, "takings must be an int")
+
+
+@case("ids_are_S1_S2_S3")
+def _(m):
+    """Ids are S1, S2, ... in the order the sales are made."""
+    w = World()
+    state = m.new()
+    ids = [w.sell(m, state, "C1", [("bone", 1)])["id"] for _ in range(12)]
+    expect(ids == ["S%d" % n for n in range(1, 13)], "ids are %r" % ids)
+
+
+@case("same_item_on_two_lines_stays_two_lines")
+def _(m):
+    """One dict per given line, even when the same item is on two lines."""
+    w = World()
+    lines = [("bone", 2), ("food", 1), ("bone", 3)]
+    sale = w.sell(m, m.new(), "C1", lines)
+    same(sale, wanted("S1", "C1", lines))
+
+
+@case("customer_id_is_kept_as_given")
+def _(m):
+    """The sale carries the customer_id it was given."""
+    w = World()
+    state = m.new()
+    expect(w.sell(m, state, "C12", [("bone", 1)])["customer_id"] == "C12", "customer_id")
+    expect(w.sell(m, state, "walk-in", [("bone", 1)])["customer_id"] == "walk-in", "customer_id")
+
+
+# ------------------------------------------------------------------- take
+
+@case("take_called_once_per_line")
+def _(m):
+    """On success take is called once per line, with that line's item and quantity."""
+    w = World()
+    lines = [("food", 2), ("bone", 5), ("cat", 1)]
+    w.sell(m, m.new(), "C1", lines)
+    expect(sorted(w.takes) == sorted(lines), "take calls were %r" % w.takes)
+
+
+@case("take_called_once_per_line_same_item_twice")
+def _(m):
+    """Two lines of one item are two calls of take, not one merged call."""
+    w = World()
+    lines = [("bone", 2), ("food", 1), ("bone", 3)]
+    w.sell(m, m.new(), "C1", lines)
+    expect(sorted(w.takes) == sorted(lines), "take calls were %r" % w.takes)
+
+
+# ------------------------------------------------------------ availability
+
+@case("selling_exactly_what_is_available_is_allowed")
+def _(m):
+    """Refused only when the quantity EXCEEDS available: equal is a sale."""
+    w = World(on_hand={"cat": 3})
+    sale = w.sell(m, m.new(), "C1", [("cat", 3)])
+    same(sale, wanted("S1", "C1", [("cat", 3)]))
+
+
+@case("same_item_summed_up_to_available_is_allowed")
+def _(m):
+    """Two lines of one item summing to exactly what is available: a sale."""
+    w = World(on_hand={"cat": 3})
+    lines = [("cat", 2), ("cat", 1)]
+    sale = w.sell(m, m.new(), "C1", lines)
+    same(sale, wanted("S1", "C1", lines))
+    expect(sorted(w.takes) == sorted(lines), "take calls were %r" % w.takes)
+
+
+# ---------------------------------------------------------------- refusals
+
+def refused(m, error, customer_id, lines, on_hand=None, prices=None):
+    """The call raises `error`; take was never called and nothing was recorded:
+    sales and takings are as before and the next sale gets the next unused id."""
+    w = World(on_hand=on_hand, prices=prices)
+    state = m.new()
+    same(w.sell(m, state, "C1", [("food", 1)]), wanted("S1", "C1", [("food", 1)]))
+    sales_before, takings_before = all_sales(m, state), m.takings(state)
+    w.takes.clear()
+    try:
+        w.sell(m, state, customer_id, lines)
+    except error:
+        pass
+    else:
+        raise AssertionError("expected %s, the call returned" % error.__name__)
+    expect(w.takes == [], "take was called on a refusal: %r" % w.takes)
+    expect(all_sales(m, state) == sales_before, "a refused sale changed sales()")
+    expect(m.takings(state) == takings_before, "a refused sale changed takings()")
+    for sale_id in ("S2", "S3"):
+        try:
+            m.get(state, sale_id)
+        except KeyError:
+            pass
+        else:
+            raise AssertionError("a refused sale was recorded as %s" % sale_id)
+    after = w.sell(m, state, "C2", [("bone", 2)])
+    same(after, wanted("S2", "C2", [("bone", 2)]), "the sale after a refusal")
+    expect(all_sales(m, state) == sales_before + [wanted("S2", "C2", [("bone", 2)])],
+           "sales() after a refusal and one more sale")
+    expect(m.takings(state) == takings_before + 58, "takings() after a refusal and a sale")
+
+
+GOOD = [("food", 1), ("bone", 2)]
+
+for _name, _customer in (("empty", ""), ("none", None), ("int", 7), ("list", ["C1"])):
+    @case("refused_customer_id_" + _name)
+    def _(m, customer=_customer):
+        """ValueError when customer_id is not a non-empty string."""
+        refused(m, ValueError, customer, GOOD)
+
+
+@case("refused_empty_lines")
+def _(m):
+    """ValueError when lines is empty."""
+    refused(m, ValueError, "C1", [])
+
+
+for _name, _quantity in (("zero", 0), ("negative", -1), ("bool_true", True),
+                         ("bool_false", False), ("float_fraction", 1.5),
+                         ("float_whole", 2.0), ("string", "2"), ("none", None)):
+    @case("refused_quantity_" + _name)
+    def _(m, quantity=_quantity):
+        """ValueError when a quantity is not an int (not a bool) of 1 or more."""
+        refused(m, ValueError, "C1", [("food", quantity)])
+
+    @case("refused_quantity_%s_on_a_later_line" % _name)
+    def _(m, quantity=_quantity):
+        """The same on the last line: the earlier, valid lines were not taken."""
+        refused(m, ValueError, "C1", [("food", 1), ("bone", 2), ("fish", quantity)])
+
+
+@case("refused_over_available_one_line")
+def _(m):
+    """ValueError when the quantity asked exceeds available."""
+    refused(m, ValueError, "C1", [("cat", 4)], on_hand={"cat": 3})
+
+
+@case("refused_nothing_available")
+def _(m):
+    """ValueError when available is 0."""
+    refused(m, ValueError, "C1", [("cat", 1)], on_hand={"cat": 0})
+
+
+@case("refused_over_available_on_a_later_line")
+def _(m):
+    """Over available on the last line: the earlier, valid lines were not taken."""
+    refused(m, ValueError, "C1", [("food", 1), ("bone", 2), ("cat", 4)], on_hand={"cat": 3})
+
+
+@case("refused_over_available_summed_over_two_lines")
+def _(m):
+    """Each line fits (2 <= 3) but the item's lines summed (4) exceed available (3)."""
+    refused(m, ValueError, "C1", [("cat", 2), ("cat", 2)], on_hand={"cat": 3})
+
+
+@case("refused_over_available_summed_over_separated_lines")
+def _(m):
+    """The lines of one item are summed even with another item between them."""
+    refused(m, ValueError, "C1", [("cat", 1), ("food", 1), ("cat", 1), ("cat", 2)],
+            on_hand={"cat": 3})
+
+
+# In the two KeyError cases the fake `available` answers 50 for "ghost", so a
+# build may ask `available` before `price_of` and still reach the KeyError.
+
+@case("keyerror_from_price_of_passes_through")
+def _(m):
+    """A KeyError from price_of passes through (not turned into a ValueError)."""
+    refused(m, KeyError, "C1", [("ghost", 1)], on_hand={"ghost": 50})
+
+
+@case("keyerror_from_price_of_on_a_later_line")
+def _(m):
+    """Unknown item on the last line: KeyError, the earlier lines were not taken."""
+    refused(m, KeyError, "C1", [("food", 1), ("bone", 2), ("ghost", 1)], on_hand={"ghost": 50})
+
+
+# ----------------------------------------------------- get, sales, takings
+
+def three_sales(m):
+    w = World()
+    state = m.new()
+    baskets = [("C1", [("food", 2), ("bone", 1)]), ("C2", [("cat", 1)]),
+               ("C1", [("fish", 3), ("fish", 1), ("leaflet", 2)])]
+    made = [w.sell(m, state, customer, lines) for customer, lines in baskets]
+    expected = [wanted("S%d" % (n + 1), customer, lines)
+                for n, (customer, lines) in enumerate(baskets)]
+    for sale, exp in zip(made, expected):
+        same(sale, exp)
+    return w, state, expected
+
+
+@case("get_returns_the_sale")
+def _(m):
+    """get(state, sale_id) returns the sale."""
+    _, state, expected = three_sales(m)
+    for exp in (expected[1], expected[2], expected[0]):
+        same(m.get(state, exp["id"]), exp, "get(%s)" % exp["id"])
+
+
+@case("get_unknown_is_keyerror")
+def _(m):
+    """get raises KeyError when the sale is unknown."""
+    _, state, _ = three_sales(m)
+    for state_, sale_id in ((state, "S4"), (state, "S0"), (state, "nope"), (m.new(), "S1")):
+        try:
+            m.get(state_, sale_id)
+        except KeyError:
+            continue
+        raise AssertionError("get(%r) did not raise KeyError" % sale_id)
+
+
+@case("sales_in_the_order_made")
+def _(m):
+    """sales(state) returns all sales in the order made."""
+    _, state, expected = three_sales(m)
+    expect(all_sales(m, state) == expected, "sales() is %r" % (all_sales(m, state),))
+
+
+@case("takings_is_the_sum_of_totals")
+def _(m):
+    """takings(state) returns the sum of total_cents."""
+    w, state, expected = three_sales(m)
+    expect(m.takings(state) == 2529 + 15000 + 7996, "takings is %r" % (m.takings(state),))
+    w.sell(m, state, "C3", [("bone", 10)])
+    expect(m.takings(state) == 2529 + 15000 + 7996 + 290, "takings after one more sale")
+
+
+@case("two_states_are_independent")
+def _(m):
+    """The state is all there is: the module holds none, so two states do not mix."""
+    w = World()
+    one, two = m.new(), m.new()
+    w.sell(m, one, "C1", [("food", 1)])
+    w.sell(m, one, "C1", [("food", 1)])
+    expect(all_sales(m, two) == [] and m.takings(two) == 0, "a second state saw the first")
+    same(w.sell(m, two, "C9", [("bone", 1)]), wanted("S1", "C9", [("bone", 1)]))
+    same(w.sell(m, one, "C1", [("cat", 1)]), wanted("S3", "C1", [("cat", 1)]))
+    same(w.sell(m, m.new(), "C1", [("cat", 1)]), wanted("S1", "C1", [("cat", 1)]))
+
+
+# ------------------------------------------------------------------ copies
+
+def scribble(sale):
+    """Change everything about a returned sale that can be changed at the top."""
+    sale["id"] = "S99"
+    sale["customer_id"] = "nobody"
+    sale["total_cents"] = -1
+    sale["extra"] = True
+    sale["lines"] = []
+
+
+def scribble_lines(sale):
+    """Change a returned sale through its lines."""
+    sale["lines"][0]["quantity"] = 99
+    sale["lines"][0]["line_total_cents"] = -1
+    try:
+        sale["lines"].append({"item_id": "x"})
+    except AttributeError:
+        pass
+
+
+def copies(m, damage):
+    w = World()
+    state = m.new()
+    lines = [("food", 2), ("bone", 1)]
+    exp = wanted("S1", "C1", lines)
+    damage(w.sell(m, state, "C1", lines))
+    same(m.get(state, "S1"), exp, "after changing what sell returned, get")
+    damage(m.get(state, "S1"))
+    same(m.get(state, "S1"), exp, "after changing what get returned, get")
+    damage(list(m.sales(state))[0])
+    same(m.get(state, "S1"), exp, "after changing what sales returned, get")
+    expect(all_sales(m, state) == [exp], "sales() changed through a returned sale")
+    expect(m.takings(state) == exp["total_cents"], "takings() changed through a returned sale")
+
+
+@case("returned_sales_are_copies")
+def _(m):
+    """Returned sales are copies: changing one changes nothing recorded."""
+    copies(m, scribble)
+
+
+@case("returned_sales_are_copies_lines_included")
+def _(m):
+    """The lines are part of the sale: changing a returned line changes nothing recorded."""
+    copies(m, scribble_lines)
+
+
+# ---------------------------------------------------------- JSON round trip
+
+@case("json_round_trip_keeps_the_sales")
+def _(m):
+    """The state survives json.loads(json.dumps(state)): get, sales, takings as before."""
+    _, state, expected = three_sales(m)
+    back = roundtrip(state)
+    expect(all_sales(m, back) == expected, "sales() after the round trip")
+    for exp in expected:
+        same(m.get(back, exp["id"]), exp, "get(%s) after the round trip" % exp["id"])
+    expect(m.takings(back) == 2529 + 15000 + 7996, "takings() after the round trip")
+    try:
+        m.get(back, "S4")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("get('S4') after the round trip did not raise KeyError")
+
+
+@case("json_round_trip_then_ids_continue")
+def _(m):
+    """Selling goes on after the round trip: the next id is the next unused one."""
+    w, state, expected = three_sales(m)
+    back = roundtrip(state)
+    lines = [("bone", 2), ("bone", 1)]
+    same(w.sell(m, back, "C4", lines), wanted("S4", "C4", lines))
+    back = roundtrip(roundtrip(back))
+    same(w.sell(m, back, "C5", [("cat", 1)]), wanted("S5", "C5", [("cat", 1)]))
+    expect(all_sales(m, back) == expected + [wanted("S4", "C4", lines),
+                                             wanted("S5", "C5", [("cat", 1)])],
+           "sales() after selling on a round-tripped state")
+    same(m.get(back, "S4"), wanted("S4", "C4", lines), "get(S4)")
+    expect(m.takings(back) == 2529 + 15000 + 7996 + 87 + 15000, "takings()")
+
+
+@case("json_round_trip_of_a_new_state")
+def _(m):
+    """An empty state survives the round trip too."""
+    w = World()
+    state = roundtrip(m.new())
+    expect(all_sales(m, state) == [] and m.takings(state) == 0, "empty after the round trip")
+    same(w.sell(m, state, "C1", [("food", 1)]), wanted("S1", "C1", [("food", 1)]))
+
+
+@case("json_round_trip_then_refusals_still_hold")
+def _(m):
+    """After the round trip a refusal still takes nothing and records nothing."""
+    w, state, expected = three_sales(m)
+    back = roundtrip(state)
+    w.takes.clear()
+    w.on_hand["cat"] = 3
+    for error, lines in ((ValueError, [("food", 1), ("cat", 2), ("cat", 2)]),
+                         (ValueError, [("food", 1), ("bone", True)]),
+                         (KeyError, [("food", 1), ("ghost", 1)])):
+        w.on_hand["ghost"] = 50
+        try:
+            w.sell(m, back, "C1", lines)
+        except error:
+            pass
+        else:
+            raise AssertionError("expected %s for %r" % (error.__name__, lines))
+        expect(w.takes == [], "take was called on a refusal: %r" % w.takes)
+    expect(all_sales(m, back) == expected, "refusals changed sales()")
+    same(w.sell(m, back, "C1", [("cat", 3)]), wanted("S4", "C1", [("cat", 3)]))
+
+
+# ----------------------------------------- rule 3 of docs/petshop/unit.md
+
+def imports_of(path):
+    """Top-level names of every module imported anywhere in the file."""
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename=path)
+    names = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names += [alias.name.split(".")[0] for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                names.append("." * node.level + (node.module or ""))
+            else:
+                names.append(node.module.split(".")[0])
+    return names
+
+
+@rule("rule_standard_library_only")
+def _(path):
+    """Python 3 standard library only."""
+    foreign = sorted({name for name in imports_of(path)
+                      if name.lstrip(".") != name or name not in sys.stdlib_module_names})
+    expect(not foreign, "imports outside the standard library: %s" % ", ".join(foreign))
+
+
+@rule("rule_imports_no_other_unit")
+def _(path):
+    """A unit's module imports no other unit's module."""
+    units = sorted({name for name in imports_of(path) if name.lstrip(".") in OTHER_UNITS})
+    expect(not units, "imports another unit's module: %s" % ", ".join(units))
+
+
+@rule("rule_no_network")
+def _(path):
+    """No network."""
+    network = sorted({name for name in imports_of(path) if name in NETWORK})
+    expect(not network, "imports network modules: %s" % ", ".join(network))
+
+
+@rule("rule_no_line_over_100_characters")
+def _(path):
+    """No line longer than 100 characters."""
+    with open(path, encoding="utf-8") as handle:
+        long = [str(n) for n, line in enumerate(handle.read().splitlines(), 1)
+                if len(line) > MAX_LINE]
+    expect(not long, "lines longer than %d characters: %s" % (MAX_LINE, ", ".join(long)))
+
+
+# ------------------------------------------------------------- the running
+
+def describe(error):
+    text = "%s: %s" % (type(error).__name__, error)
+    return " ".join(text.split())[:300]
+
+
+def child(build_dir, result_path):
+    """Run every case against the build's sales.py; one JSON line per case."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != here]
+    out = open(result_path, "a", encoding="utf-8")
+
+    def report(name, problem):
+        out.write(json.dumps([name, problem]) + "\n")
+        out.flush()
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "sales", os.path.join(build_dir, "sales.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except BaseException as error:
+        report("import_sales", describe(error))
+        return
+    report("import_sales", None)
+    for name, function in CASES:
+        try:
+            function(module)
+        except BaseException as error:
+            report(name, describe(error))
+        else:
+            report(name, None)
+
+
+def run_cases(build_dir):
+    """Results of the child: {case name: None or the problem}."""
+    names = ["import_sales"] + [name for name, _ in CASES]
+    results = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        result_path = os.path.join(tmp, "results")
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        command = [sys.executable, "-B", os.path.abspath(__file__), "--child",
+                   build_dir, result_path]
+        note = "not run: the build crashed or exited"
+        try:
+            subprocess.run(command, cwd=tmp, env=env, timeout=TIMEOUT,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            note = "not run: the build hung (timeout %ds)" % TIMEOUT
+        if os.path.exists(result_path):
+            with open(result_path, encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        name, problem = json.loads(line)
+                    except ValueError:
+                        continue
+                    results[name] = problem
+    if results.get("import_sales"):
+        note = "not run: sales.py could not be imported"
+    return [(name, results.get(name, note)) for name in names]
+
+
+def main(argv):
+    if len(argv) == 4 and argv[1] == "--child":
+        child(argv[2], argv[3])
+        return 0
+    if len(argv) != 2:
+        sys.stderr.write("usage: check <build-dir>\n")
+        return 1
+    build_dir = os.path.abspath(argv[1])
+    path = os.path.join(build_dir, "sales.py")
+    if not os.path.isfile(path):
+        sys.stderr.write("FAIL build_has_sales_py: no sales.py in %s\n" % build_dir)
+        return 1
+    results = []
+    for name, function in RULES:
+        try:
+            function(path)
+        except Exception as error:
+            results.append((name, describe(error)))
+        else:
+            results.append((name, None))
+    results += run_cases(build_dir)
+    failed = [(name, problem) for name, problem in results if problem]
+    for name, problem in failed:
+        sys.stderr.write("FAIL %s: %s\n" % (name, problem))
+    if failed:
+        print("%d of %d cases failed" % (len(failed), len(results)))
+        return 1
+    print("%d cases passed" % len(results))
+    print(os.path.getsize(path))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

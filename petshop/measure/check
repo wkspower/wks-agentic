@@ -1,0 +1,745 @@
+#!/usr/bin/env python3
+"""Measure of the pet shop (docs/petshop/unit.md).
+
+Usage: check <build-dir>      (the build dir holds shop.py and what it needs)
+
+All cases pass: exit 0, last line of stdout = size of the build's shop.py in
+bytes. Any case fails: exit 1, the failing case names on stderr.
+
+The shop is tested from outside, as a program:
+    python3 shop.py --state FILE COMMAND ...
+Every case works on its own copy of the build in a temporary directory, with
+its own state file, so nothing is written in the build dir and cases cannot
+see each other. The rule cases (rule 3) read the sources and never run them.
+"""
+import ast
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+TIMEOUT = 15          # seconds for one run of shop.py
+MAX_LINE = 100
+NETWORK = {
+    "socket", "socketserver", "ssl", "http", "urllib", "ftplib", "smtplib", "smtpd",
+    "poplib", "imaplib", "nntplib", "telnetlib", "xmlrpc", "asyncio", "asyncore",
+    "asynchat", "webbrowser",
+}
+
+HUNG = []             # set once a run of shop.py timed out: the rest is not run
+CASES = []            # (name, function taking a Shop)
+RULES = []            # (name, function taking the build dir)
+
+
+def case(name):
+    def register(function):
+        CASES.append((name, function))
+        return function
+    return register
+
+
+def rule(name):
+    def register(function):
+        RULES.append((name, function))
+        return function
+    return register
+
+
+def expect(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+class Shop:
+    """One copy of the build, a default state file, and the two things a case
+    claims of a command: it is `ok` and prints a line, or it is `refused`."""
+
+    def __init__(self, build_dir, tmp):
+        self.tmp = tmp
+        self.build = os.path.join(tmp, "build")
+        shutil.copytree(build_dir, self.build)
+        self.state = self.path("data", "state.json")
+        self.cwd = os.path.dirname(self.path("cwd", "x"))
+
+    def path(self, *parts):
+        """A path under the case's temporary directory; its directory exists."""
+        full = os.path.join(self.tmp, *parts)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        return full
+
+    def run(self, args, state=None, cwd=None):
+        command = [sys.executable, os.path.join(self.build, "shop.py"),
+                   "--state", state or self.state] + list(args)
+        return self.raw(command, cwd)
+
+    def raw(self, command, cwd=None):
+        env = {"PYTHONDONTWRITEBYTECODE": "1", "PATH": os.environ.get("PATH", ""),
+               "HOME": self.path("home", "x")[:-2], "LC_ALL": "C.UTF-8"}
+        words = ["--state", os.path.basename(command[3])] + command[4:]
+        shown = " ".join(repr(a) if (not a or " " in a) else a for a in words)
+        try:
+            done = subprocess.run(command, cwd=cwd or self.cwd, env=env, timeout=TIMEOUT,
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE)
+        except subprocess.TimeoutExpired:
+            HUNG.append(shown)
+            raise AssertionError("`%s` did not end within %d s" % (shown, TIMEOUT))
+        return (shown, done.returncode, done.stdout.decode("utf-8", "replace"),
+                done.stderr.decode("utf-8", "replace"))
+
+    def ok(self, *args, prints, state=None, cwd=None):
+        """The command succeeds: exit 0 and exactly the one line `prints` on stdout."""
+        shown, code, out, err = self.run(args, state, cwd)
+        expect(code == 0, "`%s` should succeed, exit code %d, stderr %r"
+               % (shown, code, err.strip()[-200:]))
+        expect(out.splitlines() == [str(prints)],
+               "`%s` should print the one line %r, printed %r" % (shown, str(prints), out))
+
+    def refused(self, *args, state=None, cwd=None):
+        """The command is refused: exit 1, a message on stderr, nothing on stdout,
+        and the state file, if there was one, is byte for byte what it was."""
+        path = state or self.state
+        before = read(path)
+        shown, code, out, err = self.run(args, state, cwd)
+        expect(code == 1, "`%s` should be refused with exit code 1, got %d (stdout %r)"
+               % (shown, code, out))
+        expect(out == "", "`%s` refused: nothing on stdout, got %r" % (shown, out))
+        expect(err.strip() != "", "`%s` refused: a message on stderr, got none" % shown)
+        if before is not None:
+            expect(read(path) == before, "`%s` refused: the state file changed" % shown)
+
+
+def read(path):
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def stocked(s, state=None):
+    """A small shop: three items, some of each on hand, one customer (C1)."""
+    s.ok("add-item", "food", "Dog food", "product", "1250", prints="food", state=state)
+    s.ok("add-item", "bone", "Bone", "product", "29", prints="bone", state=state)
+    s.ok("add-item", "cat", "Tabby cat", "animal", "15000", prints="cat", state=state)
+    s.ok("receive", "food", "10", prints=10, state=state)
+    s.ok("receive", "bone", "20", prints=20, state=state)
+    s.ok("receive", "cat", "3", prints=3, state=state)
+    s.ok("register", "Ana", prints="C1", state=state)
+
+
+def untouched(s, state=None):
+    """The small shop is as `stocked` left it: nothing sold, nothing taken."""
+    s.ok("stock", "food", prints=10, state=state)
+    s.ok("stock", "bone", prints=20, state=state)
+    s.ok("stock", "cat", prints=3, state=state)
+    s.ok("takings", prints=0, state=state)
+
+
+# ----------------------------------------------------------------- add-item
+
+@case("add_item_prints_the_id")
+def _(s):
+    """`add-item ID NAME KIND PRICE_CENTS` prints `ID`."""
+    s.ok("add-item", "food", "Dog food", "product", "1250", prints="food")
+    s.ok("add-item", "K-9", "Puppy", "animal", "45000", prints="K-9")
+
+
+@case("add_item_creates_the_state_file")
+def _(s):
+    """The state file is created when missing."""
+    expect(not os.path.exists(s.state), "the case starts without a state file")
+    s.ok("add-item", "food", "Dog food", "product", "1250", prints="food")
+    expect(os.path.isfile(s.state), "the state file was not created")
+
+
+@case("add_item_price_zero_is_valid")
+def _(s):
+    """A valid price is an int of 0 or more (catalog): 0 is accepted and sells for 0."""
+    s.ok("add-item", "leaflet", "Care leaflet", "product", "0", prints="leaflet")
+    s.ok("receive", "leaflet", "5", prints=5)
+    s.ok("register", "Ana", prints="C1")
+    s.ok("sell", "C1", "leaflet=2", prints="S1 0")
+
+
+@case("add_item_duplicate_id_refused")
+def _(s):
+    """Catalog refuses an id that already exists; the first item stays as it was."""
+    stocked(s)
+    s.refused("add-item", "food", "Other food", "product", "1")
+    s.refused("add-item", "food", "Dog food", "product", "1250")
+    s.ok("sell", "C1", "food=1", prints="S1 1250")
+
+
+@case("add_item_bad_kind_refused")
+def _(s):
+    """Catalog refuses a kind that is not `animal` or `product`."""
+    s.ok("add-item", "food", "Dog food", "product", "1250", prints="food")
+    s.refused("add-item", "rex", "Rex", "dog", "100")
+    s.refused("add-item", "rex", "Rex", "Animal", "100")
+    s.refused("add-item", "rex", "Rex", "", "100")
+    s.ok("add-item", "rex", "Rex", "animal", "100", prints="rex")
+
+
+@case("add_item_negative_price_refused")
+def _(s):
+    """Catalog refuses a price below 0."""
+    s.ok("add-item", "food", "Dog food", "product", "1250", prints="food")
+    s.refused("add-item", "rex", "Rex", "animal", "-1")
+    s.refused("add-item", "rex", "Rex", "animal", "-500")
+    s.ok("add-item", "rex", "Rex", "animal", "100", prints="rex")
+
+
+@case("add_item_non_integer_price_refused")
+def _(s):
+    """Money is integer cents: a price that is not an integer is refused."""
+    s.ok("add-item", "food", "Dog food", "product", "1250", prints="food")
+    for price in ("abc", "12.50", "", "12x", "1e3"):
+        s.refused("add-item", "rex", "Rex", "animal", price)
+    s.ok("add-item", "rex", "Rex", "animal", "100", prints="rex")
+
+
+@case("add_item_empty_id_or_name_refused")
+def _(s):
+    """Catalog refuses an id or a name that is not a non-empty string."""
+    s.ok("add-item", "food", "Dog food", "product", "1250", prints="food")
+    s.refused("add-item", "", "Rex", "animal", "100")
+    s.refused("add-item", "rex", "", "animal", "100")
+    s.ok("add-item", "rex", "Rex", "animal", "100", prints="rex")
+
+
+# ------------------------------------------------------------ receive, stock
+
+@case("receive_prints_quantity_now_on_hand")
+def _(s):
+    """`receive ID QUANTITY` prints the quantity now on hand: it adds up."""
+    s.ok("add-item", "food", "Dog food", "product", "1250", prints="food")
+    s.ok("add-item", "cat", "Tabby cat", "animal", "15000", prints="cat")
+    s.ok("receive", "food", "5", prints=5)
+    s.ok("receive", "food", "3", prints=8)
+    s.ok("receive", "cat", "1", prints=1)
+    s.ok("receive", "food", "12", prints=20)
+
+
+@case("stock_prints_quantity_on_hand")
+def _(s):
+    """`stock ID` prints the quantity on hand, and changes nothing."""
+    stocked(s)
+    s.ok("stock", "food", prints=10)
+    s.ok("stock", "cat", prints=3)
+    s.ok("stock", "food", prints=10)
+
+
+@case("stock_is_0_for_an_item_never_received")
+def _(s):
+    """An item of the catalog that was never received has 0 on hand (stock)."""
+    s.ok("add-item", "food", "Dog food", "product", "1250", prints="food")
+    s.ok("stock", "food", prints=0)
+
+
+@case("receive_unknown_item_refused")
+def _(s):
+    """An unknown item is refused by the shop: `receive` of an id not in the catalog."""
+    stocked(s)
+    s.refused("receive", "ghost", "5")
+    s.refused("receive", "Food", "5")
+    untouched(s)
+
+
+@case("stock_unknown_item_refused")
+def _(s):
+    """An unknown item is refused by the shop: `stock` of an id not in the catalog."""
+    stocked(s)
+    s.refused("stock", "ghost")
+    s.refused("stock", "")
+
+
+@case("receive_quantity_0_refused")
+def _(s):
+    """Stock refuses a quantity that is not 1 or more."""
+    stocked(s)
+    s.refused("receive", "food", "0")
+    s.refused("receive", "food", "-4")
+    s.ok("stock", "food", prints=10)
+
+
+@case("receive_non_integer_quantity_refused")
+def _(s):
+    """Stock refuses a quantity that is not an int."""
+    stocked(s)
+    for quantity in ("many", "2.5", "", "3x"):
+        s.refused("receive", "food", quantity)
+    s.ok("stock", "food", prints=10)
+
+
+# ------------------------------------------------------------------ register
+
+@case("register_prints_C1_then_C2")
+def _(s):
+    """`register NAME` prints the new customer id: C1, then C2, and so on."""
+    s.ok("register", "Ana", prints="C1")
+    s.ok("register", "Bruno Dias", prints="C2")
+    s.ok("register", "Carla", prints="C3")
+
+
+@case("register_two_customers_may_share_a_name")
+def _(s):
+    """Two customers may share a name: each gets an id of its own."""
+    s.ok("register", "Ana", prints="C1")
+    s.ok("register", "Ana", prints="C2")
+
+
+@case("register_empty_name_refused")
+def _(s):
+    """Customers refuses a name that is empty; the id it would have had is not used."""
+    s.ok("register", "Ana", prints="C1")
+    s.refused("register", "")
+    s.ok("register", "Bruno", prints="C2")
+
+
+@case("register_whitespace_name_refused")
+def _(s):
+    """Customers refuses a name that is empty once stripped."""
+    s.ok("register", "Ana", prints="C1")
+    s.refused("register", "   ")
+    s.refused("register", " \t ")
+    s.ok("register", "  Bruno  ", prints="C2")
+
+
+# ---------------------------------------------------------------------- sell
+
+@case("sell_prints_sale_id_and_total")
+def _(s):
+    """`sell CUSTOMER_ID ID=QUANTITY` prints `SALE_ID TOTAL_CENTS`."""
+    stocked(s)
+    s.ok("sell", "C1", "food=2", prints="S1 2500")
+
+
+@case("sell_total_over_several_lines")
+def _(s):
+    """The total is the sum over all the lines of quantity x price."""
+    stocked(s)
+    s.ok("sell", "C1", "food=2", "bone=7", "cat=1", prints="S1 %d" % (2500 + 203 + 15000))
+    s.ok("sell", "C1", "bone=1", "food=1", prints="S2 1279")
+
+
+@case("sell_ids_count_up")
+def _(s):
+    """Sale ids are S1, S2, S3 (sales), kept from one run to the next."""
+    stocked(s)
+    s.ok("sell", "C1", "bone=1", prints="S1 29")
+    s.ok("sell", "C1", "bone=2", prints="S2 58")
+    s.ok("sell", "C1", "bone=3", prints="S3 87")
+
+
+@case("sell_takes_the_goods_from_stock")
+def _(s):
+    """Keeps the stock right: what is sold is no longer on hand."""
+    stocked(s)
+    s.ok("sell", "C1", "food=4", "cat=1", prints="S1 20000")
+    s.ok("stock", "food", prints=6)
+    s.ok("stock", "cat", prints=2)
+    s.ok("stock", "bone", prints=20)
+    s.ok("receive", "food", "1", prints=7)
+
+
+@case("sell_to_any_registered_customer")
+def _(s):
+    """Sells to registered customers: the second customer buys too."""
+    stocked(s)
+    s.ok("register", "Bruno", prints="C2")
+    s.ok("sell", "C2", "bone=2", prints="S1 58")
+    s.ok("sell", "C1", "bone=1", prints="S2 29")
+
+
+@case("sell_everything_on_hand_is_allowed")
+def _(s):
+    """Refused only when the quantity EXCEEDS what is on hand: all of it sells."""
+    stocked(s)
+    s.ok("sell", "C1", "cat=3", prints="S1 45000")
+    s.ok("stock", "cat", prints=0)
+    s.refused("sell", "C1", "cat=1")
+
+
+@case("sell_same_item_on_two_lines")
+def _(s):
+    """The same item on two lines: both count, for the total and for the stock."""
+    stocked(s)
+    s.ok("sell", "C1", "cat=2", "food=1", "cat=1", prints="S1 46250")
+    s.ok("stock", "cat", prints=0)
+    s.ok("stock", "food", prints=9)
+
+
+@case("sell_over_stock_refused")
+def _(s):
+    """Sales refuses a quantity that exceeds what is on hand."""
+    stocked(s)
+    s.refused("sell", "C1", "cat=4")
+    s.refused("sell", "C1", "food=11")
+    untouched(s)
+
+
+@case("sell_item_never_received_refused")
+def _(s):
+    """An item of the catalog with nothing on hand cannot be sold."""
+    stocked(s)
+    s.ok("add-item", "fish", "Goldfish", "animal", "1999", prints="fish")
+    s.refused("sell", "C1", "fish=1")
+    untouched(s)
+
+
+@case("sell_over_stock_summed_over_two_lines_refused")
+def _(s):
+    """Each line fits (2 of 3 cats) but the two lines together (4) exceed the stock."""
+    stocked(s)
+    s.refused("sell", "C1", "cat=2", "cat=2")
+    s.refused("sell", "C1", "cat=1", "food=1", "cat=3")
+    untouched(s)
+
+
+@case("sell_unknown_customer_refused")
+def _(s):
+    """An unknown customer is refused."""
+    stocked(s)
+    s.refused("sell", "C2", "food=1")
+    s.refused("sell", "Ana", "food=1")
+    s.refused("sell", "c1", "food=1")
+    s.refused("sell", "", "food=1")
+    untouched(s)
+
+
+@case("sell_before_any_customer_refused")
+def _(s):
+    """With no customer registered, nobody can buy."""
+    s.ok("add-item", "food", "Dog food", "product", "1250", prints="food")
+    s.ok("receive", "food", "10", prints=10)
+    s.refused("sell", "C1", "food=1")
+    s.ok("stock", "food", prints=10)
+
+
+@case("sell_unknown_item_refused")
+def _(s):
+    """An unknown item is refused."""
+    stocked(s)
+    s.refused("sell", "C1", "ghost=1")
+    s.refused("sell", "C1", "FOOD=1")
+    untouched(s)
+
+
+@case("sell_is_whole_or_not_at_all")
+def _(s):
+    """A sale refused for a later line takes nothing of the earlier lines."""
+    stocked(s)
+    s.refused("sell", "C1", "food=2", "bone=3", "ghost=1")
+    s.refused("sell", "C1", "food=2", "bone=3", "cat=4")
+    s.refused("sell", "C1", "food=2", "bone=3", "cat=0")
+    s.refused("sell", "C1", "food=2", "bone=3", "cat")
+    untouched(s)
+
+
+@case("sell_refused_then_next_sale_is_S1")
+def _(s):
+    """A refused sale is not recorded: the next one gets the id it would have had."""
+    stocked(s)
+    s.refused("sell", "C1", "cat=4")
+    s.refused("sell", "C9", "cat=1")
+    s.ok("sell", "C1", "cat=1", prints="S1 15000")
+    s.refused("sell", "C1", "ghost=1")
+    s.ok("sell", "C1", "bone=1", prints="S2 29")
+    s.ok("takings", prints=15029)
+
+
+@case("sell_malformed_line_refused")
+def _(s):
+    """A line that is not `ID=QUANTITY` is a malformed command."""
+    stocked(s)
+    for line in ("food", "food=", "food:2", "food 2"):
+        s.refused("sell", "C1", line)
+    s.refused("sell", "C1", "bone=1", "food")
+    untouched(s)
+
+
+@case("sell_non_integer_quantity_refused")
+def _(s):
+    """A quantity that is not an integer is refused."""
+    stocked(s)
+    for line in ("food=two", "food=1.5", "food=2x"):
+        s.refused("sell", "C1", line)
+    untouched(s)
+
+
+@case("sell_quantity_0_or_less_refused")
+def _(s):
+    """Sales refuses a quantity that is not 1 or more."""
+    stocked(s)
+    s.refused("sell", "C1", "food=0")
+    s.refused("sell", "C1", "food=-1")
+    s.refused("sell", "C1", "bone=1", "food=0")
+    untouched(s)
+
+
+@case("sell_without_lines_refused")
+def _(s):
+    """A sale needs at least one line."""
+    stocked(s)
+    s.refused("sell", "C1")
+    untouched(s)
+
+
+# ------------------------------------------------------------------- takings
+
+@case("takings_is_0_before_any_sale")
+def _(s):
+    """`takings` prints the sum of all sales in cents: 0 when there are none."""
+    stocked(s)
+    s.ok("takings", prints=0)
+
+
+@case("takings_sums_all_sales")
+def _(s):
+    """`takings` prints the sum of all sales in cents."""
+    stocked(s)
+    s.ok("register", "Bruno", prints="C2")
+    s.ok("sell", "C1", "food=2", "bone=3", prints="S1 2587")
+    s.ok("takings", prints=2587)
+    s.ok("sell", "C2", "cat=1", prints="S2 15000")
+    s.ok("sell", "C1", "bone=1", "bone=1", prints="S3 58")
+    s.ok("takings", prints=17645)
+    s.ok("takings", prints=17645)
+
+
+# ---------------------------------------------------------- malformed commands
+
+@case("unknown_command_refused")
+def _(s):
+    """A malformed command: a command the shop does not have."""
+    stocked(s)
+    s.refused("refund", "S1")
+    s.refused("add_item", "rex", "Rex", "animal", "100")
+    s.refused("")
+    untouched(s)
+
+
+@case("missing_command_refused")
+def _(s):
+    """A malformed command: no command at all."""
+    stocked(s)
+    s.refused()
+    untouched(s)
+
+
+@case("missing_arguments_refused")
+def _(s):
+    """A malformed command: fewer arguments than the command takes."""
+    stocked(s)
+    s.refused("add-item")
+    s.refused("add-item", "rex", "Rex", "animal")
+    s.refused("receive")
+    s.refused("receive", "food")
+    s.refused("register")
+    s.refused("sell")
+    s.refused("stock")
+    untouched(s)
+    s.ok("register", "Bruno", prints="C2")
+
+
+@case("extra_arguments_refused")
+def _(s):
+    """A malformed command: more arguments than the command takes."""
+    stocked(s)
+    s.refused("stock", "food", "bone")
+    s.refused("receive", "food", "1", "2")
+    s.refused("add-item", "rex", "Rex", "animal", "100", "200")
+    untouched(s)
+
+
+# ------------------------------------------------------------------ the state
+
+@case("refused_command_without_a_state_file")
+def _(s):
+    """Refusals hold when no state file exists yet, and leave nothing behind them."""
+    s.refused("sell", "C1", "food=1")
+    s.refused("register", " ")
+    s.refused("add-item", "rex", "Rex", "dog", "100")
+    s.refused("refund")
+    s.ok("register", "Ana", prints="C1")
+    s.ok("add-item", "rex", "Rex", "animal", "100", prints="rex")
+    s.ok("stock", "rex", prints=0)
+    s.ok("takings", prints=0)
+
+
+@case("state_persists_from_run_to_run")
+def _(s):
+    """Everything a command did is there for the next run: items, stock, customers, sales."""
+    stocked(s)
+    s.ok("register", "Bruno", prints="C2")
+    s.ok("sell", "C2", "food=1", prints="S1 1250")
+    s.ok("register", "Carla", prints="C3")
+    s.ok("sell", "C3", "food=1", "cat=1", prints="S2 16250")
+    s.ok("stock", "food", prints=8)
+    s.ok("takings", prints=17500)
+    s.refused("add-item", "cat", "Tabby cat", "animal", "15000")
+
+
+@case("two_state_files_are_independent")
+def _(s):
+    """Two state files are two shops: nothing passes from one to the other."""
+    one, two = s.path("one", "shop.json"), s.path("two", "shop.json")
+    stocked(s, state=one)
+    s.ok("sell", "C1", "food=4", prints="S1 5000", state=one)
+    s.refused("sell", "C1", "food=1", state=two)
+    s.ok("register", "Zeca", prints="C1", state=two)
+    s.ok("add-item", "food", "Cat food", "product", "700", prints="food", state=two)
+    s.ok("receive", "food", "2", prints=2, state=two)
+    s.ok("sell", "C1", "food=1", prints="S1 700", state=two)
+    s.ok("takings", prints=700, state=two)
+    s.ok("takings", prints=5000, state=one)
+    s.ok("stock", "food", prints=6, state=one)
+    s.ok("register", "Bruno", prints="C2", state=one)
+
+
+@case("state_is_in_the_file_and_nowhere_else")
+def _(s):
+    """The shop moves with its file: copied elsewhere and run from another
+    directory it goes on as before; with the file gone, it starts from nothing."""
+    stocked(s)
+    s.ok("sell", "C1", "food=4", prints="S1 5000")
+    moved = s.path("elsewhere", "moved shop.json")
+    shutil.copyfile(s.state, moved)
+    os.remove(s.state)
+    other_cwd = os.path.dirname(s.path("other cwd", "x"))
+    s.ok("stock", "food", prints=6, state=moved, cwd=other_cwd)
+    s.ok("register", "Bruno", prints="C2", state=moved, cwd=other_cwd)
+    s.ok("sell", "C2", "cat=1", prints="S2 15000", state=moved, cwd=other_cwd)
+    s.ok("takings", prints=20000, state=moved, cwd=other_cwd)
+    s.refused("sell", "C1", "food=1")
+    s.ok("register", "Zeca", prints="C1")
+    s.ok("takings", prints=0)
+    s.ok("takings", prints=20000, state=moved)
+
+
+@case("state_file_given_as_a_relative_path")
+def _(s):
+    """FILE is a path like any other: relative to where the program is run."""
+    s.ok("register", "Ana", prints="C1", state="shop.json")
+    s.ok("register", "Bruno", prints="C2", state="shop.json")
+    expect(os.path.isfile(os.path.join(s.cwd, "shop.json")), "no shop.json where it was run")
+    s.ok("register", "Carla", prints="C3", state=os.path.join(s.cwd, "shop.json"))
+
+
+# ----------------------------------------- rule 3 of docs/petshop/unit.md
+
+def sources(build_dir):
+    found = []
+    for folder, _, names in os.walk(build_dir):
+        found += [os.path.join(folder, name) for name in names if name.endswith(".py")]
+    return sorted(found)
+
+
+def siblings(build_dir):
+    """Names importable from the build dir itself: its modules and packages."""
+    names = set()
+    for name in os.listdir(build_dir):
+        if name.endswith(".py"):
+            names.add(name[:-3])
+        elif os.path.isdir(os.path.join(build_dir, name)):
+            names.add(name)
+    return names
+
+
+def imports_of(path):
+    """Top-level names of every module imported anywhere in the file
+    (relative imports stay inside the build and are left out)."""
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename=path)
+    names = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names += [alias.name.split(".")[0] for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            names.append(node.module.split(".")[0])
+    return names
+
+
+def offenders(build_dir, wrong):
+    """`file: names` for every source whose imports include names that are `wrong`."""
+    found = []
+    for path in sources(build_dir):
+        names = sorted({name for name in imports_of(path) if wrong(name)})
+        if names:
+            found.append("%s: %s" % (os.path.relpath(path, build_dir), ", ".join(names)))
+    return found
+
+
+@rule("rule_standard_library_only")
+def _(build_dir):
+    """Python 3 standard library only (beside the modules of the build itself)."""
+    own = siblings(build_dir)
+    found = offenders(build_dir,
+                      lambda name: name not in own and name not in sys.stdlib_module_names)
+    expect(not found, "imports outside the standard library: %s" % "; ".join(found))
+
+
+@rule("rule_no_network")
+def _(build_dir):
+    """No network."""
+    found = offenders(build_dir, lambda name: name in NETWORK)
+    expect(not found, "imports network modules: %s" % "; ".join(found))
+
+
+@rule("rule_no_line_over_100_characters")
+def _(build_dir):
+    """No line longer than 100 characters."""
+    found = []
+    for path in sources(build_dir):
+        with open(path, encoding="utf-8") as handle:
+            found += ["%s:%d" % (os.path.relpath(path, build_dir), n)
+                      for n, line in enumerate(handle.read().splitlines(), 1)
+                      if len(line) > MAX_LINE]
+    expect(not found, "lines longer than %d characters: %s" % (MAX_LINE, ", ".join(found)))
+
+
+# ------------------------------------------------------------- the running
+
+def describe(error):
+    text = "%s: %s" % (type(error).__name__, error)
+    return " ".join(text.split())[:400]
+
+
+def main(argv):
+    if len(argv) != 2:
+        sys.stderr.write("usage: check <build-dir>\n")
+        return 1
+    build_dir = os.path.abspath(argv[1])
+    shop = os.path.join(build_dir, "shop.py")
+    if not os.path.isfile(shop):
+        sys.stderr.write("FAIL build_has_shop_py: no shop.py in %s\n" % build_dir)
+        return 1
+    failed = []
+    for name, function in RULES:
+        try:
+            function(build_dir)
+        except Exception as error:
+            failed.append((name, describe(error)))
+    for name, function in CASES:
+        if HUNG:
+            failed.append((name, "not run: the build hung earlier"))
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                function(Shop(build_dir, tmp))
+            except Exception as error:
+                failed.append((name, describe(error)))
+    total = len(RULES) + len(CASES)
+    for name, problem in failed:
+        sys.stderr.write("FAIL %s: %s\n" % (name, problem))
+    if failed:
+        print("%d of %d cases failed" % (len(failed), total))
+        return 1
+    print("%d cases passed" % total)
+    print(os.path.getsize(shop))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -12,7 +12,7 @@ Parent: [`petshop`](../unit.md). Governed by [`principles.md`](../../principles.
    - `sales(state)` returns all sales in the order made.
    - `takings(state)` returns the sum of `total_cents`.
 
-   Returned sales are copies. Offers *build* and *verdict*.
+   Returned sales are copies, their lines included. Functions change the state they are given, in place. Where two refusals apply at once, either may be raised. Offers *build* and *verdict*.
 3. **Rules** — Those of [`petshop`](../unit.md), none added.
 4. **Budget** — cost 2 runs; time 0.4 h; context 8 KB; attempts 2; alternatives 1; attention 0; no-undo cap 0.
 5. **Measure** — `measure/check <build-dir>`: cases that call `sales.py` from the build; passes only if all pass; number: bytes of `sales.py`. Written before the unit by an agent that does not build it; planted wrong modules in `measure/planted/` must each fail. Error (seen by the pet shop, in [`record.md`](../record.md)): unknown, and a limit, until audit cases exist: cases written from this document alone by an agent that sees neither measure nor build.

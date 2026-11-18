@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Enforcer: blocks what breaks a rule of enforcer/unit.md."""
+import hashlib
+import os
+import re
+import subprocess
+import sys
+
+SKIP = ("src",)
+DECL = ["1. **Purpose**", "2. **Interface**", "3. **Rules**",
+        "4. **Budget**", "5. **Measure**", "6. **Judge**"]
+ROWS = ["| 1 Boundary", "| 2 Single source", "| 3 External enforcement",
+        "| 4 Rehearsal before effect", "| 5 Return", "| 6 Selection",
+        "| 7 Escalation"]
+KINDS = [("cost", r"cost (\d+)"), ("time", r"time ([\d.]+) h"),
+         ("context", r"context (\d+) KB"), ("attempts", r"attempts (\d+)"),
+         ("alternatives", r"alternatives (\d+)"),
+         ("attention", r"attention (\d+)"), ("cap", r"cap\D*(\d+)")]
+SUMMED = ("cost", "time")
+breaches = []
+
+
+def breach(rule, unit, what):
+    breaches.append("%s %s %s" % (rule, unit or "root", what))
+
+
+def find_units(tree):
+    units = [""]
+    for base, dirs, files in os.walk(tree):
+        dirs[:] = sorted(d for d in dirs
+                         if d not in SKIP and not d.startswith("."))
+        rel = os.path.relpath(base, tree).replace(os.sep, "/")
+        if rel != "." and "unit.md" in files:
+            units.append(rel)
+    return units
+
+
+def parent_of(unit, units):
+    parts = unit.split("/")
+    while parts:
+        parts.pop()
+        if "/".join(parts) in units:
+            return "/".join(parts)
+    return ""
+
+
+def read(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def git(tree, *args):
+    r = subprocess.run(["git", "-C", tree] + list(args),
+                       capture_output=True, text=True)
+    return r.returncode, r.stdout
+
+
+def first_add(tree, path):
+    code, out = git(tree, "log", "--diff-filter=A", "--no-renames",
+                    "--format=%H", "--reverse", "--", path)
+    lines = out.split()
+    return lines[0] if lines else None
+
+
+def src_hash(src):
+    names = []
+    for base, dirs, files in os.walk(src):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for f in files:
+            full = os.path.join(base, f)
+            names.append((os.path.relpath(full, src).replace(os.sep, "/"),
+                          full))
+    h = hashlib.sha256()
+    for rel, full in sorted(names):
+        h.update(rel.encode("utf-8") + b"\0" + read(full) + b"\0")
+    return h.hexdigest()
+
+
+def executable(path):
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def main():
+    tree = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else
+                           os.path.join(os.path.dirname(__file__), ".."))
+    units = find_units(tree)
+    budgets = {}
+    for u in units:
+        d = os.path.join(tree, u)
+        doc = read(os.path.join(d, "unit.md" if u else "root.md")) or b""
+        lines = doc.decode("utf-8", "replace").splitlines()
+        # doc
+        if not any(l.startswith("Parent:") for l in lines):
+            breach("doc", u, "names no parent")
+        pos = -1
+        for want in DECL:
+            found = [i for i, l in enumerate(lines)
+                     if l.startswith(want) and i > pos]
+            if not found:
+                breach("doc", u, "declaration missing or out of order: " + want)
+                break
+            pos = found[0]
+        for want in ROWS:
+            if not any(l.startswith(want) for l in lines):
+                breach("doc", u, "no row for principle " + want[2:])
+        # budget
+        line = next((l for l in lines if l.startswith(DECL[3])), "")
+        b = {}
+        for kind, rx in KINDS:
+            m = re.search(rx, line)
+            if m:
+                b[kind] = float(m.group(1))
+            else:
+                breach("budget", u, "kind not given: " + kind)
+        budgets[u] = b
+        # context
+        size = len(doc) + len(read(os.path.join(d, "record.md")) or b"")
+        if "context" in b and size > b["context"] * 1024:
+            breach("context", u, "%d bytes over context budget" % size)
+        # interface
+        for name in ("build", "verdict"):
+            if not executable(os.path.join(d, name)):
+                breach("interface", u, name + " missing or not executable")
+        # measure
+        check = os.path.join(d, "measure", "check")
+        planted = os.path.join(d, "measure", "planted")
+        entries = sorted(os.listdir(planted)) if os.path.isdir(planted) else []
+        if not executable(check):
+            breach("measure", u, "measure/check missing or not executable")
+        elif not entries:
+            breach("measure", u, "no planted build")
+        else:
+            for e in entries:
+                try:
+                    code = subprocess.run(
+                        [check, os.path.join(planted, e)],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL, timeout=120).returncode
+                except subprocess.TimeoutExpired:
+                    code = 1
+                except OSError:
+                    code = 0
+                if code == 0:
+                    breach("measure", u, "planted build passes: " + e)
+        src = os.path.join(d, "src")
+        if u and os.path.exists(src):
+            # before
+            m = first_add(tree, u + "/measure")
+            s = first_add(tree, u + "/src")
+            if m is None:
+                breach("before", u, "measure not in the record")
+            elif s is not None:
+                if m == s or git(tree, "merge-base", "--is-ancestor",
+                                 m, s)[0] != 0:
+                    breach("before", u, "measure did not enter before src")
+            # stands
+            h = src_hash(src)
+            last = None
+            text = read(os.path.join(tree, "judge", "stands.tsv")) or b""
+            for l in text.decode("utf-8", "replace").splitlines():
+                f = l.split("\t")
+                if len(f) >= 5 and f[1] == u:
+                    last = f[4]
+            rec = (read(os.path.join(d, "record.md")) or b"").decode(
+                "utf-8", "replace").splitlines()
+            if last != h and ("stood unjudged: " + h) not in rec:
+                breach("stands", u, "src %s was not let stand" % h[:12])
+    # budget shares
+    for u in units:
+        kids = [k for k in units if k and parent_of(k, units) == u]
+        for kind, _ in KINDS:
+            if kind not in budgets[u]:
+                continue
+            if kind in SUMMED:
+                total = sum(budgets[k].get(kind, 0) for k in kids)
+                if total > budgets[u][kind] + 1e-9:
+                    breach("budget", u, "children's %s sums to %g" % (kind, total))
+            else:
+                for k in kids:
+                    if budgets[k].get(kind, 0) > budgets[u][kind]:
+                        breach("budget", k, kind + " looser than the parent's")
+    # answer
+    code, out = git(tree, "log", "--no-renames", "--name-only", "-m",
+                    "--format=%x01%H")
+    for block in out.split("\x01")[1:]:
+        rows = block.split("\n")
+        files = set(r for r in rows[1:] if r)
+        if files & {"principles.md", "root.md"} and \
+                files - {"principles.md", "root.md", "queue.md"}:
+            breach("answer", "root", "commit %s touches more than the answer"
+                   % rows[0][:12])
+    # spend
+    spent = {}
+    text = read(os.path.join(tree, "ledger.tsv")) or b""
+    for l in text.decode("utf-8", "replace").splitlines():
+        if not l.strip() or l.startswith("#"):
+            continue
+        f = l.split("\t")
+        try:
+            spent[f[1]] = spent.get(f[1], 0) + int(f[2])
+        except (IndexError, ValueError):
+            continue
+    for u in units:
+        if u:
+            total = sum(v for k, v in spent.items()
+                        if k == u or k.startswith(u + "/"))
+        else:
+            total = sum(spent.values())
+        if "cost" in budgets[u] and total > budgets[u]["cost"]:
+            breach("spend", u, "%d runs charged, over cost budget" % total)
+    for b in breaches:
+        print(b)
+    return 1 if breaches else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
