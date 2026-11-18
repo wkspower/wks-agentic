@@ -1,0 +1,266 @@
+<title>Pet Shop Tree Report</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column like a ledger page; wide tables and the timeline scroll inside their own frames. */
+:root {
+  --bg: #f7f8fa; --panel: #ffffff; --ink: #14181f; --ink2: #4b5563; --ink3: #6b7280;
+  --rule: #dfe3ea; --accent: #2a78d6;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --chart: #fcfcfb;
+  --ok-bg: #e3f3ea; --ok-ink: #14603c; --todo-bg: #eceef2; --todo-ink: #4b5563; --warn-bg: #fdeedd; --warn-ink: #8a4b0f;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #13161b; --panel: #1b1f26; --ink: #eceef2; --ink2: #b6bcc8; --ink3: #8f96a3;
+  --rule: #2e343e; --accent: #6da7ec;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --chart: #1a1a19;
+  --ok-bg: #173527; --ok-ink: #8fd9b3; --todo-bg: #262b33; --todo-ink: #b6bcc8; --warn-bg: #3a2a17; --warn-ink: #f0bd84;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #13161b; --panel: #1b1f26; --ink: #eceef2; --ink2: #b6bcc8; --ink3: #8f96a3;
+  --rule: #2e343e; --accent: #6da7ec;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --chart: #1a1a19;
+  --ok-bg: #173527; --ok-ink: #8fd9b3; --todo-bg: #262b33; --todo-ink: #b6bcc8; --warn-bg: #3a2a17; --warn-ink: #f0bd84;
+  color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font: 400 16px/1.55 var(--sans); }
+.page { max-width: 920px; margin: 0 auto; padding-block: 40px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 44px; }
+header p.kicker { font: 500 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink3); margin: 0 0 12px; }
+h1 { font: 600 34px/1.15 var(--sans); margin: 0 0 12px; text-wrap: balance; letter-spacing: -.01em; }
+h2 { font: 600 22px/1.25 var(--sans); margin: 0 0 6px; text-wrap: balance; }
+h3 { font: 600 16px/1.3 var(--sans); margin: 22px 0 6px; }
+p { margin: 0 0 10px; max-width: 68ch; }
+.lead { color: var(--ink2); font-size: 17px; }
+section > .sub { color: var(--ink2); margin-bottom: 16px; }
+code, .mono { font-family: var(--mono); font-size: .88em; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--rule);
+  border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; margin-top: 20px; }
+.facts div { background: var(--panel); padding: 14px 16px; min-width: 0; }
+.facts b { display: block; font: 500 24px/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+.facts span { color: var(--ink3); font-size: 13px; }
+.scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+tr:last-child td { border-bottom: 0; }
+th { font: 500 12px/1.3 var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--ink3); white-space: nowrap; }
+td.n, th.n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+tfoot td { font-weight: 600; border-top: 2px solid var(--rule); }
+td ul { margin: 0; padding-left: 18px; }
+td li { margin: 2px 0; }
+.pill { display: inline-block; font: 500 12px/1 var(--mono); padding: 5px 8px; border-radius: 4px; white-space: nowrap; }
+.pill.ok { background: var(--ok-bg); color: var(--ok-ink); }
+.pill.todo { background: var(--todo-bg); color: var(--todo-ink); }
+.pill.warn { background: var(--warn-bg); color: var(--warn-ink); }
+.chart { background: var(--chart); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 8px 8px; position: relative; }
+.chart .inner { overflow-x: auto; }
+.chart svg { display: block; min-width: 720px; width: 100%; height: auto; font-family: var(--sans); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 0 8px 10px; font-size: 13px; color: var(--ink2); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+#tip { position: absolute; pointer-events: none; background: var(--panel); color: var(--ink); border: 1px solid var(--rule);
+  border-radius: 4px; padding: 6px 9px; font-size: 13px; max-width: 260px; box-shadow: 0 2px 10px rgba(0,0,0,.18); }
+#tip b { display: block; font-weight: 600; } #tip span { color: var(--ink2); font-family: var(--mono); font-size: 12px; }
+.bar:focus { outline: 2px solid var(--ink); outline-offset: 1px; }
+.note { color: var(--ink3); font-size: 13.5px; margin-top: 10px; }
+footer { color: var(--ink3); font-size: 13.5px; border-top: 1px solid var(--rule); padding-top: 16px; }
+@media (max-width: 520px) { h1 { font-size: 27px; } }
+</style>
+
+<div class="page">
+<header>
+  <p class="kicker">Autonomy tree · 18 Nov 2026 · branch claude/wizardly-cerf-94l00l</p>
+  <h1>One hour to a judged first result</h1>
+  <p class="lead">The tree went from two documents to seven documented, measured and judged units in about one hour. One pet shop unit, the catalog, is built and standing. The other four pet shop units are specified and testable but not built.</p>
+  <div class="facts">
+    <div><b>61 min</b><span>elapsed, first record to last check (budget 4 h)</span></div>
+    <div><b>8 of 16</b><span>agent runs spent</span></div>
+    <div><b>1 of 5</b><span>pet shop units built</span></div>
+    <div><b>6.50</b><span>root's number: 13 items ÷ 2 correct results (this report is the 13th)</span></div>
+  </div>
+</header>
+
+<section>
+  <h2>Time spent</h2>
+  <p class="sub">Times are UTC and come from commit timestamps and the durations each agent reported. Agent start times are to the nearest minute.</p>
+  <div class="chart">
+    <div class="legend"><span><i style="background:var(--s1)"></i>Coordinating session</span><span><i style="background:var(--s2)"></i>Independent agent run</span><span><i style="background:var(--s3)"></i>Machine check</span></div>
+    <div class="inner"><svg id="gantt" role="img" aria-label="Timeline of the hour: session stages, agent runs and machine checks. The same figures are in the tables below."></svg></div>
+    <div id="tip" hidden></div>
+  </div>
+
+  <h3>By stage</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Stage</th><th>From–to</th><th class="n">Minutes</th><th>What happened</th></tr></thead>
+    <tbody>
+      <tr><td>1 · Ask the person</td><td class="mono">20:24–20:29</td><td class="n">4.6</td><td>Round 1 recorded (10 items), answered "Ok", answer written into <code>root.md</code>. Nothing was built before this.</td></tr>
+      <tr><td>2 · Declare the units</td><td class="mono">20:29–20:34</td><td class="n">4.9</td><td>Seven unit documents, their <code>build</code> and <code>verdict</code> commands, the spend ledger.</td></tr>
+      <tr><td>3 · Measures first</td><td class="mono">20:34–20:55</td><td class="n">21.1</td><td>Four agents wrote the seven measures in parallel. Meanwhile: judge and enforcer drafted outside the record, catalog audit written, two catalog builds made.</td></tr>
+      <tr><td>4 · Build and judge</td><td class="mono">20:55–20:58</td><td class="n">2.7</td><td>Judge and enforcer installed (unjudged, as the principles allow for the first pair). Judge selects the catalog build.</td></tr>
+      <tr><td>5 · Defect loop</td><td class="mono">20:58–21:09</td><td class="n">11.7</td><td>The enforcer's <code>undo</code> failed on first use. Case added to its measure by a separate agent, then the judge let the fix stand.</td></tr>
+      <tr><td>6 · Records</td><td class="mono">21:09–21:10</td><td class="n">0.9</td><td>Unit records, root record, two notices in the queue.</td></tr>
+      <tr><td>7 · Full enforcement run</td><td class="mono">21:10–21:25</td><td class="n">14.5</td><td>Every rule checked on every unit, every planted wrong build rerun. No breach.</td></tr>
+    </tbody>
+    <tfoot><tr><td>Total</td><td class="mono">20:24–21:25</td><td class="n">60.4</td><td>The time before the first record (reading the two documents, composing round 1) was not recorded.</td></tr></tfoot>
+  </table></div>
+
+  <h3>By activity</h3>
+  <p class="sub">Agent minutes add up to more than the clock because runs overlapped.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Activity</th><th class="n">Clock min</th><th class="n">Agent runs</th><th class="n">Agent min</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Asking the person and recording answers</td><td class="n">4.6</td><td class="n">0</td><td class="n">0</td><td>One round, one-word answer.</td></tr>
+      <tr><td>Writing declarations and records</td><td class="n">5.8</td><td class="n">0</td><td class="n">0</td><td>By the coordinating session.</td></tr>
+      <tr><td>Writing measures and planted wrong builds</td><td class="n">21.1</td><td class="n">4</td><td class="n">61.1</td><td>16.3 + 17.5 + 9.1 + 18.2 min. The largest cost by far.</td></tr>
+      <tr><td>Writing audit cases (error source)</td><td class="n">in stage 3</td><td class="n">1</td><td class="n">7.0</td><td>123 cases for catalog.</td></tr>
+      <tr><td>Building the pet shop unit</td><td class="n">in stage 3</td><td class="n">2</td><td class="n">0.7</td><td>Catalog and its blind alternative, as reported by the agents.</td></tr>
+      <tr><td>Building judge and enforcer</td><td class="n">in stage 3</td><td class="n">0</td><td class="n">0</td><td>By the session, while the measures were being written. Not metered separately.</td></tr>
+      <tr><td>Judging</td><td class="n">2.7</td><td class="n">0</td><td class="n">0</td><td>Mechanical: seconds per decision.</td></tr>
+      <tr><td>Correcting a defect the tree found in itself</td><td class="n">11.7</td><td class="n">1</td><td class="n">9.2</td><td>Measure case first, then the fix.</td></tr>
+      <tr><td>Machine verification</td><td class="n">14.5</td><td class="n">0</td><td class="n">0</td><td>Plus about 5 min of re-proving planted shops inside stage 3.</td></tr>
+    </tbody>
+    <tfoot><tr><td>Total</td><td class="n">60.4</td><td class="n">8</td><td class="n">78.0</td><td>Budget: 4 h, 16 runs.</td></tr></tfoot>
+  </table></div>
+</section>
+
+<section>
+  <h2>Pet shop features and capabilities</h2>
+  <p class="sub">Scope decided in round 1 (Q9): sell animals and products to registered customers and keep the stock right. Python 3 standard library, command line, state in a local file; no network, no real money, no real personal data.</p>
+
+  <h3>For the product owner: what works today</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Capability</th><th>Status</th><th>What that means</th></tr></thead>
+    <tbody>
+      <tr><td>Keep a catalog of what the shop sells</td><td><span class="pill ok">✓ built</span></td><td>Add an animal or a product with an id, a name and a price in cents. Look one up. Change a price. List everything in id order. Duplicate ids, empty names, unknown kinds and invalid prices are refused, and a refusal changes nothing.</td></tr>
+      <tr><td>Track stock</td><td><span class="pill todo">○ specified, not built</span></td><td>Receive and remove quantities per item; never below zero.</td></tr>
+      <tr><td>Register customers</td><td><span class="pill todo">○ specified, not built</span></td><td>Name only; ids C1, C2… never reused; search by part of a name.</td></tr>
+      <tr><td>Sell</td><td><span class="pill todo">○ specified, not built</span></td><td>A sale of several lines to one customer, with the right total, taken from stock wholly or not at all.</td></tr>
+      <tr><td>Run the shop from the command line</td><td><span class="pill todo">○ specified, not built</span></td><td><code>add-item</code>, <code>receive</code>, <code>register</code>, <code>sell</code>, <code>stock</code>, <code>takings</code>, with the state saved to a file.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Nothing can be used by a shopkeeper yet. The catalog is a library module with no command line of its own; the usable product appears only when the shop unit is built on top of the four modules.</p>
+
+  <h3>For the architect: what was built</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Unit</th><th>Built</th><th>Contract</th><th class="n">Cases</th><th class="n">Planted</th></tr></thead>
+    <tbody>
+      <tr><td><code>catalog.py</code></td><td><span class="pill ok">✓ 42 lines, 1190 B</span></td><td><code>new</code>, <code>add</code>, <code>get</code>, <code>set_price</code>, <code>items</code>. <code>ValueError</code> for invalid input, <code>KeyError</code> for unknown ids. Price must be exactly an <code>int</code> ≥ 0 (a <code>bool</code> is refused). No imports.</td><td class="n">18 ×2</td><td class="n">23</td></tr>
+      <tr><td><code>stock.py</code></td><td><span class="pill todo">○</span></td><td><code>new</code>, <code>on_hand</code>, <code>receive</code>, <code>remove</code>. Quantities are ints ≥ 1; removing more than on hand is refused.</td><td class="n">12 ×2</td><td class="n">17</td></tr>
+      <tr><td><code>customers.py</code></td><td><span class="pill todo">○</span></td><td><code>new</code>, <code>register</code>, <code>get</code>, <code>find</code>. Names stripped; ids sequential across save and reload.</td><td class="n">16 ×2</td><td class="n">22</td></tr>
+      <tr><td><code>sales.py</code></td><td><span class="pill todo">○</span></td><td><code>new</code>, <code>sell</code>, <code>get</code>, <code>sales</code>, <code>takings</code>. Receives <code>price_of</code>, <code>available</code> and <code>take</code> as callables. Quantities of one item are summed across lines before anything is taken.</td><td class="n">56</td><td class="n">24</td></tr>
+      <tr><td><code>shop.py</code></td><td><span class="pill todo">○</span></td><td>Six commands; one line on stdout and exit 0 on success; exit 1, message on stderr, nothing on stdout and state file unchanged on refusal.</td><td class="n">52</td><td class="n">25</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">"×2" means every case runs twice: once plainly and once with the state passed through JSON at each step.</p>
+
+  <h3>Design decisions that hold for all five units</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Decision</th><th>Consequence</th></tr></thead>
+    <tbody>
+      <tr><td>Modules hold no state</td><td>Every function takes the state as its first argument. The state is created only by <code>new()</code>, is opaque to callers, and survives a JSON round trip, so the shop can persist it without knowing its shape.</td></tr>
+      <tr><td>No unit imports another</td><td>Sales gets prices and stock through three callables supplied by the shop. Each module can be built, tested and replaced alone; the measures check imports with <code>ast</code>.</td></tr>
+      <tr><td>Refusals are atomic</td><td>A refused call changes nothing, at module level and at the command line (state file byte-identical).</td></tr>
+      <tr><td>Returned data are copies</td><td>Callers cannot corrupt the state by editing what they were given.</td></tr>
+      <tr><td>Money is integer cents</td><td>No floats anywhere in prices or totals.</td></tr>
+      <tr><td>The shop is tested as a black box</td><td>Its measure runs <code>python3 shop.py --state FILE …</code> from outside, so internal structure is free to change.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Evidence for the catalog</h3>
+  <div class="scroll"><table>
+    <tbody>
+      <tr><td>Selection</td><td>Two agents built it independently from the document and the check. Both passed. The judge kept the smaller: 1190 bytes against 1264.</td></tr>
+      <tr><td>Measure</td><td>36 case runs pass; all 23 planted wrong catalogs fail.</td></tr>
+      <tr><td>Independent audit</td><td>123 cases written from the document alone by an agent that saw neither the measure nor the builds. Both builds pass all 123. Measure error: 0 wrong passes in 2 builds, 0 wrong fails in 23.</td></tr>
+      <tr><td>Open points</td><td>Three behaviours the document left open were decided by the builders (both decided alike). They are not yet rules in the document.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <h2>Components driven by the principles and the root</h2>
+  <p class="sub">None of this is pet shop functionality. It is the machinery that lets units be built, checked and selected without a person reading the work.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Component</th><th>What it is</th><th>Comes from</th><th>State</th></tr></thead>
+    <tbody>
+      <tr><td>Queue<br><code>queue.md</code></td><td>The one place where anything is put before the person: 10 decisions in round 1, 3 notices since (this report is the third).</td><td>Principle 7; root's interface</td><td><span class="pill warn">3 items waiting</span></td></tr>
+      <tr><td>Root budget and check<br><code>root.md</code></td><td>Seven budget values and the definition of the root's number, written from the person's answer.</td><td>Declarations 4 and 5</td><td><span class="pill ok">✓ recorded</span></td></tr>
+      <tr><td>Root measure<br><code>measure/check</code>, <code>./verdict</code></td><td>Computes items ÷ correct results and compares with the previous result. Proven on 7 trees that must pass and 11 planted wrong trees.</td><td>Declaration 5; Q1</td><td><span class="pill warn">fails until Q11–Q13 answered</span></td></tr>
+      <tr><td>Unit documents ×7</td><td>Six declarations and a row per principle for judge, enforcer, pet shop, catalog, stock, customers, sales.</td><td>How the tree grows</td><td><span class="pill ok">✓ all present</span></td></tr>
+      <tr><td><code>build</code> and <code>verdict</code> ×8</td><td>The same two commands on every unit and on the root, run from the record alone.</td><td>Declaration 2</td><td><span class="pill ok">✓</span></td></tr>
+      <tr><td>Measures ×8</td><td>An executable check per unit, written before the unit by an agent that does not build it, each proven by planted wrong builds: 172 in total.</td><td>Declaration 5</td><td><span class="pill ok">✓ every planted build fails</span></td></tr>
+      <tr><td>Judge<br><code>judge/judge</code></td><td>94 lines. Runs the unit's own check on copies of the offered builds, lets the best stand only if it beats what exists, installs it and logs the decision. Refuses when fewer alternatives are offered than the budget states.</td><td>Declaration 6; principle 6</td><td><span class="pill ok">✓ 41 cases, 25 planted</span></td></tr>
+      <tr><td>Enforcer<br><code>enforcer/enforce</code></td><td>Checks nine rules on every unit: document shape, budget shares, context size, interface, measure proven, measure before build, build is what the judge let stand, answers recorded alone, spend within budget.</td><td>Principle 3</td><td><span class="pill ok">✓ 90 cases, 25 planted; no breach</span></td></tr>
+      <tr><td>Undo proof<br><code>enforcer/undo</code></td><td>Reverts a change in a clone and confirms everything it touched is back as it was.</td><td>Principle 5</td><td><span class="pill warn">works; found a defect in the judge</span></td></tr>
+      <tr><td>Blind alternative</td><td>A second build of each change, made without sight of the first, for the judge to compare.</td><td>Principle 6; budget "alternatives 1"</td><td><span class="pill ok">✓ used for catalog</span></td></tr>
+      <tr><td>Audit cases<br><code>petshop/audit/</code></td><td>An independent source for counting a measure's wrong passes and wrong fails.</td><td>"Whoever gives a measure owns its error"</td><td><span class="pill warn">catalog only</span></td></tr>
+      <tr><td>Spend ledger<br><code>ledger.tsv</code></td><td>Every agent run, charged to a unit; the enforcer checks it against each budget.</td><td>Declaration 4</td><td><span class="pill ok">✓ 8 runs</span></td></tr>
+      <tr><td>Records ×8</td><td>State, how each unit came to stand, limits, what was tried and rejected, what is due next.</td><td>"Whoever arrives resumes from the record alone"</td><td><span class="pill ok">✓</span></td></tr>
+      <tr><td>Rehearsal outside the record</td><td>Builders work in directories outside the repository and are given only the document and the check. Only the judge installs.</td><td>Principles 1 and 4</td><td><span class="pill warn">by procedure, not enforced</span></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>What the machinery caught, and what it does not cover</h3>
+  <div class="scroll"><table>
+    <tbody>
+      <tr><td>Caught</td><td>The enforcer's own <code>undo</code> was broken while its verdict passed. The measure gained 20 cases and 8 planted wrong undos before the fix was allowed to stand.</td></tr>
+      <tr><td>Caught</td><td>The repaired <code>undo</code> showed that an earlier installation cannot be reverted once the judge has logged a later one, because all decisions share one file. Recorded as a limit; not fixed.</td></tr>
+      <tr><td>Caught</td><td>Measure writers reported gaps in the documents; five became rules before any build.</td></tr>
+      <tr><td>Not covered</td><td>One session gave every unit its declarations and built the judge and the enforcer. The other agents were separate runs of the same model.</td></tr>
+      <tr><td>Not covered</td><td>Nothing forces a call to the enforcer, and nothing verifies who made a change.</td></tr>
+      <tr><td>Not covered</td><td>Error numbers are unknown for the enforcer and for every measure except catalog's.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>Source: the repository record on branch <code>claude/wizardly-cerf-94l00l</code> — <code>record.md</code>, <code>queue.md</code>, <code>ledger.tsv</code>, <code>judge/stands.tsv</code> and the commit history.</footer>
+</div>
+
+<script>
+(function () {
+  // minutes since 20:24 UTC
+  var rows = [
+    ["Session", "s1", [[0.3, 4.9, "1 · Ask the person"], [4.9, 9.8, "2 · Declare the units"], [9.8, 30.9, "3 · Measures first"], [30.9, 33.6, "4 · Build and judge"], [33.6, 45.3, "5 · Defect loop"], [45.3, 46.2, "6 · Records"], [46.2, 60.6, "7 · Full enforcement run"]]],
+    ["Measures: root, judge", "s2", [[9.5, 25.8, "Agent: measures of root and judge"]]],
+    ["Measure: enforcer", "s2", [[9.5, 27.0, "Agent: measure of the enforcer"]]],
+    ["Measures: catalog, stock, customers", "s2", [[9.5, 18.6, "Agent: three unit measures"]]],
+    ["Measures: sales, shop", "s2", [[9.5, 27.7, "Agent: measures of sales and the shop"]]],
+    ["Audit cases: catalog", "s2", [[10.2, 17.2, "Agent: 123 audit cases"]]],
+    ["Catalog build + alternative", "s2", [[18.1, 18.5, "Two agents: catalog and its blind alternative"]]],
+    ["Undo cases for enforcer", "s2", [[34.3, 43.5, "Agent: 20 undo cases, 8 planted"]]],
+    ["Machine checks", "s3", [[25.9, 30.9, "Re-proving planted shops"], [46.2, 60.6, "Enforcer over the whole tree"]]]
+  ];
+  var W = 880, L = 232, R = 16, T = 8, RH = 30, B = 34, max = 62;
+  var H = T + rows.length * RH + B, pw = W - L - R;
+  var x = function (m) { return L + m / max * pw; };
+  var clock = function (m) { var t = 24 + m, h = 20 + Math.floor(t / 60), mm = Math.floor(t % 60); return h + ":" + (mm < 10 ? "0" : "") + mm; };
+  var svg = document.getElementById("gantt"), ns = "http://www.w3.org/2000/svg";
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  function el(n, a, txt) { var e = document.createElementNS(ns, n); for (var k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; svg.appendChild(e); return e; }
+  for (var m = 6; m <= 61; m += 10) {
+    el("line", { x1: x(m), x2: x(m), y1: T, y2: H - B + 4, stroke: "var(--rule)", "stroke-width": 1 });
+    el("text", { x: x(m), y: H - B + 20, "text-anchor": "middle", "font-size": 12, fill: "var(--ink3)", "font-family": "var(--mono)" }, clock(m));
+  }
+  var tip = document.getElementById("tip"), box = tip.parentNode;
+  rows.forEach(function (r, i) {
+    var y = T + i * RH;
+    el("text", { x: L - 10, y: y + RH / 2 + 4, "text-anchor": "end", "font-size": 13, fill: "var(--ink2)" }, r[0]);
+    r[2].forEach(function (s) {
+      var w = Math.max(x(s[1]) - x(s[0]) - 2, 4);
+      var b = el("rect", { x: x(s[0]) + 1, y: y + 7, width: w, height: RH - 14, rx: 3, fill: "var(--" + r[1] + ")", class: "bar", tabindex: 0 });
+      var label = s[2], mins = (s[1] - s[0]).toFixed(1) + " min · " + clock(s[0]) + "–" + clock(s[1]);
+      b.setAttribute("aria-label", label + ", " + mins);
+      if (i === 0 && w > 26) el("text", { x: x(s[0]) + 1 + w / 2, y: y + RH / 2 + 4, "text-anchor": "middle", "font-size": 12, "font-weight": 600, fill: "#fff", "pointer-events": "none" }, label.charAt(0));
+      function show(ev) {
+        tip.innerHTML = ""; var t = document.createElement("b"); t.textContent = label; var d = document.createElement("span"); d.textContent = mins; tip.appendChild(t); tip.appendChild(d);
+        tip.hidden = false;
+        var bb = box.getBoundingClientRect(), rb = b.getBoundingClientRect();
+        var left = Math.min(Math.max(rb.left - bb.left, 4), bb.width - tip.offsetWidth - 4);
+        tip.style.left = left + "px"; tip.style.top = (rb.bottom - bb.top + 6) + "px";
+      }
+      b.addEventListener("mouseenter", show); b.addEventListener("focus", show);
+      b.addEventListener("mouseleave", function () { tip.hidden = true; }); b.addEventListener("blur", function () { tip.hidden = true; });
+    });
+  });
+})();
+</script>

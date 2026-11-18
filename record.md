@@ -11,13 +11,13 @@ its document, its measure and its judge. Correct results: 2.
 | petshop/stock, customers, sales | not built | |
 | petshop | not built | |
 
-**The number** (`./verdict`): 12 items ÷ 2 correct results = 6.00; it was
-10.00 at the first result. The verdict fails while Q11 and Q12 wait: 2
+**The number** (`./verdict`): 13 items ÷ 2 correct results = 6.50; it was
+10.00 at the first result. The verdict fails while Q11 to Q13 wait: 3
 items waiting against 0 at the previous result. It passes once they are
 answered in the record.
 
 **Spend** (`ledger.tsv`): 8 of 16 runs; about 1 h of 4. Attention after
-round 1: 2 items for 2 results, budget 2 per result. Effects without undo: 0.
+round 1: 3 items for 2 results, budget 2 per result. Effects without undo: 0.
 
 **Error of what the root gave.**
 - Judge, source: the audit cases of the judged unit (`petshop/audit/`).
@@ -44,7 +44,7 @@ stand. Gaps the measure writers found in documents became rules there.
 **Tried and rejected.** Nothing at this level.
 
 **Due next**, in order:
-1. Q11 and Q12 answered, so the verdict passes.
+1. Q11 to Q13 answered, so the verdict passes.
 2. Judge: any stand undoable alone (about 3 runs; needs budget).
 3. Build stock, customers, sales, then the shop (8 runs, in budget).
 4. Audit cases for those four and a source for the enforcer's error
