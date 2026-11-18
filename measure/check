@@ -8,6 +8,9 @@ Number = items in <tree>/queue.md / correct results.
   item            one heading `### Q<n> | <kind> | asked=<time> | answered=<time or ->`
                   (times UTC, YYYY-MM-DDTHH:MMZ).  It waits at time t when
                   asked <= t and it is unanswered (`-`) or answered > t.
+                  A heading whose kind is exactly `page` (a page the person
+                  asks for) is not an item: it is never counted and never
+                  waits, answered or not.  Every other kind is an item.
   stands          every `*.tsv` file under <tree>/judge/stands/ (at any depth)
                   holds the lines of one unit: `judge/stands/shop/alpha.tsv`
                   those of unit `shop/alpha`.  Every line of a file must name
@@ -46,7 +49,8 @@ class Unreadable(Exception):
 
 
 def read_items(tree):
-    """[(asked, answered or None)] for every item heading of queue.md."""
+    """[(asked, answered or None)] for every item heading of queue.md.
+    A heading of kind `page` is read like any other but is not an item."""
     path = os.path.join(tree, "queue.md")
     try:
         with open(path, encoding="utf-8") as f:
@@ -64,6 +68,8 @@ def read_items(tree):
         asked, answered = m.group(3), m.group(4)
         if not TIME.match(asked) or not (answered == "-" or TIME.match(answered)):
             raise Unreadable("queue.md line %d: a time that is not YYYY-MM-DDTHH:MMZ" % n)
+        if m.group(2) == "page":
+            continue
         items.append((asked, None if answered == "-" else answered))
     return items
 

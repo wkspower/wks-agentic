@@ -28,6 +28,9 @@ REASON = {
     "result-lost-number-rises": "number rose",
     "stands-file-names-another-unit": "not the file's unit",
     "stand-only-in-old-shared-file": "unknown",
+    "unanswered-notice-grows-queue": "queue grew",
+    "kind-pages-is-an-item": "number rose",
+    "kind-capital-page-is-an-item": "queue grew",
 }
 
 
