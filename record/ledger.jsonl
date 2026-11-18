@@ -1,1 +1,2 @@
 {"id": 1, "time": "2026-11-18T19:12:11Z", "unit": "tree/petshop", "kind": "give", "by": "tree/judge", "verdict": "fail", "judge": "refuse", "attempt": 1, "reasons": ["guard: declaration without value: Purpose"], "number": null}
+{"id": 2, "time": "2026-11-18T19:12:16Z", "unit": "tree/petshop", "kind": "give", "by": "tree/judge", "verdict": "none", "judge": "stand", "number": null, "commit": "85af547ba29c48302794a44afc12a5f496c744e7", "undo": "python3 tree/judge/work/judge.py --undo ID 'reason'  (git revert 85af547ba29c)"}
