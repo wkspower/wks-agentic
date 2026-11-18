@@ -1,0 +1,7 @@
+#!/bin/sh
+# build: from the record alone, a fresh copy of this unit's build in a new
+# directory, whose path it prints. Usage: build [<out-dir>]
+cd "$(dirname "$0")" || exit 1
+[ -d src ] || { echo "not built yet: $(basename "$PWD") has no src" >&2; exit 1; }
+out=${1:-$(mktemp -d)}
+mkdir -p "$out" && cp -R src/. "$out"/ && echo "$out"

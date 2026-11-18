@@ -1,0 +1,5 @@
+#!/bin/sh
+# verdict of the root: runs the root's measure (root.md, declaration 5) on
+# the record. Pass: exit 0, the number on the last line.
+cd "$(dirname "$0")" || exit 1
+exec measure/check .

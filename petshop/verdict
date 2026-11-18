@@ -1,0 +1,7 @@
+#!/bin/sh
+# verdict: runs this unit's measure on a fresh build; pass (exit 0, the
+# number on the last line) or fail.
+cd "$(dirname "$0")" || exit 1
+out=$(./build) || exit 1
+measure/check "$out"; status=$?
+rm -rf "$out"; exit $status

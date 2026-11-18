@@ -1,0 +1,15 @@
+#!/bin/sh
+# build of the root: checks the rules, then builds every unit from the record
+# alone. Exit 0 when no rule is broken and every unit that has a build builds.
+cd "$(dirname "$0")" || exit 1
+enforcer/enforce . || { echo "build: rules broken, nothing built" >&2; exit 1; }
+status=0
+for doc in $(find . -name unit.md -not -path '*/measure/*' -not -path '*/audit/*' | sort); do
+  unit=$(dirname "$doc")
+  if [ -d "$unit/src" ]; then
+    out=$("$unit/build") && rm -rf "$out" && echo "built      $unit" || { echo "FAILED     $unit"; status=1; }
+  else
+    echo "not built  $unit"
+  fi
+done
+exit $status

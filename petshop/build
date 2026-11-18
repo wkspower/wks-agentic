@@ -1,0 +1,11 @@
+#!/bin/sh
+# build: from the record alone, shop.py and the modules of the four units
+# assembled in a new directory, whose path it prints. Usage: build [<out-dir>]
+cd "$(dirname "$0")" || exit 1
+[ -d src ] || { echo "not built yet: petshop has no src" >&2; exit 1; }
+out=${1:-$(mktemp -d)}
+mkdir -p "$out" && cp -R src/. "$out"/ || exit 1
+for unit in catalog stock customers sales; do
+  "$unit/build" "$out" >/dev/null || exit 1
+done
+echo "$out"
