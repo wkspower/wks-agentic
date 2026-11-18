@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Measure of `petshop`. usage: check <tree> <work>
+The verdict of every part, then cases across the parts through units/petshop/run."""
+import subprocess
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from opcheck import Shop, Cases, ok, err, fresh, listing
+
+tree, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+here = os.path.dirname(os.path.abspath(__file__))
+data, c = fresh(work), Cases()
+parts = sorted(p for p in os.listdir(here) if os.path.exists(os.path.join(here, p, "check")))
+c.add("the shop has its four parts", parts == ["appointments", "customers", "sales", "stock"], parts)
+for p in parts:
+    r = subprocess.run([os.path.join(here, p, "check"), tree, data("part-" + p)], capture_output=True, text=True)
+    c.add(f"verdict of {p} passes", r.returncode == 0, r.stdout[-200:])
+before = listing(os.path.join(tree, "units/petshop"))
+s = Shop(os.path.join(tree, "units/petshop/run"), data("shop"), PETSHOP_TODAY="2026-12-01")
+who = s("customers.add", name="Ana", phone="82 99911-2233")
+pet = s("customers.pet_add", customer=who.get("id"), name="Thor", species="dog")
+c.add("register a customer and a pet", ok(who) and ok(pet), [who, pet])
+c.add("book a bath for that pet", ok(s("appointments.book", pet=pet.get("id"), service="bath", date="2026-12-03", time="10:00")))
+c.add("PLANT-LIKE no appointment for a pet the shop does not know", err(s("appointments.book", pet=999999, service="bath", date="2026-12-03", time="11:00"), "not_found"))
+item = s("stock.product_add", name="Ração", price_cents=1000, quantity=3)
+sale = s("sales.sell", items=[{"product": item.get("id"), "quantity": 2}], customer=who.get("id"))
+c.add("sell at the counter", ok(item) and ok(sale) and sale.get("total_cents") == 2000, [item, sale])
+left = lambda: s("stock.get", id=item.get("id")).get("product", {}).get("quantity")
+c.add("the sale left the stock lower", left() == 1)
+c.add("PLANT-LIKE the counter cannot sell what the stock lacks", err(s("sales.sell", items=[{"product": item.get("id"), "quantity": 2}]), "insufficient") and left() == 1)
+day = s("sales.day", date="2026-12-01")
+c.add("the day's sales add up", ok(day) and day.get("total_cents") == 2000, day)
+c.add("unknown operation", err(s("nothing.here"), "unknown_op"))
+c.add("nothing written outside the data directory", listing(os.path.join(tree, "units/petshop")) == before)
+c.finish()
