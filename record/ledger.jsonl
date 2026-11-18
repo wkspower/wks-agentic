@@ -1,0 +1,1 @@
+{"id": 1, "time": "2026-11-18T19:12:11Z", "unit": "tree/petshop", "kind": "give", "by": "tree/judge", "verdict": "fail", "judge": "refuse", "attempt": 1, "reasons": ["guard: declaration without value: Purpose"], "number": null}
