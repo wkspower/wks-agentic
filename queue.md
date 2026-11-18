@@ -81,3 +81,17 @@ Recommended: A. Strictest: A. Waiting costs: no pet shop unit can be given a pur
 - B. As A, and the tree opens a pull request to `develop` when a unit stands.
 
 Recommended: A. Strictest: A. Waiting costs: no effect anywhere.
+
+## After round 1
+
+### Q11 | notice | asked=2026-11-18T21:10Z | answered=-
+**To judge by reading: change `d5bfdef`**, which writes your answer "Ok"
+into `root.md` (budget values, executable check) and `queue.md`, and
+holds nothing else. Options: A. it stands. B. it does not; say what to
+restore. Recommended: A. Waiting costs: nothing stops; if B, every unit
+returns to its state before the change.
+
+### Q12 | notice | asked=2026-11-18T21:10Z | answered=-
+**Report of a result: catalog stands**, selected by the judge over one
+alternative, with the root's number and the work due next
+([`record.md`](record.md)). Options: A. read. Waiting costs: nothing stops.
