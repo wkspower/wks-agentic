@@ -1,0 +1,729 @@
+#!/usr/bin/env python3
+"""Independent audit of an enforcer build.  Usage: check <build-dir>
+
+Every case follows from a sentence of docs/rules.md or of the Interface in
+docs/enforcer.md (hash of src: docs/judge.md).  Fixture trees are real git
+repositories made in a temp dir.  One line per case, then <passed>/<total>.
+"""
+import concurrent.futures
+import hashlib
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+TIMEOUT = 40
+ID = ['-c', 'user.name=Audit', '-c', 'user.email=audit@example.invalid',
+      '-c', 'commit.gpgsign=false', '-c', 'core.autocrlf=false']
+
+
+class Fail(Exception):
+    pass
+
+
+def make_env(home):
+    e = dict(os.environ)
+    for k in list(e):
+        if k.startswith('GIT_'):
+            del e[k]
+    e.update(HOME=home, XDG_CONFIG_HOME=os.path.join(home, '.config'),
+             GIT_CONFIG_NOSYSTEM='1', GIT_TERMINAL_PROMPT='0',
+             GIT_AUTHOR_NAME='Audit', GIT_AUTHOR_EMAIL='audit@example.invalid',
+             GIT_COMMITTER_NAME='Audit', GIT_COMMITTER_EMAIL='audit@example.invalid',
+             LC_ALL='C', PYTHONDONTWRITEBYTECODE='1')
+    return e
+
+
+ENV = None
+HUNG = {}
+
+
+def git(d, *args, date=None):
+    env = dict(ENV)
+    if date is not None:
+        env['GIT_AUTHOR_DATE'] = env['GIT_COMMITTER_DATE'] = '%d +0000' % date
+    r = subprocess.run(['git'] + ID + ['-C', d] + list(args), capture_output=True, env=env, timeout=60)
+    if r.returncode != 0:
+        raise RuntimeError('fixture git %s: %s' % (' '.join(args), r.stderr.decode('utf-8', 'replace')))
+    return r.stdout.decode('utf-8', 'replace')
+
+
+def run_build(exe, args, cwd):
+    """Run a build executable; returns (rc, stdout lines)."""
+    if not os.path.isfile(exe):
+        raise Fail('%s is missing' % os.path.basename(exe))
+    if HUNG.get(exe, 0) >= 2:   # do not wait again and again for a build that hangs
+        raise Fail('%s not run: it timed out in earlier cases' % os.path.basename(exe))
+    try:
+        r = subprocess.run([exe] + args, cwd=cwd, env=ENV, stdin=subprocess.DEVNULL,
+                           capture_output=True, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        HUNG[exe] = HUNG.get(exe, 0) + 1
+        raise Fail('%s timed out after %d s' % (os.path.basename(exe), TIMEOUT))
+    except OSError as e:
+        raise Fail('%s cannot be run: %s' % (os.path.basename(exe), e))
+    return r.returncode, r.stdout.decode('utf-8', 'replace').splitlines()
+
+
+# ---------------------------------------------------------------- fixtures
+
+ROWS = ['1 Boundary', '2 Single source', '3 External enforcement', '4 Rehearsal before effect',
+        '5 Return', '6 Selection', '7 Escalation']
+
+# name: (parent shown in the doc, cost, time, context, attempts, alternatives, attention, cap)
+UNITS = {
+    'root':             ('none (this is the root)', 10, '1', 16, 10, 2, 3, 1),
+    'alpha':            ('root', 6, '0.5', 8, 2, 1, 3, 1),
+    'alpha/beta':       ('alpha', 3, '0.25', 8, 2, 1, 0, 0),
+    'alpha/misc/delta': ('alpha', 3, '0.25', 8, 2, 0, 3, 1),
+    'group/gamma':      ('root', 4, '0.25', 16, 10, 2, 3, 1),
+    'zeta':             ('root', 0, '0.25', 2, 2, 0, 0, 0),
+}
+
+
+def doc(name):
+    parent, c, t, x, a, al, at, cap = UNITS[name]
+    s = '# %s\n\nParent: %s. Governed by the principles.\n\n## The six declarations\n\n' % (name, parent)
+    s += '1. **Purpose** — the purpose of %s.\n' % name
+    s += '2. **Interface** — what it receives and offers.\n'
+    s += '3. **Rules** — the root\'s.\n'
+    s += ('4. **Budget** — cost %d runs; time %s h; context %d KB; attempts %d; alternatives %d; '
+          'attention %d; no-undo cap %d.\n' % (c, t, x, a, al, at, cap))
+    # Not the budget line: must not be read for the budget.
+    s += ('5. **Measure** — its check; unlike a unit with cost 0 runs, time 0 h, context 1 KB, '
+          'attempts 0, alternatives 0, attention 0, cap 0.\n')
+    s += '6. **Judge** — the judge.\n\n## The principles here\n\n| Principle | Here |\n|---|---|\n'
+    for r in ROWS:
+        s += '| %s | here. |\n' % r
+    return s
+
+
+def src_hash_files(files):
+    """files: {relative path under src: bytes}; __pycache__ already left out."""
+    h = hashlib.sha256()
+    for p in sorted(files):
+        h.update(p.encode() + b'\0' + files[p] + b'\0')
+    return h.hexdigest()
+
+
+def src_hash_dir(d):
+    files = {}
+    for dp, dn, fn in os.walk(d):
+        dn[:] = [x for x in dn if x != '__pycache__']
+        for f in fn:
+            p = os.path.join(dp, f)
+            with open(p, 'rb') as fh:
+                files[os.path.relpath(p, d).replace(os.sep, '/')] = fh.read()
+    return src_hash_files(files)
+
+
+SRC = {
+    'alpha': {'main': b'alpha one\n', 'a/b': b'nested\n', 'a.txt': b'dot\n', 'a-b': b'dash\n',
+              'B': b'upper\n', 'bin': b'\x00\xff\x00 raw\n', 'empty': b''},
+    'alpha/beta': {'main': b'beta one\n'},
+    'group/gamma': {'main': b'gamma one\n', 'x/y': b'deep\n'},
+}
+H = {u: src_hash_files(f) for u, f in SRC.items()}
+OLD = hashlib.sha256(b'an earlier build').hexdigest()
+OLD2 = hashlib.sha256(b'another earlier build').hexdigest()
+
+
+def stand_line(unit, h, when='2026-01-03T10:00Z', numbers='40 55'):
+    return '%s\t%s\tcandidate\t40\t%s\t%s\n' % (when, unit, h, numbers)
+
+
+LEDGER = ('# time\tunit\truns\tnote\n'
+          '2026-01-01T09:00Z\talpha/beta\t2\tfirst build\n'
+          '\n'
+          '2026-01-02T09:00Z\talpha/misc/delta\t2\ta note with spaces\n'
+          '#2026-01-02T10:00Z\talpha/beta\t5\tcommented out, not a row\n'
+          '2026-01-03T09:00Z\talpha\t1\tx\n'
+          '2026-01-03T10:00Z\talpha/beta\t1\tsecond\n'
+          '\n'
+          '2026-01-04T09:00Z\tgroup/gamma\t3\tx\n'
+          '2026-01-05T09:00Z\troot\t1\tx\n')
+
+SH_OK = b'#!/bin/sh\nexit 0\n'
+CHECK = b'#!/bin/sh\n# passes only a build holding a file named ok\ntest -f "$1/ok"\n'
+
+
+def b(s):
+    return s if isinstance(s, bytes) else s.encode('utf-8')
+
+
+def clean_files():
+    F = {}
+    for u in UNITS:
+        d = '' if u == 'root' else u + '/'
+        F[d + ('root.md' if u == 'root' else 'unit.md')] = b(doc(u))
+        F[d + 'build'] = SH_OK
+        F[d + 'verdict'] = SH_OK
+        F[d + 'measure/check'] = CHECK
+        F[d + 'measure/planted/bad/x'] = b'a wrong build\n'
+    F['root.md'] += b'\nRevised once.\n'
+    F['principles.md'] = b'# Principles\n\nSeven.\n'
+    F['queue.md'] = b'q1\nq2\nq3\n'
+    F['record.md'] = b'# Record\n\nThe root record.\n'
+    F['alpha/record.md'] = b('# Record\n\nstood unjudged: %s\n\nLater judged.\n' % OLD)
+    F['alpha/beta/record.md'] = b('# Record\n\nThe first build.\n\nstood unjudged: %s\n' % H['alpha/beta'])
+    F['group/gamma/record.md'] = b'# Record\n'
+    F['zeta/record.md'] = b'# Record\n'
+    for u, files in SRC.items():
+        for p, data in files.items():
+            F['%s/src/%s' % (u, p)] = data
+    F['judge/stands/alpha.tsv'] = b(stand_line('alpha', OLD, '2026-01-01T10:00Z')
+                                    + stand_line('alpha', OLD2, '2026-01-02T10:00Z')
+                                    + stand_line('alpha', H['alpha']))
+    F['judge/stands/group/gamma.tsv'] = b(stand_line('group/gamma', H['group/gamma']))
+    F['ledger.tsv'] = b(LEDGER)
+    F['alpha/measure/planted/late/x'] = b'a wrong build added later\n'
+    return F
+
+
+def is_exe(path):
+    return path.rsplit('/', 1)[-1] in ('build', 'verdict') or path.endswith('measure/check')
+
+
+def put(t, path, data, exe=None):
+    p = os.path.join(t, path)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, 'wb') as f:
+        f.write(b(data))
+    os.chmod(p, 0o755 if (is_exe(path) if exe is None else exe) else 0o644)
+
+
+def get(t, path):
+    with open(os.path.join(t, path), 'rb') as f:
+        return f.read()
+
+
+def sub(t, path, old, new):
+    data = get(t, path)
+    if data.count(b(old)) != 1:
+        raise RuntimeError('fixture edit: %r occurs %d times in %s' % (old, data.count(b(old)), path))
+    mode = stat.S_IMODE(os.stat(os.path.join(t, path)).st_mode)
+    with open(os.path.join(t, path), 'wb') as f:
+        f.write(data.replace(b(old), b(new)))
+    os.chmod(os.path.join(t, path), mode)
+
+
+def append(t, path, data):
+    with open(os.path.join(t, path), 'ab') as f:
+        f.write(b(data))
+
+
+def rm(t, path):
+    p = os.path.join(t, path)
+    if os.path.isdir(p):
+        shutil.rmtree(p)
+    else:
+        os.remove(p)
+
+
+def in_src(p):
+    return '/src/' in p
+
+
+def base_steps(F):
+    """The commit order of the clean tree: answer files; everything but src; src and
+    stands; a later measure addition; an answer-only change."""
+    first_root = F['root.md'][:-len(b'\nRevised once.\n')]
+    s1 = {'root.md': first_root, 'principles.md': F['principles.md'], 'queue.md': b'q1\n'}
+    late = 'alpha/measure/planted/late/x'
+    s2 = {p: d for p, d in F.items()
+          if p not in s1 and not in_src(p) and not p.startswith('judge/') and p != late}
+    s3 = {p: d for p, d in F.items() if in_src(p) or p.startswith('judge/')}
+    s4 = {late: F[late], 'queue.md': b'q1\nq2\n'}
+    s5 = {'root.md': F['root.md'], 'queue.md': F['queue.md']}
+    return [s1, s2, s3, s4, s5]
+
+
+def build_repo(t, steps, after=None, skew=False):
+    os.makedirs(t)
+    git(t, 'init', '-q')
+    for i, step in enumerate(steps):
+        for p, d in step.items():
+            if d is None:
+                rm(t, p)
+            else:
+                put(t, p, d)
+        git(t, 'add', '-A')
+        date = 1750000000 + (-i if skew else i) * 3600
+        git(t, 'commit', '-q', '-m', 'change %d' % (i + 1), date=date)
+    if after:
+        after(t)
+    return t
+
+
+def snapshot(t):
+    snap = {}
+    for dp, dn, fn in os.walk(t):
+        if dp == t and '.git' in dn:
+            dn.remove('.git')
+        for d in dn:
+            snap[os.path.relpath(os.path.join(dp, d), t) + '/'] = 'dir'
+        for f in fn:
+            p = os.path.join(dp, f)
+            st = os.lstat(p)
+            if stat.S_ISLNK(st.st_mode):
+                snap[os.path.relpath(p, t)] = ('link', os.readlink(p))
+            else:
+                with open(p, 'rb') as fh:
+                    snap[os.path.relpath(p, t)] = (stat.S_IMODE(st.st_mode), hashlib.sha256(fh.read()).hexdigest())
+    return snap
+
+
+def snap_diff(a, c):
+    ch = sorted(k for k in set(a) | set(c) if a.get(k) != c.get(k))
+    return ', '.join(ch[:4])
+
+
+# ---------------------------------------------------------------- the cases
+
+CASES = []          # (name, function(workdir) raising Fail)
+BUILD = None
+BASE = None
+UNDO = None
+F0 = clean_files()
+
+
+def expect(t, breaches=None, absent=()):
+    """Run enforce on tree t.  breaches None: must exit 0.  Else exit 1 and, for each
+    (rule, unit-or-None), a stdout line `<rule> <unit> ...`."""
+    rc, lines = run_build(os.path.join(BUILD, 'enforce'), [t], os.path.dirname(t))
+    shown = ' | '.join(lines[:3]) if lines else 'no output'
+    if breaches is None:
+        if rc != 0:
+            raise Fail('clean tree: exit %d, wanted 0 (%s)' % (rc, shown))
+        return
+    if rc != 1:
+        raise Fail('exit %d, wanted 1 (%s)' % (rc, shown))
+    toks = [l.split(' ') for l in lines]
+    for rule, unit in breaches:
+        if not any(k[0] == rule and (unit is None or k[1:2] == [unit]) for k in toks):
+            raise Fail('no line `%s%s ...` (%s)' % (rule, ' ' + unit if unit else '', shown))
+    for rule, unit in absent:
+        if any(k[0] == rule and k[1:2] == [unit] for k in toks):
+            raise Fail('line `%s %s ...` for a rule that unit does not break' % (rule, unit))
+
+
+def tree(name, mutate, breaches=None, absent=()):
+    """A copy of the clean repository, changed in the working tree by mutate."""
+    def fn(w):
+        t = os.path.join(w, 'tree')
+        shutil.copytree(BASE, t, symlinks=True)
+        if mutate:
+            mutate(t)
+        expect(t, breaches, absent)
+    CASES.append((name, fn))
+
+
+def hist(name, steps_fn, breaches=None, after=None, skew=False):
+    """A repository rebuilt with a different commit order."""
+    def fn(w):
+        steps = base_steps(F0)
+        if steps_fn:
+            steps = steps_fn(steps) or steps
+        t = build_repo(os.path.join(w, 'tree'), steps, after, skew)
+        expect(t, breaches)
+    CASES.append((name, fn))
+
+
+def B(old, new, unit):
+    path = 'root.md' if unit == 'root' else unit + '/unit.md'
+    return lambda t: sub(t, path, old, new)
+
+
+def add_cases():
+    # ---- clean
+    tree('clean: base tree', None)
+
+    def writes_nothing(w):
+        for label, mut in (('clean', None), ('breached', lambda t: rm(t, 'alpha/build'))):
+            t = os.path.join(w, label)
+            shutil.copytree(BASE, t, symlinks=True)
+            if mut:
+                mut(t)
+            before = snapshot(t)
+            run_build(os.path.join(BUILD, 'enforce'), [t], w)
+            d = snap_diff(before, snapshot(t))
+            if d:
+                raise Fail('enforce changed the %s tree: %s' % (label, d))
+    CASES.append(('clean: enforce writes nothing in the tree', writes_nothing))
+
+    # ---- units
+    def decoy(path):
+        return lambda t: put(t, path, 'not a unit\n')
+    tree('units: unit.md under a unit\'s measure/ is no unit', decoy('alpha/measure/fixture/unit.md'))
+    tree('units: unit.md under the root\'s measure/ is no unit', decoy('measure/fixture/unit.md'))
+    tree('units: unit.md under audit/ is no unit', decoy('audit/enforcer/tree/unit.md'))
+    tree('units: unit.md under a dot-directory is no unit', decoy('.cache/old/unit.md'))
+    tree('units: unit.md under a nested dot-directory is no unit', decoy('alpha/.tmp/copy/unit.md'))
+
+    def decoy_src(t):
+        put(t, 'alpha/src/sub/unit.md', 'not a unit\n')
+        append(t, 'judge/stands/alpha.tsv', stand_line('alpha', src_hash_dir(os.path.join(t, 'alpha/src'))))
+    tree('units: unit.md under src/ is no unit', decoy_src)
+    tree('units: a directory named audits is not audit', decoy('audits/kappa/unit.md'), [('doc', 'audits/kappa')])
+    tree('units: unit under a non-unit directory is named by its path',
+         B('| 2 Single source', '| 2 Single', 'group/gamma'), [('doc', 'group/gamma')])
+    tree('units: nearest unit above is the parent (context looser than alpha\'s, not than root\'s)',
+         B('context 8 KB;', 'context 12 KB;', 'alpha/misc/delta'), [('budget', None)])
+
+    # ---- doc
+    tree('doc: no Parent: line', B('\nParent: root.', '\nThe Parent: root.', 'alpha'), [('doc', 'alpha')])
+    tree('doc: declaration 3 missing', B('3. **Rules** —', 'Rules —', 'alpha/beta'), [('doc', 'alpha/beta')])
+    tree('doc: declaration not in bold', B('2. **Interface**', '2. Interface', 'zeta'), [('doc', 'zeta')])
+
+    def swap56(t):
+        sub(t, 'group/gamma/unit.md', '6. **Judge** — the judge.\n', '')
+        sub(t, 'group/gamma/unit.md', '5. **Measure**', '6. **Judge** — the judge.\n5. **Measure**')
+    tree('doc: declarations 5 and 6 out of order', swap56, [('doc', 'group/gamma')])
+
+    def purpose_last(t):
+        line = '1. **Purpose** — the purpose of alpha/misc/delta.\n'
+        sub(t, 'alpha/misc/delta/unit.md', line, '')
+        sub(t, 'alpha/misc/delta/unit.md', '6. **Judge** — the judge.\n', '6. **Judge** — the judge.\n' + line)
+    tree('doc: declaration 1 after declaration 6', purpose_last, [('doc', 'alpha/misc/delta')])
+    tree('doc: principle row 4 missing', B('| 4 Rehearsal before effect | here. |\n', '', 'alpha/misc/delta'),
+         [('doc', 'alpha/misc/delta')])
+    tree('doc: principle row 4 cut short', B('| 4 Rehearsal before effect', '| 4 Rehearsal', 'alpha'), [('doc', 'alpha')])
+    tree('doc: root.md lacks row 7', B('| 7 Escalation', '| 7 Asking', 'root'), [('doc', 'root')])
+    tree('doc: root.md lacks declaration 6', B('6. **Judge**', '6. Judge', 'root'), [('doc', 'root')])
+
+    # ---- budget
+    miss = [('cost', 'cost 6 runs; ', '', 'alpha'), ('time', 'time 0.25 h; ', '', 'zeta'),
+            ('context', 'context 8 KB; ', '', 'alpha/beta'), ('attempts', 'attempts 10; ', '', 'group/gamma'),
+            ('alternatives', 'alternatives 0; ', '', 'alpha/misc/delta'), ('attention', 'attention 3; ', '', 'root'),
+            ('cap', '; no-undo cap 1.', '.', 'alpha')]
+    for kind, old, new, unit in miss:
+        tree('budget: %s missing on the budget line of %s' % (kind, unit), B(old, new, unit), [('budget', unit)])
+    tree('budget: time given without its unit h', B('time 0.25 h;', 'time 0.25;', 'zeta'), [('budget', 'zeta')])
+    tree('budget: children\'s cost one over the root\'s', B('cost 0 runs;', 'cost 1 runs;', 'zeta'), [('budget', None)])
+    tree('budget: children\'s cost one over a unit\'s', B('cost 3 runs;', 'cost 4 runs;', 'alpha/misc/delta'), [('budget', None)])
+    tree('budget: children\'s time 0.25+0.375 over 0.5', B('time 0.25 h;', 'time 0.375 h;', 'alpha/misc/delta'), [('budget', None)])
+    tree('budget: children\'s time 0.5+0.25+0.3125 over 1', B('time 0.25 h;', 'time 0.3125 h;', 'zeta'), [('budget', None)])
+
+    def time_split(t):
+        sub(t, 'alpha/beta/unit.md', 'time 0.25 h;', 'time 0.125 h;')
+        sub(t, 'alpha/misc/delta/unit.md', 'time 0.25 h;', 'time 0.375 h;')
+    tree('budget: children\'s time 0.125+0.375 equal to 0.5 is clean', time_split)
+    tree('budget: child attempts looser than the parent\'s', B('attempts 2;', 'attempts 3;', 'alpha/beta'), [('budget', None)])
+    tree('budget: child alternatives looser than the parent\'s', B('alternatives 0;', 'alternatives 3;', 'zeta'), [('budget', None)])
+    tree('budget: child attention looser than the parent\'s', B('attention 3;', 'attention 4;', 'group/gamma'), [('budget', None)])
+    tree('budget: child cap looser than the parent\'s', B('no-undo cap 0.', 'no-undo cap 2.', 'alpha/beta'), [('budget', None)])
+    tree('budget: child context looser than the root\'s', B('context 16 KB;', 'context 17 KB;', 'group/gamma'), [('budget', None)])
+
+    # ---- context
+    def pad(unit, total, filler=b'', where='record.md'):
+        d = '' if unit == 'root' else unit + '/'
+        docname = 'root.md' if unit == 'root' else 'unit.md'
+
+        def m(t):
+            other = docname if where == 'record.md' else 'record.md'
+            have = len(get(t, d + other)) if os.path.exists(os.path.join(t, d + other)) else 0
+            head = get(t, d + where) if where != 'record.md' else b'# Record\n'
+            body = head + filler
+            n = total - have - len(body)
+            if n < 0:
+                raise RuntimeError('fixture: cannot pad %s to %d' % (unit, total))
+            put(t, d + where, body + b'.' * n)
+        return m
+    tree('context: unit.md plus record.md exactly 2 KB is clean', pad('zeta', 2048))
+    tree('context: unit.md plus record.md one byte over 2 KB', pad('zeta', 2049), [('context', 'zeta')])
+    tree('context: one byte over, counted in bytes not characters',
+         pad('zeta', 2049, 'é'.encode('utf-8') * 200), [('context', 'zeta')])
+    tree('context: root.md plus record.md exactly 16 KB is clean', pad('root', 16384))
+    tree('context: root.md plus record.md one byte over 16 KB', pad('root', 16385), [('context', 'root')])
+    tree('context: unit.md alone one byte over, no record.md',
+         pad('alpha/misc/delta', 8193, where='unit.md'), [('context', 'alpha/misc/delta')])
+    tree('context: unit.md alone exactly at the limit, no record.md', pad('alpha/misc/delta', 8192, where='unit.md'))
+
+    # ---- interface
+    def chmod(path, mode=0o644):
+        return lambda t: os.chmod(os.path.join(t, path), mode)
+    tree('interface: build missing', lambda t: rm(t, 'alpha/build'), [('interface', 'alpha')])
+    tree('interface: verdict missing', lambda t: rm(t, 'alpha/beta/verdict'), [('interface', 'alpha/beta')])
+    tree('interface: build not executable', chmod('group/gamma/build'), [('interface', 'group/gamma')])
+    tree('interface: verdict not executable', chmod('alpha/misc/delta/verdict'), [('interface', 'alpha/misc/delta')])
+    tree('interface: root\'s verdict not executable', chmod('verdict'), [('interface', 'root')])
+    tree('interface: root\'s build missing', lambda t: rm(t, 'build'), [('interface', 'root')])
+
+    # ---- measure
+    tree('measure: measure/check missing', lambda t: rm(t, 'zeta/measure/check'), [('measure', 'zeta')])
+    tree('measure: measure/check not executable', chmod('group/gamma/measure/check'), [('measure', 'group/gamma')])
+    tree('measure: measure/planted/ empty', lambda t: rm(t, 'zeta/measure/planted/bad'), [('measure', 'zeta')])
+    tree('measure: measure/planted/ absent', lambda t: rm(t, 'alpha/misc/delta/measure/planted'),
+         [('measure', 'alpha/misc/delta')])
+    tree('measure: the only planted build passes the check', lambda t: put(t, 'measure/planted/bad/ok', ''),
+         [('measure', 'root')])
+    tree('measure: a planted build sorting last passes the check',
+         lambda t: put(t, 'alpha/beta/measure/planted/zgood/ok', ''), [('measure', 'alpha/beta')])
+    tree('measure: a planted build sorting first passes the check',
+         lambda t: put(t, 'alpha/measure/planted/agood/ok', ''), [('measure', 'alpha')])
+
+    # ---- before (history)
+    hist('before: clean although commit dates run backwards', None, skew=True)
+
+    def same_commit(s):
+        for p in [p for p in s[1] if p.startswith('alpha/beta/measure/')]:
+            s[2][p] = s[1].pop(p)
+    hist('before: measure and src enter in the same commit', same_commit, [('before', 'alpha/beta')])
+
+    def src_first(s):
+        for p in [p for p in s[2] if p.startswith('group/gamma/src/')]:
+            s[1][p] = s[2].pop(p)
+        for p in [p for p in s[1] if p.startswith('group/gamma/measure/')]:
+            s[2][p] = s[1].pop(p)
+    hist('before: src entered one commit before the measure, more commits after', src_first, [('before', 'group/gamma')])
+
+    def no_committed_measure(s):
+        for st in s:
+            for p in [p for p in st if p.startswith('alpha/measure/')]:
+                del st[p]
+
+    def write_alpha_measure(t):
+        for p, d in F0.items():
+            if p.startswith('alpha/measure/'):
+                put(t, p, d)
+    hist('before: src committed, measure only in the working tree (a nested unit\'s measure is committed)',
+         no_committed_measure, [('before', 'alpha')], after=write_alpha_measure)
+
+    def no_committed_src(s):
+        for p in [p for p in s[2] if p.startswith('alpha/src/')]:
+            del s[2][p]
+
+    def write_alpha_src(t):
+        for p, d in F0.items():
+            if p.startswith('alpha/src/'):
+                put(t, p, d)
+    hist('before: committed measure with uncommitted src is clean', no_committed_src, None, after=write_alpha_src)
+
+    def readded(s):
+        g_src = {p: d for p, d in s[2].items() if p.startswith('group/gamma/src/')}
+        g_mea = {p: s[1].pop(p) for p in [p for p in s[1] if p.startswith('group/gamma/measure/')]}
+        s[1].update(g_src)
+        return [s[0], s[1], {p: None for p in g_src}, g_mea, s[2], s[3], s[4]]
+    hist('before: src first added before the measure, removed, added again after it', readded, [('before', 'group/gamma')])
+
+    # ---- stands
+    tree('stands: right hash only in an earlier line of the unit\'s file',
+         lambda t: append(t, 'judge/stands/alpha.tsv', stand_line('alpha', OLD2)), [('stands', 'alpha')])
+
+    def sixth(t):
+        put(t, 'judge/stands/group/gamma.tsv', stand_line('group/gamma', OLD, numbers=H['group/gamma']))
+    tree('stands: right hash in the sixth field, not the fifth', sixth, [('stands', 'group/gamma')])
+
+    def other_file(t):
+        append(t, 'judge/stands/alpha.tsv', stand_line('alpha', OLD2))
+        put(t, 'judge/stands/alpha/beta.tsv', stand_line('alpha', H['alpha']))
+        append(t, 'judge/stands/group/gamma.tsv',
+               stand_line('alpha', H['alpha']) + stand_line('group/gamma', H['group/gamma']))
+    tree('stands: right hash only in other units\' files', other_file, [('stands', 'alpha')])
+
+    def basename_file(t):
+        put(t, 'judge/stands/gamma.tsv', stand_line('group/gamma', H['group/gamma']))
+        put(t, 'judge/stands/group/gamma.tsv', stand_line('group/gamma', OLD))
+    tree('stands: right hash in judge/stands/gamma.tsv, not judge/stands/group/gamma.tsv', basename_file,
+         [('stands', 'group/gamma')])
+    tree('stands: the unit\'s file absent and no record line', lambda t: rm(t, 'judge/stands/group/gamma.tsv'),
+         [('stands', 'group/gamma')])
+    tree('stands: a src file changed by one byte', lambda t: append(t, 'alpha/src/a/b', 'x'), [('stands', 'alpha')])
+    tree('stands: a src file renamed, bytes unchanged',
+         lambda t: os.rename(os.path.join(t, 'group/gamma/src/main'), os.path.join(t, 'group/gamma/src/main2')),
+         [('stands', 'group/gamma')])
+    tree('stands: an empty file added to src', lambda t: put(t, 'alpha/beta/src/new', ''), [('stands', 'alpha/beta')])
+    tree('stands: record says stood unjudged with another hash',
+         B_record('alpha/beta/record.md', H['alpha/beta'], OLD), [('stands', 'alpha/beta')])
+    tree('stands: record line holds only the start of the hash',
+         B_record('alpha/beta/record.md', H['alpha/beta'], H['alpha/beta'][:16]), [('stands', 'alpha/beta')])
+
+    def root_record(t):
+        sub(t, 'alpha/beta/record.md', 'stood unjudged: ' + H['alpha/beta'] + '\n', '')
+        append(t, 'record.md', 'stood unjudged: %s\n' % H['alpha/beta'])
+        append(t, 'alpha/record.md', 'stood unjudged: %s\n' % H['alpha/beta'])
+    tree('stands: stood unjudged written in other units\' records only', root_record, [('stands', 'alpha/beta')])
+
+    def record_or(t):
+        append(t, 'judge/stands/alpha.tsv', stand_line('alpha', OLD2))
+        append(t, 'alpha/record.md', 'stood unjudged: %s\n' % H['alpha'])
+    tree('stands: stale stands file but record says stood unjudged is clean', record_or)
+
+    def pyc(*paths):
+        def m(t):
+            for p in paths:
+                put(t, p, b'\x00compiled')
+        return m
+    tree('stands: __pycache__ in src left out of the hash', pyc('alpha/src/__pycache__/main.cpython-312.pyc',
+                                                               'alpha/beta/src/__pycache__/m.pyc'))
+    tree('stands: __pycache__ below a directory of src left out of the hash', pyc('group/gamma/src/x/__pycache__/y.pyc'))
+    tree('stands: file modes are not part of the hash', chmod('alpha/src/main', 0o755))
+
+    # ---- answer (history)
+    def ins(at, step):
+        def f(s):
+            s.insert(at, step)
+        return f
+    first_root = base_steps(F0)[0]['root.md']
+    hist('answer: a commit touches root.md and another file, more commits after',
+         ins(3, {'root.md': first_root + b'\nAn answer.\n', 'zeta/record.md': b'# Record\n\nmore\n'}), [('answer', None)])
+    hist('answer: a commit touches principles.md, queue.md and another file',
+         ins(2, {'principles.md': b'# Principles\n\nEight.\n', 'queue.md': b'q0\n', 'notes.txt': b'n\n'}),
+         [('answer', None)])
+    hist('answer: a commit touches principles.md and adds a file in a unit',
+         ins(4, {'principles.md': b'# Principles\n\nNine.\n', 'alpha/notes.txt': b'n\n'}), [('answer', None)])
+
+    def root_commit(s):
+        s[0].update(s.pop(1))
+    hist('answer: the first commit adds root.md together with other files', root_commit, [('answer', None)])
+    hist('answer: principles.md below the root may change with other files',
+         ins(3, {'alpha/misc/principles.md': b'local\n', 'alpha/misc/notes.txt': b'n\n', 'queue.md': b'q1\nq2\nqq\n'}))
+    hist('answer: root.md, principles.md and queue.md may change together',
+         ins(4, {'root.md': first_root + b'\nAn answer.\n', 'principles.md': b'# Principles\n\nEight.\n',
+                 'queue.md': b'asked\n'}))
+
+    # ---- spend
+    def row(unit, runs):
+        return lambda t: append(t, 'ledger.tsv', '2026-01-06T09:00Z\t%s\t%d\tone more\n' % (unit, runs))
+    tree('spend: grandchild one over; breaches it, its parent and the root', row('alpha/beta', 1),
+         [('spend', 'alpha/beta'), ('spend', 'alpha'), ('spend', 'root')],
+         absent=[('spend', 'alpha/misc/delta'), ('spend', 'group/gamma')])
+    tree('spend: unit within its own cost, its parent and the root over', row('alpha/misc/delta', 1),
+         [('spend', 'alpha'), ('spend', 'root')], absent=[('spend', 'alpha/misc/delta'), ('spend', 'alpha/beta')])
+    tree('spend: unit within its own cost, only the root over', row('group/gamma', 1),
+         [('spend', 'root')], absent=[('spend', 'group/gamma'), ('spend', 'alpha')])
+    tree('spend: a run charged to a unit with cost 0', row('zeta', 1), [('spend', 'zeta'), ('spend', 'root')])
+    tree('spend: a run charged to root itself', row('root', 1), [('spend', 'root')],
+         absent=[('spend', 'alpha'), ('spend', 'group/gamma')])
+    tree('spend: for the root all rows count, whatever unit they name', row('ghost', 1), [('spend', 'root')])
+    tree('spend: no ledger.tsv is clean', lambda t: rm(t, 'ledger.tsv'))
+    tree('spend: a ledger of comments and blank lines is clean',
+         lambda t: put(t, 'ledger.tsv', '# time\tunit\truns\tnote\n\n#2026-01-01T09:00Z\tzeta\t9\tno row\n\n'))
+    tree('spend: a unit named al is not charged the rows of alpha',
+         lambda t: os.rename(os.path.join(t, 'zeta'), os.path.join(t, 'al')))
+
+    # ---- undo
+    def undo_case(name, key, want, cwd_tree=False, dirty=False, extra=()):
+        def fn(w):
+            t = os.path.join(w, 'tree')
+            shutil.copytree(UNDO['dir'], t, symlinks=True)
+            if dirty:
+                put(t, 'untracked.txt', 'u\n')
+                append(t, 'g', 'local edit\n')
+            commit = UNDO.get(key, key)
+            neutral = os.path.join(w, 'cwd')
+            os.makedirs(neutral)
+
+            def state():
+                return (git(t, 'rev-parse', 'HEAD'), git(t, 'symbolic-ref', 'HEAD'),
+                        git(t, 'for-each-ref'), git(t, 'status', '--porcelain'),
+                        git(t, 'worktree', 'list', '--porcelain'), snapshot(t))
+            labels = ('HEAD', 'the branch HEAD names', 'refs', 'git status --porcelain', 'worktrees', 'working files')
+            before = state()
+            args = [commit] + list(extra) + ([] if cwd_tree else [t])
+            rc, lines = run_build(os.path.join(BUILD, 'undo'), args, t if cwd_tree else neutral)
+            after = state()
+            for lab, x, y in zip(labels, before, after):
+                if x != y:
+                    raise Fail('the tree\'s repository was touched: %s changed' % lab)
+            shown = ' | '.join(lines[:3]) if lines else 'no output'
+            if want == 'proven':
+                if rc != 0:
+                    raise Fail('exit %d, wanted 0 (%s)' % (rc, shown))
+                if not any(l.startswith('undo proven') for l in lines):
+                    raise Fail('exit 0 but no line starting `undo proven` (%s)' % shown)
+            elif want == 'refused':
+                if rc != 1:
+                    raise Fail('exit %d, wanted 1 (%s)' % (rc, shown))
+        CASES.append((name, fn))
+    undo_case('undo: last commit, which added a file, is proven', 'F', 'proven')
+    undo_case('undo: earlier commit, its file untouched since, is proven', 'B', 'proven')
+    undo_case('undo: last commit to change a file others changed before is proven', 'C', 'proven')
+    undo_case('undo: last change of a file, an earlier change of it kept, is proven', 'E', 'proven')
+    undo_case('undo: tree-dir defaults to the repository of the current directory', 'B', 'proven', cwd_tree=True)
+    undo_case('undo: a later commit changed the same lines', 'A', 'refused')
+    undo_case('undo: revert applies but a touched file is not as it was before the commit', 'D', 'refused')
+    undo_case('undo: unknown commit hash', '0123456789abcdef0123456789abcdef01234567', 'refused')
+    undo_case('undo: a name that is no commit', 'no-such-commit', 'refused')
+    undo_case('undo: a tree with uncommitted work is left untouched', 'F', 'untouched', dirty=True)
+
+
+def B_record(path, old, new):
+    return lambda t: sub(t, path, 'stood unjudged: ' + old + '\n', 'stood unjudged: ' + new + '\n')
+
+
+def build_undo_repo(d):
+    os.makedirs(d)
+    git(d, 'init', '-q')
+    ten = ['line %d\n' % i for i in range(1, 11)]
+    info = {'dir': d}
+
+    def commit(key, files, i):
+        for p, data in files.items():
+            put(d, p, data, exe=False)
+        git(d, 'add', '-A')
+        git(d, 'commit', '-q', '-m', key, date=1750000000 + i * 3600)
+        info[key] = git(d, 'rev-parse', 'HEAD').strip()
+
+    def lines(**ch):
+        l = list(ten)
+        for k, v in ch.items():
+            l[int(k[1:]) - 1] = v + '\n'
+        return ''.join(l)
+    commit('init', {'root.md': '# root\n', 'f': lines(), 'g': 'g one\n', 'k': lines()}, 0)
+    commit('A', {'f': lines(l2='A changed this')}, 1)
+    commit('B', {'g': 'g two\n'}, 2)
+    commit('C', {'f': lines(l2='C changed this again')}, 3)
+    commit('D', {'k': lines(l1='D changed the top')}, 4)
+    commit('E', {'k': lines(l1='D changed the top', l10='E changed the bottom')}, 5)
+    commit('F', {'h': 'a new file\n'}, 6)
+    return info
+
+
+def main():
+    global BUILD, BASE, UNDO, ENV
+    if len(sys.argv) != 2:
+        print('usage: check <build-dir>', file=sys.stderr)
+        return 2
+    BUILD = os.path.abspath(sys.argv[1])
+    tmp = tempfile.mkdtemp(prefix='audit-enforcer-')
+    try:
+        home = os.path.join(tmp, 'home')
+        os.makedirs(home)
+        ENV = make_env(home)
+        BASE = build_repo(os.path.join(tmp, 'base'), base_steps(F0))
+        UNDO = build_undo_repo(os.path.join(tmp, 'undo'))
+        add_cases()
+
+        def one(i):
+            name, fn = CASES[i]
+            w = os.path.join(tmp, 'case%03d' % i)
+            os.makedirs(w)
+            try:
+                fn(w)
+                res = None
+            except Fail as e:
+                res = str(e)
+            except Exception as e:  # a fixture error is reported, never a traceback
+                res = 'audit fixture error: %s: %s' % (type(e).__name__, e)
+            shutil.rmtree(w, ignore_errors=True)
+            return res
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 2))) as ex:
+            results = list(ex.map(one, range(len(CASES))))
+        passed = 0
+        for (name, _), res in zip(CASES, results):
+            if res is None:
+                passed += 1
+                print('PASS %s' % name)
+            else:
+                print('FAIL %s: %s' % (name, ' '.join(res.split())[:300]))
+        print('%d/%d' % (passed, len(CASES)))
+        return 0 if passed == len(CASES) else 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
