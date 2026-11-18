@@ -99,3 +99,9 @@ report; a report names held items only by id and date.
 - Opened [wkspower/wks-agentic#1](https://github.com/wkspower/wks-agentic/pull/1).
   No workflow run started; GitHub lists no workflow. Not merged on a local
   judge run (principle 3). Q8 held in `queue.md` until the budget allows.
+
+## 2026-11-18 20:00Z — Stopped by the person
+
+- The person said "Stop". The scheduled check-in on the pull request was
+  cancelled and its activity subscription ended. PR #1 stays open, unmerged;
+  Q8 stays held. Resume from this record.
