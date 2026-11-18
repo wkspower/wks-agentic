@@ -3,5 +3,6 @@
  "tree/petshop": 0,
  "tree/petshop/appointments": 1,
  "tree/petshop/customers": 1,
+ "tree/petshop/sales": 1,
  "tree/petshop/stock": 1
 }
