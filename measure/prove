@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Proof of the root's measure.  Usage: prove
+
+Runs `check` (beside this file) on every tree under passing/ and planted/.
+Exit 0 iff every passing tree passes, every planted tree fails (and, for the
+planted trees named below, fails for the defect it was planted with), and no
+tree was modified by the check.
+"""
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CHECK = os.path.join(HERE, "check")
+
+# planted tree -> words its failure must carry on stderr
+REASON = {
+    "no-result": "unknown",
+    "src-never-let-stand": "unknown",
+    "src-changed-after-it-stood": "src differs",
+    "file-added-to-src-after-it-stood": "src differs",
+    "src-matches-an-older-stand": "src differs",
+    "verdict-fails": "verdict fails",
+    "verdict-missing": "no verdict",
+    "stands-line-without-src": "no readable src",
+    "rising-number": "number rose",
+    "growing-queue": "queue grew",
+    "result-lost-number-rises": "number rose",
+}
+
+
+def snapshot(top):
+    seen = {}
+    for dirpath, dirnames, filenames in os.walk(top):
+        for name in dirnames + filenames:
+            full = os.path.join(dirpath, name)
+            if os.path.isdir(full):
+                seen[full] = "dir"
+            else:
+                with open(full, "rb") as f:
+                    seen[full] = (f.read(), os.access(full, os.X_OK))
+    return seen
+
+
+def run(tree):
+    before = snapshot(tree)
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    try:
+        done = subprocess.run([CHECK, tree], cwd="/", env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=900)
+        code, out, err = done.returncode, done.stdout.decode(), done.stderr.decode()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        code, out, err = None, "", "check did not run: %s" % e
+    return code, out, err, snapshot(tree) == before
+
+
+def trees(kind):
+    top = os.path.join(HERE, kind)
+    if not os.path.isdir(top):
+        return []
+    return [(n, os.path.join(top, n)) for n in sorted(os.listdir(top))
+            if os.path.isdir(os.path.join(top, n))]
+
+
+def main():
+    wrong = 0
+    passing, planted = trees("passing"), trees("planted")
+    if len(passing) < 2 or len(planted) < 5:
+        print("WRONG: fixture trees are missing", file=sys.stderr)
+        wrong += 1
+    for name, tree in passing:
+        code, out, err, intact = run(tree)
+        last = out.strip().split("\n")[-1] if out.strip() else ""
+        good = code == 0 and intact and last.replace(".", "", 1).isdigit()
+        wrong += not good
+        print("%s passing/%s: exit %s, number %s%s" % (
+            "ok   " if good else "WRONG", name, code, last or "-",
+            "" if intact else ", TREE MODIFIED"))
+        if not good:
+            sys.stderr.write(err)
+    for name, tree in planted:
+        code, out, err, intact = run(tree)
+        want = REASON.get(name, "")
+        good = code == 1 and intact and want in err
+        wrong += not good
+        reason = [l for l in err.strip().split("\n") if l != "FAIL"]
+        print("%s planted/%s: exit %s (%s)%s" % (
+            "ok   " if good else "WRONG", name, code, "; ".join(reason) or "no reason given",
+            "" if intact else ", TREE MODIFIED"))
+    print("%d passing trees, %d planted trees, %d wrong" % (len(passing), len(planted), wrong))
+    return 1 if wrong else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

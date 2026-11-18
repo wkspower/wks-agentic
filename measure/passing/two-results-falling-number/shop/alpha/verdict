@@ -1,0 +1,3 @@
+#!/bin/sh
+# fixture verdict: passes when run from the tree and src is there
+test -f shop/alpha/src/main.py

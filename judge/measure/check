@@ -1,0 +1,742 @@
+#!/usr/bin/env python3
+"""Measure of the judge.  Usage: check <build-dir>
+
+<build-dir> holds an executable `judge`.  Every case below builds a small
+fixture tree in a temporary directory, runs
+
+    <build-dir>/judge <unit-dir> <candidate-dir> [<alternative-dir> ...]
+
+and compares what happened with what the judge's document states.  All cases
+pass: exit 0, last line of stdout = bytes of the build.  Otherwise exit 1 and
+the failing cases are named on stderr.
+
+The fixture tree
+    <tree>/root.md                    marks the tree's root
+    <tree>/judge/                     where stands.tsv is appended
+    <tree>/shop/widget/unit.md        its Budget line states `alternatives N`
+    <tree>/shop/widget/measure/check  the toy check (below)
+    <tree>/shop/widget/src/           what exists, when the case has one
+Offered builds live outside the tree.  A toy build is `value.txt` (its number)
+and a file `ok` (present: the toy check passes).
+"""
+import datetime
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+JUDGE_TIMEOUT = 60  # seconds for one run of the judge
+HUNG = []           # once a run has hung, the cases left are failed without running it again
+
+# The toy check: passes iff <build>/ok exists and value.txt holds a number;
+# that number is the last line of stdout.  It prints the number even when it
+# fails, so only the exit code says whether it passed (rule d).
+TOY_CHECK = r'''#!/usr/bin/env python3
+import os, sys
+build = sys.argv[1]
+print("toy check")
+try:
+    value = open(os.path.join(build, "value.txt")).read().strip()
+    float(value)
+except Exception:
+    sys.exit(1)
+print(value)
+sys.exit(0 if os.path.exists(os.path.join(build, "ok")) else 1)
+'''
+
+# As TOY_CHECK, but it scribbles into the directory it is given: a new file
+# and a rewritten value.txt.  Harmless on a copy; visible on an original.
+SCRIBBLING_CHECK = r'''#!/usr/bin/env python3
+import os, sys
+build = sys.argv[1]
+try:
+    value = open(os.path.join(build, "value.txt")).read().strip()
+    float(value)
+except Exception:
+    sys.exit(1)
+passed = os.path.exists(os.path.join(build, "ok"))
+open(os.path.join(build, "scribble"), "w").write("the check was here\n")
+open(os.path.join(build, "value.txt"), "w").write("0\n")
+print(value)
+sys.exit(0 if passed else 1)
+'''
+
+# As TOY_CHECK, but an earlier line of stdout is a (lower) number too.
+CHATTY_CHECK = r'''#!/usr/bin/env python3
+import os, sys
+build = sys.argv[1]
+try:
+    value = open(os.path.join(build, "value.txt")).read().strip()
+    float(value)
+except Exception:
+    sys.exit(1)
+print("0")
+print("3 cases run")
+print(value)
+sys.exit(0 if os.path.exists(os.path.join(build, "ok")) else 1)
+'''
+
+# A check a candidate might carry inside itself: passes anything, number 0.
+SELF_SERVING_CHECK = '#!/bin/sh\necho 0\nexit 0\n'
+
+UNIT_DOC = """# Widget
+
+Parent: [`shop`](../unit.md). Governed by [`principles.md`](../../principles.md).
+
+## The six declarations
+
+1. **Purpose** — %(purpose)s
+2. **Interface** — Offers *build* and *verdict*.
+3. **Rules** — The shop's; none added.
+4. **Budget** — cost 2 runs; time 0.4 h; context 8 KB; attempts 2; alternatives %(alternatives)d; attention 0; no-undo cap 0.
+5. **Measure** — `measure/check <build-dir>`; number: the integer held.
+6. **Judge** — The [`judge`](../../judge/unit.md).
+
+## The principles here
+
+| Principle | Here |
+|---|---|
+| 6 Selection | %(selection)s |
+"""
+
+UNIT = "shop/widget"
+TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$")
+
+
+class Fail(Exception):
+    pass
+
+
+def need(condition, message):
+    if not condition:
+        raise Fail(message)
+
+
+def write(path, data, executable=False):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data.encode("utf-8") if isinstance(data, str) else data)
+    if executable:
+        os.chmod(path, 0o755)
+
+
+def snapshot(top):
+    """Everything under top: relative path -> kind and content."""
+    seen = {}
+    for dirpath, dirnames, filenames in os.walk(top):
+        for name in dirnames + filenames:
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, top).replace(os.sep, "/")
+            if os.path.islink(full):
+                seen[rel] = ("link", os.readlink(full))
+            elif os.path.isdir(full):
+                seen[rel] = ("dir",)
+            else:
+                with open(full, "rb") as f:
+                    seen[rel] = ("file", f.read(), os.access(full, os.X_OK))
+    return seen
+
+
+def files_of(top):
+    """Files under top, `__pycache__` left out: relative path -> bytes."""
+    return {rel: entry[1] for rel, entry in snapshot(top).items()
+            if entry[0] == "file" and "__pycache__" not in rel.split("/")}
+
+
+def src_hash(src):
+    """The hash as the judge's document defines it."""
+    h = hashlib.sha256()
+    for rel, data in sorted(files_of(src).items()):
+        h.update(rel.encode("utf-8") + b"\0" + data + b"\0")
+    return h.hexdigest()
+
+
+def utc_minute():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+
+
+class World:
+    """One fixture tree, the builds offered to the judge, and what it did."""
+
+    def __init__(self, judge, alternatives=0, existing=None, check=TOY_CHECK,
+                 stands=None, nested=False, purpose="Hold one integer, the lower the better.",
+                 selection="Compared with what exists and with the alternatives offered."):
+        self._tmp = tempfile.TemporaryDirectory(prefix="judge-measure-")
+        self.top = os.path.realpath(self._tmp.name)
+        self.judge_exe = judge
+        self.outer = os.path.join(self.top, "outer")
+        if nested:  # a larger tree around the tree: its root.md is NOT the nearest
+            write(os.path.join(self.outer, "root.md"), "# Outer root\n")
+            os.makedirs(os.path.join(self.outer, "judge"))
+            self.tree = os.path.join(self.outer, "inner")
+        else:
+            self.tree = os.path.join(self.top, "tree")
+        self.unit = os.path.join(self.tree, "shop", "widget")
+        self.src = os.path.join(self.unit, "src")
+        self.stands = os.path.join(self.tree, "judge", "stands.tsv")
+        self.elsewhere = os.path.join(self.top, "elsewhere")
+        os.makedirs(self.elsewhere)
+        write(os.path.join(self.tree, "root.md"), "# Root\n")
+        os.makedirs(os.path.join(self.tree, "judge"))
+        write(os.path.join(self.tree, "shop", "notes.txt"), "kept by the shop\n")
+        write(os.path.join(self.unit, "unit.md"), UNIT_DOC % {
+            "purpose": purpose, "alternatives": alternatives, "selection": selection})
+        if check is not None:
+            write(os.path.join(self.unit, "measure", "check"), check, executable=True)
+        if existing is not None:
+            for rel, data in existing.items():
+                write(os.path.join(self.src, rel), data)
+        if stands is not None:
+            write(self.stands, stands)
+        self.builds = {}
+
+    def close(self):
+        self._tmp.cleanup()
+
+    def build(self, name, value, ok=True, extra=None):
+        """An offered build outside the tree; returns its directory."""
+        path = os.path.join(self.top, "offered", name)
+        for rel, data in toy(value, ok, extra).items():
+            write(os.path.join(path, rel), data, executable=rel.endswith("check"))
+        self.builds[name] = path
+        return path
+
+    def run(self, *offered, cwd=None, unit_arg=None, relative_to=None):
+        """Run the judge on the unit with the offered builds; returns its exit code."""
+        self.before_tree = snapshot(self.tree)
+        self.before_outer = snapshot(self.outer) if os.path.isdir(self.outer) else None
+        self.before_builds = {n: snapshot(p) for n, p in self.builds.items()}
+        self.before_stands = self.read_stands()
+        self.started = utc_minute()
+        cwd = cwd or self.elsewhere
+        args = [unit_arg or self.unit] + list(offered)
+        if relative_to:
+            args = [os.path.relpath(a, relative_to) for a in args]
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        if HUNG:
+            raise Fail("not run: the judge hung in an earlier case")
+        try:
+            done = subprocess.run([self.judge_exe] + args, cwd=cwd, env=env,
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, timeout=JUDGE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            HUNG.append(True)
+            raise Fail("the judge did not finish in %d s" % JUDGE_TIMEOUT)
+        except OSError as e:
+            raise Fail("the judge cannot be run: %s" % e)
+        self.ended = utc_minute()
+        return done.returncode
+
+    def read_stands(self):
+        if not os.path.exists(self.stands):
+            return None
+        with open(self.stands, "rb") as f:
+            return f.read()
+
+    # -- what the document promises ------------------------------------
+
+    def refused(self, code):
+        """Exit 1 when nothing stands, having changed nothing."""
+        need(code == 1, "exit %r where nothing may stand (expected 1)" % (code,))
+        need(snapshot(self.tree) == self.before_tree,
+             "the tree changed although nothing stands: " + self.diff())
+        self.builds_untouched()
+        self.outer_untouched()
+
+    def stood(self, code, which, build, number):
+        """Exit 0, `build` installed as src, one well-formed line appended."""
+        need(code == 0, "exit %r where %s must stand (expected 0)" % (code, which))
+        need(os.path.isdir(self.src), "no src after a build stood")
+        need(files_of(self.src) == files_of(build),
+             "src is not the build that stands (%s), file for file" % which)
+        fields = self.appended_line()
+        need(len(fields) >= 6, "stands line has %d tab-separated fields, 6 expected" % len(fields))
+        need(TIME_RE.match(fields[0]), "time %r is not YYYY-MM-DDTHH:MMZ" % fields[0])
+        need(self.started <= fields[0] <= self.ended,
+             "time %s is not the UTC time of the run (%s..%s)" % (fields[0], self.started, self.ended))
+        need(fields[1] == UNIT, "unit path %r, expected %r (from the tree's root)" % (fields[1], UNIT))
+        need(fields[2] == which, "which is %r, expected %r" % (fields[2], which))
+        try:
+            written = float(fields[3])
+        except ValueError:
+            raise Fail("number field %r is not a number" % fields[3])
+        need(written == float(number), "number %r, expected %s" % (fields[3], number))
+        need(fields[4] == src_hash(self.src), "hash field is not the hash of the installed src")
+        need(fields[5].strip() != "", "sixth field (the numbers compared) is empty")
+        after = snapshot(self.tree)
+        for snap in (after, self.before_tree):
+            for rel in [r for r in snap if r == UNIT + "/src" or r.startswith(UNIT + "/src/")
+                        or r == "judge/stands.tsv"]:
+                del snap[rel]
+        need(after == self.before_tree,
+             "the judge changed more than src and stands.tsv: " + self.diff(after))
+        self.builds_untouched()
+        self.outer_untouched()
+
+    def appended_line(self):
+        """The fields of the one line appended to stands.tsv by the last run."""
+        now = self.read_stands()
+        need(now is not None, "no judge/stands.tsv in the tree after a build stood")
+        old = self.before_stands or b""
+        need(now.startswith(old), "earlier content of stands.tsv was not kept")
+        old_lines = [l for l in old.decode("utf-8", "replace").split("\n") if l.strip()]
+        new_lines = [l for l in now.decode("utf-8", "replace").split("\n") if l.strip()]
+        need(len(new_lines) == len(old_lines) + 1,
+             "%d lines appended to stands.tsv, exactly 1 expected" % (len(new_lines) - len(old_lines)))
+        return new_lines[-1].rstrip("\r").split("\t")
+
+    def builds_untouched(self):
+        for name, path in self.builds.items():
+            need(snapshot(path) == self.before_builds[name],
+                 "the offered build %r was altered (checks run on a copy)" % name)
+
+    def outer_untouched(self):
+        if self.before_outer is None:
+            return
+        inner = lambda s: {r: v for r, v in s.items() if r != "inner" and not r.startswith("inner/")}
+        need(inner(snapshot(self.outer)) == inner(self.before_outer),
+             "something changed above the tree's root (the nearest root.md is the root)")
+
+    def diff(self, after=None):
+        after = snapshot(self.tree) if after is None else after
+        changed = sorted(r for r in set(after) | set(self.before_tree)
+                         if after.get(r) != self.before_tree.get(r))
+        return ", ".join(changed[:6]) or "(nothing)"
+
+
+def toy(value, ok=True, extra=None):
+    """Files of a toy build: its number, and `ok` when the toy check is to pass."""
+    files = {"value.txt": "%s\n" % value}
+    if ok:
+        files["ok"] = ""
+    files.update(extra or {})
+    return files
+
+
+# ---------------------------------------------------------------------------
+# The cases.  Each receives the path of the judge under test; its docstring is
+# the claim, taken from the judge's document (Interface, Rules a-d, table).
+# ---------------------------------------------------------------------------
+
+CASES = []
+
+
+def case(function):
+    CASES.append(function)
+    return function
+
+
+def world(judge, **kw):
+    w = World(judge, **kw)
+    OPEN.append(w)
+    return w
+
+
+OPEN = []
+
+# ---- Interface: exit 0, installed as src, one line appended ----------------
+
+
+@case
+def first_build_stands(judge):
+    """No src yet, budget 0, the candidate passes: exit 0, it is installed as src, stands.tsv is created with one line."""
+    w = world(judge)
+    cand = w.build("cand", 5)
+    w.stood(w.run(cand), "candidate", cand, 5)
+
+
+@case
+def src_is_replaced_wholly(judge):
+    """Installing replaces src: a file only the old src had is gone."""
+    w = world(judge, existing=toy(9, extra={"old_only.txt": "left over\n", "old/deep.txt": "x\n"}))
+    cand = w.build("cand", 5, extra={"new_only.txt": "fresh\n"})
+    w.stood(w.run(cand), "candidate", cand, 5)
+    need(not os.path.exists(os.path.join(w.src, "old_only.txt")), "old_only.txt survived in src")
+
+
+@case
+def hash_covers_every_file_sorted_pycache_left_out(judge):
+    """The hash field is sha256 of path NUL bytes NUL per file under src, sorted by relative path, __pycache__ left out at any depth."""
+    w = world(judge)
+    cand = w.build("cand", 5, extra={
+        "b.txt": "second\n", "a.txt": "first\n", "sub/z.py": "z = 1\n", "sub/a.bin": b"\x00\xff\x00",
+        "__pycache__/a.cpython-311.pyc": b"cached", "sub/__pycache__/z.cpython-311.pyc": b"cached too"})
+    w.stood(w.run(cand), "candidate", cand, 5)
+
+
+@case
+def line_is_appended_after_earlier_lines(judge):
+    """stands.tsv already holds lines: they are kept and exactly one is appended."""
+    earlier = "2026-11-18T20:30Z\tshop/other\tcandidate\t3\t" + "0" * 64 + "\t3\n"
+    w = world(judge, stands=earlier)
+    cand = w.build("cand", 5)
+    w.stood(w.run(cand), "candidate", cand, 5)
+
+
+@case
+def two_stands_two_lines(judge):
+    """A unit improved twice has two lines, each its own: the second run appends, it does not rewrite."""
+    w = world(judge)
+    first = w.build("first", 8)
+    w.stood(w.run(first), "candidate", first, 8)
+    second = w.build("second", 6)
+    w.stood(w.run(second), "candidate", second, 6)
+
+# ---- Interface: exit 1 when nothing stands, having changed nothing ---------
+
+
+@case
+def failing_candidate_never_stands(judge):
+    """The candidate fails the check (exit 1, though a low number is printed): exit 1, src and stands.tsv untouched."""
+    w = world(judge, existing=toy(9))
+    w.refused(w.run(w.build("cand", 1, ok=False)))
+
+
+@case
+def failing_candidate_with_no_src(judge):
+    """Nothing exists and the candidate fails: exit 1, no src and no stands.tsv appear."""
+    w = world(judge)
+    w.refused(w.run(w.build("cand", 1, ok=False)))
+
+
+@case
+def refusal_writes_no_line(judge):
+    """A refusal leaves an existing stands.tsv byte for byte as it was."""
+    earlier = "2026-11-18T20:30Z\tshop/widget\tcandidate\t9\t" + "0" * 64 + "\t9\n"
+    w = world(judge, existing=toy(9), stands=earlier)
+    w.refused(w.run(w.build("cand", 12)))
+
+# ---- Rule (b): lower than the existing src, when that passes ---------------
+
+
+@case
+def candidate_lower_than_existing_stands(judge):
+    """Existing src passes with 9, candidate passes with 5: the candidate stands."""
+    w = world(judge, existing=toy(9))
+    cand = w.build("cand", 5)
+    w.stood(w.run(cand), "candidate", cand, 5)
+
+
+@case
+def candidate_equal_to_existing_is_refused(judge):
+    """Existing src passes with 5, candidate passes with 5: not lower, nothing stands."""
+    w = world(judge, existing=toy(5, extra={"note.txt": "the old one\n"}))
+    w.refused(w.run(w.build("cand", 5)))
+
+
+@case
+def candidate_higher_than_existing_is_refused(judge):
+    """Existing src passes with 5, candidate passes with 6: nothing stands."""
+    w = world(judge, existing=toy(5))
+    w.refused(w.run(w.build("cand", 6)))
+
+
+@case
+def numbers_compare_as_numbers_lower(judge):
+    """9 is lower than 10 (as numbers, not as text): the candidate with 9 stands over an existing 10."""
+    w = world(judge, existing=toy(10))
+    cand = w.build("cand", 9)
+    w.stood(w.run(cand), "candidate", cand, 9)
+
+
+@case
+def numbers_compare_as_numbers_higher(judge):
+    """10 is not lower than 9: the candidate with 10 is refused against an existing 9."""
+    w = world(judge, existing=toy(9))
+    w.refused(w.run(w.build("cand", 10)))
+
+
+@case
+def decimal_numbers(judge):
+    """A number may carry decimals (the root's measure prints `12.00`): 2.50 stands over an existing 10.00."""
+    w = world(judge, existing=toy("10.00"))
+    cand = w.build("cand", "2.50")
+    w.stood(w.run(cand), "candidate", cand, 2.5)
+
+
+@case
+def failing_existing_does_not_block(judge):
+    """The existing src fails its check (it prints 1 but exits 1): a passing candidate with 7 stands."""
+    w = world(judge, existing=toy(1, ok=False))
+    cand = w.build("cand", 7)
+    w.stood(w.run(cand), "candidate", cand, 7)
+
+# ---- Rule (b): no higher than any other offered build's; order among equals -
+
+
+@case
+def better_alternative_stands_instead(judge):
+    """Candidate 5, alternative 3: the alternative stands, as `alternative-1`, with its own files, number and hash."""
+    w = world(judge, alternatives=1)
+    cand = w.build("cand", 5, extra={"who.txt": "candidate\n"})
+    alt = w.build("alt", 3, extra={"who.txt": "alternative\n"})
+    w.stood(w.run(cand, alt), "alternative-1", alt, 3)
+
+
+@case
+def candidate_better_than_alternative_stands(judge):
+    """Candidate 3, alternative 5: the candidate stands."""
+    w = world(judge, alternatives=1)
+    cand = w.build("cand", 3, extra={"who.txt": "candidate\n"})
+    alt = w.build("alt", 5, extra={"who.txt": "alternative\n"})
+    w.stood(w.run(cand, alt), "candidate", cand, 3)
+
+
+@case
+def tie_candidate_comes_first(judge):
+    """Candidate 4, alternative 4: among equals the candidate comes first."""
+    w = world(judge, alternatives=1)
+    cand = w.build("cand", 4, extra={"who.txt": "candidate\n"})
+    alt = w.build("alt", 4, extra={"who.txt": "alternative\n"})
+    w.stood(w.run(cand, alt), "candidate", cand, 4)
+
+
+@case
+def tie_among_alternatives_goes_in_order(judge):
+    """Candidate 6, alternatives 4 and 4: `alternative-1` stands."""
+    w = world(judge, alternatives=2)
+    cand = w.build("cand", 6, extra={"who.txt": "candidate\n"})
+    alt1 = w.build("alt1", 4, extra={"who.txt": "first alternative\n"})
+    alt2 = w.build("alt2", 4, extra={"who.txt": "second alternative\n"})
+    w.stood(w.run(cand, alt1, alt2), "alternative-1", alt1, 4)
+
+
+@case
+def second_alternative_is_alternative_2(judge):
+    """Candidate 6, alternatives 5 and 4: the second stands and is recorded as `alternative-2`."""
+    w = world(judge, alternatives=2)
+    cand = w.build("cand", 6, extra={"who.txt": "candidate\n"})
+    alt1 = w.build("alt1", 5, extra={"who.txt": "first alternative\n"})
+    alt2 = w.build("alt2", 4, extra={"who.txt": "second alternative\n"})
+    w.stood(w.run(cand, alt1, alt2), "alternative-2", alt2, 4)
+
+
+@case
+def best_offered_must_still_beat_existing(judge):
+    """Existing 4; candidate 6, alternative 4: no offered build is lower than what exists, nothing stands."""
+    w = world(judge, alternatives=1, existing=toy(4))
+    w.refused(w.run(w.build("cand", 6), w.build("alt", 4)))
+
+
+@case
+def candidate_beats_existing_but_alternative_is_lower(judge):
+    """Existing 9; candidate 5, alternative 3: the candidate is higher than another offered build, the alternative stands."""
+    w = world(judge, alternatives=1, existing=toy(9))
+    cand = w.build("cand", 5, extra={"who.txt": "candidate\n"})
+    alt = w.build("alt", 3, extra={"who.txt": "alternative\n"})
+    w.stood(w.run(cand, alt), "alternative-1", alt, 3)
+
+
+@case
+def failing_alternative_does_not_count(judge):
+    """Candidate passes with 5; the alternative prints 1 but fails: only passing builds compete, the candidate stands."""
+    w = world(judge, alternatives=1)
+    cand = w.build("cand", 5, extra={"who.txt": "candidate\n"})
+    alt = w.build("alt", 1, ok=False, extra={"who.txt": "alternative\n"})
+    w.stood(w.run(cand, alt), "candidate", cand, 5)
+
+
+@case
+def failing_candidate_passing_alternative(judge):
+    """The candidate prints 1 but fails; the alternative passes with 5: the alternative stands, never the candidate."""
+    w = world(judge, alternatives=1)
+    cand = w.build("cand", 1, ok=False, extra={"who.txt": "candidate\n"})
+    alt = w.build("alt", 5, extra={"who.txt": "alternative\n"})
+    w.stood(w.run(cand, alt), "alternative-1", alt, 5)
+
+
+@case
+def every_offered_build_fails(judge):
+    """Candidate and alternative both fail: nothing stands."""
+    w = world(judge, alternatives=1, existing=toy(9))
+    w.refused(w.run(w.build("cand", 1, ok=False), w.build("alt", 2, ok=False)))
+
+# ---- Rule (c): fewer alternatives than the budget states -------------------
+
+
+@case
+def no_alternative_where_budget_states_one(judge):
+    """Budget `alternatives 1`, none offered: nothing stands, however good the candidate."""
+    w = world(judge, alternatives=1, existing=toy(9))
+    w.refused(w.run(w.build("cand", 1)))
+
+
+@case
+def one_alternative_where_budget_states_two(judge):
+    """Budget `alternatives 2`, one offered: nothing stands."""
+    w = world(judge, alternatives=2)
+    w.refused(w.run(w.build("cand", 1), w.build("alt", 2)))
+
+
+@case
+def budget_is_read_from_the_budget_line_refuse(judge):
+    """The budget is declaration 4: `alternatives 1` there, although other lines of unit.md say `alternatives 0`; none offered, nothing stands."""
+    w = world(judge, alternatives=1,
+              purpose="Hold the lowest integer among alternatives 0 to 9.",
+              selection="Limit: alternatives 0 would compare only with what exists.")
+    w.refused(w.run(w.build("cand", 1)))
+
+
+@case
+def budget_is_read_from_the_budget_line_stand(judge):
+    """`alternatives 0` in declaration 4, although other lines of unit.md say `alternatives 3`: the candidate stands with none offered."""
+    w = world(judge, alternatives=0,
+              purpose="Hold the lowest integer among alternatives 3 to 9.",
+              selection="A parent may give alternatives 3 later.")
+    cand = w.build("cand", 5)
+    w.stood(w.run(cand), "candidate", cand, 5)
+
+# ---- Rule (a): only <unit-dir>/measure/check, run on a copy ----------------
+
+
+@case
+def candidate_cannot_bring_its_own_check(judge):
+    """The candidate fails the unit's check but carries a `measure/check` of its own that passes anything: nothing stands."""
+    w = world(judge, existing=toy(9))
+    w.refused(w.run(w.build("cand", 1, ok=False, extra={"measure/check": SELF_SERVING_CHECK,
+                                                        "check": SELF_SERVING_CHECK})))
+
+
+@case
+def candidate_files_do_not_reach_the_units_measure(judge):
+    """A passing candidate holding `measure/check` and `unit.md` is installed under src only; the unit's own check and document stay as they were."""
+    w = world(judge, existing=toy(9))
+    cand = w.build("cand", 5, extra={"measure/check": SELF_SERVING_CHECK, "unit.md": "4. **Budget** — alternatives 0.\n"})
+    w.stood(w.run(cand), "candidate", cand, 5)
+
+
+@case
+def check_runs_on_a_copy_of_the_offered_builds(judge):
+    """The unit's check scribbles into the directory it is given: the offered builds stay intact and src is the candidate as offered."""
+    w = world(judge, alternatives=1, check=SCRIBBLING_CHECK)
+    cand = w.build("cand", 5, extra={"who.txt": "candidate\n"})
+    alt = w.build("alt", 7, extra={"who.txt": "alternative\n"})
+    w.stood(w.run(cand, alt), "candidate", cand, 5)
+    need(not os.path.exists(os.path.join(w.src, "scribble")), "the check's scribble was installed in src")
+
+
+@case
+def check_runs_on_a_copy_of_the_existing_src(judge):
+    """The scribbling check must not touch the existing src either: on refusal the tree is byte-identical."""
+    w = world(judge, existing=toy(5), check=SCRIBBLING_CHECK)
+    w.refused(w.run(w.build("cand", 6)))
+
+
+@case
+def unit_without_a_measure_is_refused(judge):
+    """No `measure/check` in the unit: the judge cannot decide, which is a refusal that changes nothing."""
+    w = world(judge, check=None)
+    w.refused(w.run(w.build("cand", 5)))
+
+# ---- Rule (d): exit 0 passes; the number is the LAST line of stdout --------
+
+
+@case
+def number_is_the_last_line_of_stdout(judge):
+    """The check prints `0`, a remark, then the number: existing 5 against candidate 7 is a refusal (by first lines 0 = 0 too)."""
+    w = world(judge, existing=toy(5), check=CHATTY_CHECK)
+    w.refused(w.run(w.build("cand", 7)))
+
+
+@case
+def number_recorded_is_the_last_line(judge):
+    """Same chatty check: candidate 3 stands over existing 5, and the line records 3."""
+    w = world(judge, existing=toy(5), check=CHATTY_CHECK)
+    cand = w.build("cand", 3)
+    w.stood(w.run(cand), "candidate", cand, 3)
+
+# ---- The tree's root: nearest directory above the unit holding root.md -----
+
+
+@case
+def relative_paths_from_the_trees_root(judge):
+    """Called from the tree's root with relative paths: same result, unit path still `shop/widget`."""
+    w = world(judge, alternatives=1)
+    cand = w.build("cand", 5, extra={"who.txt": "candidate\n"})
+    alt = w.build("alt", 3, extra={"who.txt": "alternative\n"})
+    w.stood(w.run(cand, alt, cwd=w.tree, relative_to=w.tree), "alternative-1", alt, 3)
+
+
+@case
+def relative_paths_from_another_directory(judge):
+    """Called from a directory outside the tree with relative paths: stands.tsv is the tree's, the unit path is from the tree's root."""
+    w = world(judge)
+    cand = w.build("cand", 5)
+    w.stood(w.run(cand, cwd=w.elsewhere, relative_to=w.elsewhere), "candidate", cand, 5)
+
+
+@case
+def relative_unit_from_its_parent_directory(judge):
+    """Called from `<tree>/shop` as `judge widget <absolute candidate>`: the unit path recorded is `shop/widget`."""
+    w = world(judge)
+    cand = w.build("cand", 5)
+    w.stood(w.run(cand, cwd=os.path.dirname(w.unit), unit_arg="widget"), "candidate", cand, 5)
+
+
+@case
+def refusal_from_the_trees_root_changes_nothing(judge):
+    """Refusing with relative paths from the tree's root also leaves no trace."""
+    w = world(judge, existing=toy(5))
+    w.refused(w.run(w.build("cand", 5), cwd=w.tree, relative_to=w.tree))
+
+
+@case
+def nearest_root_md_is_the_root(judge):
+    """A tree inside a larger tree: the root is the NEAREST directory above the unit holding root.md; the line goes to its judge/stands.tsv with path `shop/widget`, nothing above changes."""
+    w = world(judge, nested=True)
+    cand = w.build("cand", 5)
+    w.stood(w.run(cand), "candidate", cand, 5)
+
+
+# ---------------------------------------------------------------------------
+
+
+def build_bytes(build):
+    total = 0
+    for dirpath, _, filenames in os.walk(build):
+        for name in filenames:
+            total += os.path.getsize(os.path.join(dirpath, name))
+    return total
+
+
+def main(argv):
+    if len(argv) != 2:
+        print("usage: check <build-dir>", file=sys.stderr)
+        return 1
+    build = os.path.abspath(argv[1])
+    judge = os.path.join(build, "judge")
+    if not os.path.isfile(judge) or not os.access(judge, os.X_OK):
+        print("FAIL build: no executable file `judge` in %s" % build, file=sys.stderr)
+        return 1
+    failed = []
+    for function in CASES:
+        try:
+            function(judge)
+            print("pass %s" % function.__name__)
+        except Fail as why:
+            failed.append(function.__name__)
+            print("FAIL %s: %s\n     claim: %s" % (function.__name__, why, function.__doc__),
+                  file=sys.stderr)
+        except Exception as e:  # a defect of the fixture machinery, reported as a failed case
+            failed.append(function.__name__)
+            print("FAIL %s: %s: %s" % (function.__name__, type(e).__name__, e), file=sys.stderr)
+        finally:
+            while OPEN:
+                try:
+                    OPEN.pop().close()
+                except Exception:
+                    pass
+    if failed:
+        print("%d of %d cases failed: %s" % (len(failed), len(CASES), " ".join(failed)),
+              file=sys.stderr)
+        return 1
+    print("%d cases passed" % len(CASES))
+    print(build_bytes(build))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

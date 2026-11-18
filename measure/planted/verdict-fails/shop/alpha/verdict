@@ -1,0 +1,3 @@
+#!/bin/sh
+# fixture verdict: the measure fails
+exit 1

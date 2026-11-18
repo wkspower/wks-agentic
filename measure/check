@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""The executable check of the root's measure (root.md, declaration 5).
+
+Usage: check <tree-dir>
+
+Number = items in <tree>/queue.md / correct results.
+
+  item            one heading `### Q<n> | <kind> | asked=<time> | answered=<time or ->`
+                  (times UTC, YYYY-MM-DDTHH:MMZ).  It waits at time t when
+                  asked <= t and it is unanswered (`-`) or answered > t.
+  correct result  a unit with a line in <tree>/judge/stands.tsv whose current
+                  <unit>/src has the hash of its LAST line there (its last
+                  change is the one its judge let stand) and whose executable
+                  <unit>/verdict exits 0 (run from the tree).
+  point           the first line of each unit in stands.tsv, in file order:
+                  the k-th correct result, at that line's time t, where the
+                  number was (items asked <= t) / k.
+
+Passes (exit 0, last line of stdout = the number, two decimals) when
+  - there is at least one correct result now, and
+  - if there are two points or more: the number now is no higher than at the
+    point before the last one, and no more items wait now than did then.
+Fails (exit 1, the reason on stderr) otherwise.  With no correct result the
+number is `unknown`, never zero.  The tree is only read.
+"""
+import hashlib
+import os
+import re
+import subprocess
+import sys
+from fractions import Fraction
+
+VERDICT_TIMEOUT = 600  # seconds for one unit's verdict
+HEADING = re.compile(r"^###\s+Q(\d+)\s*\|\s*([^|]*?)\s*\|\s*asked=(\S+)\s*\|\s*answered=(\S+)\s*$")
+TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$")
+
+
+class Unreadable(Exception):
+    """The record cannot be read as the measure defines it: the check fails."""
+
+
+def read_items(tree):
+    """[(asked, answered or None)] for every item heading of queue.md."""
+    path = os.path.join(tree, "queue.md")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError) as e:
+        raise Unreadable("queue.md cannot be read: %s" % e)
+    items = []
+    for n, line in enumerate(lines, 1):
+        if not re.match(r"^###(\s|$)", line):
+            continue
+        m = HEADING.match(line)
+        if not m:
+            raise Unreadable("queue.md line %d: a heading that is not "
+                             "`### Q<n> | <kind> | asked=<time> | answered=<time or ->`" % n)
+        asked, answered = m.group(3), m.group(4)
+        if not TIME.match(asked) or not (answered == "-" or TIME.match(answered)):
+            raise Unreadable("queue.md line %d: a time that is not YYYY-MM-DDTHH:MMZ" % n)
+        items.append((asked, None if answered == "-" else answered))
+    return items
+
+
+def read_stands(tree):
+    """[(time, unit, hash)] for every line of judge/stands.tsv; a missing file has none."""
+    path = os.path.join(tree, "judge", "stands.tsv")
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().split("\n")
+    except (OSError, UnicodeDecodeError) as e:
+        raise Unreadable("judge/stands.tsv cannot be read: %s" % e)
+    stands = []
+    for n, line in enumerate(lines, 1):
+        line = line.rstrip("\r")
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        if len(fields) < 5:
+            raise Unreadable("judge/stands.tsv line %d: fewer than 5 tab-separated fields" % n)
+        when, unit, digest = fields[0], fields[1].rstrip("/"), fields[4].strip().lower()
+        if not TIME.match(when):
+            raise Unreadable("judge/stands.tsv line %d: time is not YYYY-MM-DDTHH:MMZ" % n)
+        parts = unit.split("/")
+        if not unit or unit.startswith("/") or any(p in ("", ".", "..") for p in parts):
+            raise Unreadable("judge/stands.tsv line %d: %r is not a unit path inside the tree"
+                             % (n, fields[1]))
+        stands.append((when, unit, digest))
+    return stands
+
+
+def src_hash(src):
+    """sha256 over path NUL bytes NUL of each file under src, sorted by relative
+    posix path, anything inside `__pycache__` left out.  None when there is no src."""
+    if not os.path.isdir(src):
+        return None
+    files = []
+    for dirpath, dirnames, filenames in os.walk(src):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            files.append((os.path.relpath(full, src).replace(os.sep, "/"), full))
+    h = hashlib.sha256()
+    try:
+        for rel, full in sorted(files):
+            with open(full, "rb") as f:
+                data = f.read()
+            h.update(rel.encode("utf-8", "surrogateescape") + b"\0" + data + b"\0")
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def why_not_correct(tree, unit, stood_hash):
+    """None when the unit is a correct result now, else the reason."""
+    base = os.path.join(tree, *unit.split("/"))
+    current = src_hash(os.path.join(base, "src"))
+    if current is None:
+        return "no readable src"
+    if current != stood_hash:
+        return "src differs from what its judge last let stand"
+    verdict = os.path.join(base, "verdict")
+    if not os.path.isfile(verdict):
+        return "no verdict"
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    try:
+        done = subprocess.run([verdict], cwd=tree, env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=VERDICT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return "verdict did not finish in %d s" % VERDICT_TIMEOUT
+    except OSError as e:
+        return "verdict cannot be run (%s)" % e.strerror
+    if done.returncode != 0:
+        return "verdict fails (exit %d)" % done.returncode
+    return None
+
+
+def measure(tree):
+    """(passed, number or None, reasons)."""
+    items = read_items(tree)
+    stands = read_stands(tree)
+
+    last_hash = {}   # unit -> hash of its last stands line
+    points = []      # (number, waiting) at the first line of each unit
+    for when, unit, digest in stands:
+        if unit not in last_hash:
+            k = len(points) + 1
+            asked = sum(1 for a, _ in items if a <= when)
+            waiting = sum(1 for a, b in items if a <= when and (b is None or b > when))
+            points.append((Fraction(asked, k), waiting))
+        last_hash[unit] = digest
+
+    reasons = []
+    correct = 0
+    for unit in last_hash:
+        why = why_not_correct(tree, unit, last_hash[unit])
+        if why is None:
+            correct += 1
+        else:
+            reasons.append("not a correct result: %s: %s" % (unit, why))
+    if correct == 0:
+        return False, None, reasons + ["unknown: no correct result, so the number cannot be given"]
+
+    number = Fraction(len(items), correct)
+    waiting = sum(1 for _, b in items if b is None)
+    passed = True
+    if len(points) >= 2:
+        then_number, then_waiting = points[-2]
+        if number > then_number:
+            passed = False
+            reasons.append("number rose: %.2f now, %.2f at the previous correct result"
+                           % (number, then_number))
+        if waiting > then_waiting:
+            passed = False
+            reasons.append("queue grew: %d items waiting now, %d at the previous correct result"
+                           % (waiting, then_waiting))
+    print("items %d, correct results %d, waiting %d" % (len(items), correct, waiting))
+    return passed, number, reasons
+
+
+def main(argv):
+    if len(argv) != 2:
+        print("usage: check <tree-dir>", file=sys.stderr)
+        return 1
+    tree = os.path.abspath(argv[1])
+    if not os.path.isdir(tree):
+        print("FAIL: %s is not a directory" % argv[1], file=sys.stderr)
+        return 1
+    try:
+        passed, number, reasons = measure(tree)
+    except Unreadable as e:
+        print("FAIL: %s" % e, file=sys.stderr)
+        return 1
+    for reason in reasons:
+        print(reason, file=sys.stderr)
+    if not passed:
+        print("FAIL", file=sys.stderr)
+        return 1
+    print("%.2f" % number)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
