@@ -18,7 +18,9 @@ exists every measure fails at import, number 0.
 Every planted case in `<unit>/planted/` is a whole replacement of the unit's
 module, correct except for the defect named in its first line; each fails its
 measure (verified against a private reference implementation that is not in
-this repository).
+this repository). Every planted case must compile (`python3 -m py_compile
+measures/*/planted/*.py`) and import cleanly, so that it fails its measure by
+assertion, not by error.
 
 The pet-shop application keeps state for the life of the process and offers no
 reset, so each case of `pet-shop/` uses skus of its own and asserts only on them.

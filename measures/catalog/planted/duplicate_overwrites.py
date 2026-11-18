@@ -19,7 +19,7 @@ class Catalog:
             raise ValueError("kind must be 'pet' or 'supply'")
         if isinstance(price_cents, bool) or not isinstance(price_cents, int) or price_cents <= 0:
             raise ValueError("price_cents must be a positive int")
-                item = {"sku": sku, "name": name, "kind": kind, "price_cents": price_cents}
+        item = {"sku": sku, "name": name, "kind": kind, "price_cents": price_cents}
         self._items[sku] = item
         return dict(item)
 
