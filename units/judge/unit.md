@@ -9,7 +9,7 @@ Record: [`record/judge.log.md`](../../record/judge.log.md).
 2. **Interface** — Python 3, standard library only, run from the repository root as `python3 -m units.judge.verdict <command>`. Every command prints one JSON object on stdout and exits 0 for pass, 1 for fail, 2 for a malformed call.
    - `build <unit>` — builds the unit from nothing: byte-compiles `src/` into a fresh temporary directory. `{"unit", "pass"}`.
    - `verdict <unit>` — runs the unit's measure against `src/`. `{"unit", "number", "pass"}`; `number` is passed cases / all cases; pass when `number == 1` and there is at least one case.
-   - `proof <unit>` — proves the measure: runs it once per planted case and passes only when every planted case fails it and there is at least one. `{"unit", "planted": {case: "failed"|"passed"}, "pass"}`.
+   - `proof <unit>` — proves the measure: runs it once per planted case and passes only when every planted case fails it and there is at least one. A planted case that cannot be loaded (syntax error, or an error raised by its own import) tests nothing: it is reported `"error"` and makes `proof` fail. `{"unit", "planted": {case: "failed"|"passed"|"error"}, "pass"}`.
    - `rules` — checks the pet shop's rules R1–R3 ([`units/pet-shop`](../pet-shop/unit.md)) on `src/`. `{"violations": [{"rule", "file", "line", "detail"}], "pass"}`.
    - `judge --base <git-ref>` — the decision on a change: passes only when `rules` passes, and for every unit `build`, `verdict` and `proof` pass, and no unit's `number` is lower than at `<git-ref>` (a unit absent at `<git-ref>` counts 0 there). `{"units": {unit: {"build", "number", "base_number", "proof"}}, "rules", "pass"}`.
    - Units known: `catalog`, `stock`, `orders`, `pet-shop`. Unknown unit → exit 2.
