@@ -1,0 +1,1200 @@
+#!/usr/bin/env python3
+"""Audit cases for the unit `stock` (stock.py), written from docs/stock.md alone.
+
+Usage: check <build-dir>      (the build dir holds stock.py)
+
+Prints one line per case, `PASS <case>` or `FAIL <case>: <reason>`, then
+`<passed>/<total>`; exits 0 only if every case passes. Each behavioural case
+runs in its own Python subprocess with a timeout; nothing is written into the
+build dir. Standard library only.
+"""
+import ast
+import importlib.util
+import json
+import os
+import random
+import subprocess
+import sys
+import tempfile
+from decimal import Decimal
+from fractions import Fraction
+
+TIMEOUT = 30
+MARK = "@@AUDIT-RESULT@@"
+CASES = []          # (name, function) for behavioural cases, in order
+STATIC = []         # (name, function(build_dir)) for static cases
+BUILD = None        # set in the child process
+
+
+def case(name):
+    def deco(fn):
+        CASES.append((name, fn))
+        return fn
+    return deco
+
+
+def static(name):
+    def deco(fn):
+        STATIC.append((name, fn))
+        return fn
+    return deco
+
+
+# ----------------------------------------------------------------- helpers
+
+class Fail(Exception):
+    pass
+
+
+def check(cond, msg):
+    if not cond:
+        raise Fail(msg)
+
+
+def load(alias="stock"):
+    """Load a fresh, separate instance of the build's stock.py."""
+    path = os.path.join(BUILD, "stock.py")
+    spec = importlib.util.spec_from_file_location(alias, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[alias] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def rt(state):
+    """The round trip named in the document."""
+    return json.loads(json.dumps(state))
+
+
+def short(v):
+    r = repr(v)
+    return r if len(r) <= 60 else r[:57] + "..."
+
+
+def is_int(v):
+    return type(v) is int
+
+
+def oh(m, s, item, want):
+    """on_hand must be exactly an int (not bool/float) equal to `want`."""
+    got = m.on_hand(s, item)
+    check(is_int(got), "on_hand(%s) returned %s, not an int" % (short(item), short(got)))
+    check(got == want, "on_hand(%s) is %s, expected %s" % (short(item), short(got), want))
+
+
+def ret(got, want, what):
+    """Return value of receive/remove: the quantity now on hand."""
+    check(not isinstance(got, bool) and isinstance(got, (int, float)) and got == want,
+          "%s returned %s, expected %s" % (what, short(got), want))
+
+
+def refused(fn, *args):
+    """The call must raise ValueError (the class stated in the document)."""
+    what = "%s(state, %s)" % (fn.__name__, ", ".join(short(a) for a in args[1:]))
+    try:
+        got = fn(*args)
+    except ValueError:
+        return
+    except Exception as e:  # any other class is the wrong exception
+        raise Fail("%s raised %s, not ValueError" % (what, type(e).__name__))
+    raise Fail("%s was not refused, returned %s" % (what, short(got)))
+
+
+def stocked(m):
+    """A state with a few items on hand, and what it should hold."""
+    s = m.new()
+    want = {"a": 10, "b": 3, "c": 1}
+    for k, v in want.items():
+        m.receive(s, k, v)
+    return s, want
+
+
+def same(m, s, want):
+    for k, v in want.items():
+        oh(m, s, k, v)
+
+
+def bad_ids_hashable():
+    return [None, 5, 0, 1.5, True, False, b"a", ("a",), frozenset(["a"]), object()]
+
+
+def bad_ids_unhashable():
+    return [["a"], [], {"a": 1}, {}, {"a"}, bytearray(b"a")]
+
+
+def bad_quantities():
+    return [0, -1, -5, -10 ** 30, True, False, 1.0, 2.0, 2.5, 0.0, -1.0,
+            float("nan"), float("inf"), None, "1", "", "one", [1], [], (1,), {}, {1},
+            b"1", 1 + 0j, Decimal(1), Fraction(1)]
+
+
+# ------------------------------------------------------------ static cases
+
+# Rule 3: "no line longer than 100 characters".
+@static("static-no-line-over-100-characters")
+def static_lines(build):
+    with open(os.path.join(build, "stock.py"), "rb") as f:
+        text = f.read().decode("utf-8")
+    for n, line in enumerate(text.splitlines(), 1):
+        check(len(line) <= 100, "line %d has %d characters" % (n, len(line)))
+
+
+# Rule 3: "Python 3 standard library only ... a unit's module imports no other unit's module".
+@static("static-imports-standard-library-only")
+def static_imports(build):
+    with open(os.path.join(build, "stock.py"), "rb") as f:
+        tree = ast.parse(f.read())
+    names = getattr(sys, "stdlib_module_names", None)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            check(node.level == 0, "relative import on line %d" % node.lineno)
+            mods = [node.module]
+        else:
+            continue
+        for mod in mods:
+            top = mod.split(".")[0]
+            if names is not None:
+                ok = top in names
+            else:  # old interpreter: accept what resolves outside the build dir
+                spec = importlib.util.find_spec(top)
+                origin = getattr(spec, "origin", None) or ""
+                ok = spec is not None and "site-packages" not in origin \
+                    and not origin.startswith(os.path.abspath(build))
+            check(ok, "imports %s (line %d), not standard library" % (mod, node.lineno))
+
+
+# ------------------------------------------------------------ the interface
+
+# "A module `stock.py`" with `new`, `on_hand`, `receive`, `remove`.
+@case("interface-four-functions-present")
+def c_interface():
+    m = load()
+    for name in ("new", "on_hand", "receive", "remove"):
+        check(callable(getattr(m, name, None)), "no callable %s" % name)
+
+
+# "`new()` returns an empty state." / "0 for an item never received."
+@case("new-is-empty")
+def c_new_empty():
+    m = load()
+    s = m.new()
+    for item in ("a", "b", "x", " ", "0", "never"):
+        oh(m, s, item, 0)
+
+
+# "`on_hand(state, item_id)` returns the quantity as an `int`"
+@case("on-hand-is-exactly-int")
+def c_on_hand_int():
+    m = load()
+    s = m.new()
+    oh(m, s, "a", 0)
+    m.receive(s, "a", 1)
+    oh(m, s, "a", 1)
+    m.receive(s, "a", 41)
+    oh(m, s, "a", 42)
+    m.remove(s, "a", 2)
+    oh(m, s, "a", 40)
+    m.remove(s, "a", 40)
+    oh(m, s, "a", 0)
+    s2 = rt(s)
+    oh(m, s2, "a", 0)
+    m.receive(s2, "a", 7)
+    oh(m, rt(s2), "a", 7)
+
+
+# "`receive(state, item_id, quantity)` adds and returns the quantity now on hand."
+@case("receive-adds-and-returns-total")
+def c_receive():
+    m = load()
+    s = m.new()
+    ret(m.receive(s, "a", 3), 3, "first receive")
+    oh(m, s, "a", 3)
+    ret(m.receive(s, "a", 4), 7, "second receive")
+    oh(m, s, "a", 7)
+    ret(m.receive(s, "a", 1), 8, "third receive")
+    oh(m, s, "a", 8)
+    ret(m.receive(s, "b", 1), 1, "receive of another item")
+    oh(m, s, "a", 8)
+    oh(m, s, "b", 1)
+
+
+# "returns the quantity now on hand" - the quantity is an `int` (see on_hand).
+@case("receive-returns-exactly-int")
+def c_receive_int():
+    m = load()
+    s = m.new()
+    for q, total in ((1, 1), (2, 3), (10 ** 20, 10 ** 20 + 3)):
+        got = m.receive(s, "a", q)
+        check(is_int(got) and got == total, "receive returned %s, expected int %d"
+              % (short(got), total))
+    got = m.receive(rt(s), "a", 1)
+    check(is_int(got), "receive after round trip returned %s, not an int" % short(got))
+
+
+# "`remove(state, item_id, quantity)` takes away and returns the quantity now on hand"
+@case("remove-takes-away-and-returns-remaining")
+def c_remove():
+    m = load()
+    s = m.new()
+    m.receive(s, "a", 10)
+    m.receive(s, "b", 5)
+    ret(m.remove(s, "a", 3), 7, "remove 3 of 10")
+    oh(m, s, "a", 7)
+    ret(m.remove(s, "a", 1), 6, "remove 1 of 7")
+    oh(m, s, "a", 6)
+    oh(m, s, "b", 5)
+    ret(m.remove(s, "b", 4), 1, "remove 4 of 5")
+    oh(m, s, "a", 6)
+    oh(m, s, "b", 1)
+
+
+# "returns the quantity now on hand" - the quantity is an `int` (see on_hand).
+@case("remove-returns-exactly-int")
+def c_remove_int():
+    m = load()
+    s = m.new()
+    m.receive(s, "a", 10)
+    for q, left in ((1, 9), (4, 5), (5, 0)):
+        got = m.remove(s, "a", q)
+        check(is_int(got) and got == left, "remove returned %s, expected int %d"
+              % (short(got), left))
+    m.receive(s, "a", 2)
+    got = m.remove(rt(s), "a", 2)
+    check(is_int(got) and got == 0, "remove after round trip returned %s" % short(got))
+
+
+# "`ValueError` when `quantity` exceeds what is on hand" - exactly what is there does not.
+@case("remove-exactly-what-is-on-hand")
+def c_remove_all():
+    m = load()
+    s = m.new()
+    m.receive(s, "a", 5)
+    m.receive(s, "b", 2)
+    ret(m.remove(s, "a", 5), 0, "remove 5 of 5")
+    oh(m, s, "a", 0)
+    oh(m, s, "b", 2)
+    refused(m.remove, s, "a", 1)
+    oh(m, s, "a", 0)
+    ret(m.receive(s, "a", 2), 2, "receive after emptying")
+    ret(m.remove(s, "a", 1), 1, "remove 1 of 2")
+    ret(m.remove(s, "a", 1), 0, "remove 1 of 1")
+    oh(m, s, "a", 0)
+    oh(m, s, "b", 2)
+    ret(m.remove(s, "b", 2), 0, "remove 2 of 2")
+    oh(m, s, "b", 0)
+
+
+# "`ValueError` when `quantity` exceeds what is on hand." / "A refused call changes nothing."
+@case("remove-one-more-than-on-hand-refused")
+def c_remove_over():
+    m = load()
+    s, want = stocked(m)
+    refused(m.remove, s, "a", 11)
+    same(m, s, want)
+    refused(m.remove, s, "c", 2)
+    same(m, s, want)
+    refused(m.remove, s, "b", 4)
+    refused(m.remove, s, "b", 1000)
+    same(m, s, want)
+    ret(m.remove(s, "a", 10), 0, "remove 10 of 10 after refusals")
+    ret(m.remove(s, "c", 1), 0, "remove 1 of 1 after refusals")
+    ret(m.remove(s, "b", 3), 0, "remove 3 of 3 after refusals")
+
+
+# "0 for an item never received" + "`ValueError` when `quantity` exceeds what is on hand."
+@case("remove-item-never-received-refused")
+def c_remove_unknown():
+    m = load()
+    s = m.new()
+    refused(m.remove, s, "ghost", 1)
+    oh(m, s, "ghost", 0)
+    s, want = stocked(m)
+    refused(m.remove, s, "ghost", 1)
+    refused(m.remove, s, "ghost", 10)
+    oh(m, s, "ghost", 0)
+    same(m, s, want)
+    ret(m.receive(s, "ghost", 2), 2, "receive after refused remove")
+    oh(m, s, "ghost", 2)
+
+
+# Purpose: "never fewer than none" - no sequence of removals goes below zero.
+@case("never-fewer-than-none")
+def c_never_negative():
+    m = load()
+    s = m.new()
+    m.receive(s, "a", 3)
+    ret(m.remove(s, "a", 2), 1, "remove 2 of 3")
+    refused(m.remove, s, "a", 2)
+    oh(m, s, "a", 1)
+    ret(m.remove(s, "a", 1), 0, "remove 1 of 1")
+    for q in (1, 2, 3, 10 ** 12):
+        refused(m.remove, s, "a", q)
+        oh(m, s, "a", 0)
+    ret(m.receive(s, "a", 1), 1, "receive after refusals at zero")
+
+
+# "0 for an item never received" - asking does not put anything on hand.
+@case("on-hand-does-not-create-stock")
+def c_on_hand_pure():
+    m = load()
+    s = m.new()
+    for _ in range(5):
+        oh(m, s, "a", 0)
+    refused(m.remove, s, "a", 1)
+    m.receive(s, "b", 4)
+    for _ in range(5):
+        oh(m, s, "b", 4)
+        oh(m, s, "a", 0)
+    ret(m.receive(s, "a", 1), 1, "receive after on_hand")
+    ret(m.remove(s, "b", 4), 0, "remove after on_hand")
+
+
+# Purpose: "how many of each item are on hand" - items are counted separately.
+@case("items-counted-separately")
+def c_items_separate():
+    m = load()
+    s = m.new()
+    m.receive(s, "a", 5)
+    oh(m, s, "b", 0)
+    m.receive(s, "b", 7)
+    oh(m, s, "a", 5)
+    m.remove(s, "a", 5)
+    oh(m, s, "b", 7)
+    refused(m.remove, s, "a", 1)
+    oh(m, s, "b", 7)
+    m.remove(s, "b", 6)
+    oh(m, s, "a", 0)
+    oh(m, s, "b", 1)
+
+
+# "Item ids are data: any non-empty string" - different strings are different items.
+@case("item-ids-distinct-strings-distinct-items")
+def c_ids_distinct():
+    m = load()
+    s = m.new()
+    ids = ["a", "A", " a", "a ", "a\n", "1", "01", "1.0", "1e0", "true", "True",
+           "null", "None", "é", "é", "a/b", "a.b"]
+    for n, item in enumerate(ids, 1):
+        ret(m.receive(s, item, n), n, "receive(%s)" % short(item))
+    for n, item in enumerate(ids, 1):
+        oh(m, s, item, n)
+    s2 = rt(s)
+    for n, item in enumerate(ids, 1):
+        oh(m, s2, item, n)
+    for n, item in enumerate(ids, 1):
+        ret(m.remove(s2, item, n), 0, "remove(%s)" % short(item))
+        refused(m.remove, s2, item, 1)
+    for n, item in enumerate(ids, 1):
+        oh(m, s, item, n)
+
+
+# "Item ids are data: any non-empty string, known to the catalog or not."
+@case("item-ids-any-non-empty-string")
+def c_ids_any():
+    m = load()
+    s = m.new()
+    ids = [" ", "  ", "\t", "\n", "\x00", "0", "-1", "x" * 10000, "猫", "\U0001F431",
+           'a"b', "a\\b", "a:b", "a,b", "a=b", "{}", "[]", "__class__", "__proto__",
+           "items", "state", "quantity", "on_hand", "keys", "version", "stock"]
+    for n, item in enumerate(ids, 2):
+        refused(m.remove, s, item, 1)
+        ret(m.receive(s, item, n), n, "receive(%s)" % short(item))
+        oh(m, s, item, n)
+    s = rt(s)
+    for n, item in enumerate(ids, 2):
+        oh(m, s, item, n)
+        ret(m.remove(s, item, 1), n - 1, "remove(%s)" % short(item))
+        refused(m.remove, s, item, n)
+    for n, item in enumerate(ids, 2):
+        oh(m, s, item, n - 1)
+    oh(m, s, "unseen", 0)
+
+
+# "Functions change the state they are given, in place."
+@case("state-changed-in-place")
+def c_in_place():
+    m = load()
+    s = m.new()
+    alias = s
+    r = m.receive(s, "a", 5)
+    check(r is not s, "receive returned the state")
+    oh(m, alias, "a", 5)
+    check(alias is s, "state object replaced")
+    r = m.remove(s, "a", 2)
+    check(r is not s, "remove returned the state")
+    oh(m, alias, "a", 3)
+
+    def worker(state):
+        m.receive(state, "b", 9)
+        m.remove(state, "a", 3)
+    worker(s)
+    oh(m, s, "b", 9)
+    oh(m, s, "a", 0)
+    s2 = rt(s)
+    alias2 = s2
+    m.receive(s2, "a", 4)
+    oh(m, alias2, "a", 4)
+    oh(m, s, "a", 0)
+
+
+# "`new()` returns an empty state." - each one its own; the module "holds no state".
+@case("new-states-independent")
+def c_new_independent():
+    m = load()
+    s1 = m.new()
+    s2 = m.new()
+    check(s1 is not s2, "new() returned the same object twice")
+    m.receive(s1, "a", 5)
+    oh(m, s2, "a", 0)
+    refused(m.remove, s2, "a", 1)
+    m.receive(s2, "a", 2)
+    m.receive(s2, "b", 8)
+    oh(m, s1, "a", 5)
+    oh(m, s1, "b", 0)
+    m.remove(s1, "a", 5)
+    oh(m, s2, "a", 2)
+    s3 = m.new()
+    oh(m, s3, "a", 0)
+    oh(m, s3, "b", 0)
+    refused(m.remove, s3, "b", 1)
+    oh(m, s2, "b", 8)
+
+
+# "`new()` returns an empty state." - also after other states have been used.
+@case("new-empty-after-other-states-used")
+def c_new_after_use():
+    m = load()
+    for i in range(5):
+        s = m.new()
+        oh(m, s, "a", 0)
+        oh(m, s, "k%d" % i, 0)
+        ret(m.receive(s, "a", 3), 3, "receive on fresh state %d" % i)
+        ret(m.receive(s, "k%d" % i, 1), 1, "receive on fresh state %d" % i)
+        refused(m.receive, s, "a", 0)
+        refused(m.remove, s, "a", 4)
+    s = rt(m.new())
+    oh(m, s, "a", 0)
+
+
+# ----------------------------------------------- refusals: item_id, receive
+
+# "`receive` ... raise `ValueError` when `item_id` is not a non-empty string"
+@case("receive-empty-id-refused")
+def c_recv_empty_id():
+    m = load()
+    s = m.new()
+    refused(m.receive, s, "", 1)
+    s, want = stocked(m)
+    refused(m.receive, s, "", 1)
+    refused(m.receive, s, "", 5)
+    same(m, s, want)
+    refused(m.receive, rt(s), "", 1)
+
+
+# "`receive` ... raise `ValueError` when `item_id` is not a non-empty string"
+@case("receive-non-string-id-refused")
+def c_recv_nonstr_id():
+    m = load()
+    s, want = stocked(m)
+    for bad in bad_ids_hashable():
+        refused(m.receive, s, bad, 1)
+        same(m, s, want)
+    s2 = rt(s)
+    for bad in bad_ids_hashable():
+        refused(m.receive, s2, bad, 1)
+    same(m, s2, want)
+    oh(m, s2, "5", 0)
+    oh(m, s2, "None", 0)
+    oh(m, s2, "True", 0)
+    oh(m, s2, "true", 0)
+    oh(m, s2, "null", 0)
+
+
+# "`receive` ... raise `ValueError` when `item_id` is not a non-empty string" (not TypeError)
+@case("receive-unhashable-id-refused")
+def c_recv_unhashable_id():
+    m = load()
+    s = m.new()
+    for bad in bad_ids_unhashable():
+        refused(m.receive, s, bad, 1)
+    s, want = stocked(m)
+    for bad in bad_ids_unhashable():
+        refused(m.receive, s, bad, 1)
+        same(m, s, want)
+    s2 = rt(s)
+    for bad in bad_ids_unhashable():
+        refused(m.receive, s2, bad, 1)
+    same(m, s2, want)
+
+
+# ------------------------------------------------ refusals: item_id, remove
+
+# "`remove` raise `ValueError` when `item_id` is not a non-empty string"
+@case("remove-empty-id-refused")
+def c_rem_empty_id():
+    m = load()
+    s = m.new()
+    refused(m.remove, s, "", 1)
+    s, want = stocked(m)
+    refused(m.remove, s, "", 1)
+    same(m, s, want)
+    refused(m.remove, rt(s), "", 1)
+
+
+# "`remove` raise `ValueError` when `item_id` is not a non-empty string"
+@case("remove-non-string-id-refused")
+def c_rem_nonstr_id():
+    m = load()
+    s, want = stocked(m)
+    m.receive(s, "5", 5)
+    m.receive(s, "None", 5)
+    m.receive(s, "True", 5)
+    m.receive(s, "1", 5)
+    want.update({"5": 5, "None": 5, "True": 5, "1": 5})
+    for bad in bad_ids_hashable():
+        refused(m.remove, s, bad, 1)
+        same(m, s, want)
+    s2 = rt(s)
+    for bad in bad_ids_hashable():
+        refused(m.remove, s2, bad, 1)
+    same(m, s2, want)
+
+
+# "`remove` raise `ValueError` when `item_id` is not a non-empty string" (not TypeError)
+@case("remove-unhashable-id-refused")
+def c_rem_unhashable_id():
+    m = load()
+    s = m.new()
+    for bad in bad_ids_unhashable():
+        refused(m.remove, s, bad, 1)
+    s, want = stocked(m)
+    for bad in bad_ids_unhashable():
+        refused(m.remove, s, bad, 1)
+        same(m, s, want)
+    s2 = rt(s)
+    for bad in bad_ids_unhashable():
+        refused(m.remove, s2, bad, 1)
+    same(m, s2, want)
+
+
+# ---------------------------------------------- refusals: quantity, receive
+
+def recv_quantities(bads):
+    m = load()
+    s = m.new()
+    for bad in bads:
+        refused(m.receive, s, "a", bad)
+        oh(m, s, "a", 0)
+    s, want = stocked(m)
+    for bad in bads:
+        refused(m.receive, s, "a", bad)
+        refused(m.receive, s, "new", bad)
+        same(m, s, want)
+        oh(m, s, "new", 0)
+    s2 = rt(s)
+    for bad in bads:
+        refused(m.receive, s2, "a", bad)
+    same(m, s2, want)
+    ret(m.receive(s, "a", 1), 11, "valid receive after refusals")
+
+
+# "`quantity` is not an `int` ... of 1 or more" - zero is refused.
+@case("receive-zero-quantity-refused")
+def c_recv_zero():
+    recv_quantities([0])
+
+
+# "`quantity` is not an `int` ... of 1 or more" - negatives are refused.
+@case("receive-negative-quantity-refused")
+def c_recv_negative():
+    recv_quantities([-1, -2, -10, -10 ** 30])
+
+
+# "`quantity` is not an `int` (not a `bool`)" - True and False are refused.
+@case("receive-bool-quantity-refused")
+def c_recv_bool():
+    recv_quantities([True, False])
+
+
+# "`quantity` is not an `int`" - floats are refused, whole-valued ones too.
+@case("receive-float-quantity-refused")
+def c_recv_float():
+    recv_quantities([1.0, 2.0, 2.5, 0.5, 0.0, -1.0, 1e30, float("nan"), float("inf")])
+
+
+# "`quantity` is not an `int`" - None is refused.
+@case("receive-none-quantity-refused")
+def c_recv_none():
+    recv_quantities([None])
+
+
+# "`quantity` is not an `int`" - strings are refused, numeric-looking ones too.
+@case("receive-string-quantity-refused")
+def c_recv_str():
+    recv_quantities(["1", "5", "", "one", " 1", b"1"])
+
+
+# "`quantity` is not an `int`" - containers and other number types are refused.
+@case("receive-other-type-quantity-refused")
+def c_recv_other():
+    recv_quantities([[1], [], (1,), {}, {1}, {"q": 1}, 1 + 0j, Decimal(1), Fraction(1),
+                     Decimal("2.5"), object()])
+
+
+# ----------------------------------------------- refusals: quantity, remove
+
+def rem_quantities(bads):
+    m = load()
+    s, want = stocked(m)
+    for bad in bads:
+        refused(m.remove, s, "a", bad)   # 10 on hand: only the quantity is at fault
+        refused(m.remove, s, "c", bad)   # 1 on hand
+        refused(m.remove, s, "none", bad)
+        same(m, s, want)
+        oh(m, s, "none", 0)
+    s2 = rt(s)
+    for bad in bads:
+        refused(m.remove, s2, "a", bad)
+    same(m, s2, want)
+    ret(m.remove(s, "a", 10), 0, "valid remove after refusals")
+
+
+# "`quantity` is not an `int` ... of 1 or more" - zero is refused.
+@case("remove-zero-quantity-refused")
+def c_rem_zero():
+    rem_quantities([0])
+
+
+# "`quantity` is not an `int` ... of 1 or more" - negatives are refused (no stock gained).
+@case("remove-negative-quantity-refused")
+def c_rem_negative():
+    rem_quantities([-1, -2, -10, -10 ** 30])
+
+
+# "`quantity` is not an `int` (not a `bool`)" - True and False are refused.
+@case("remove-bool-quantity-refused")
+def c_rem_bool():
+    rem_quantities([True, False])
+
+
+# "`quantity` is not an `int`" - floats are refused, whole-valued ones too.
+@case("remove-float-quantity-refused")
+def c_rem_float():
+    rem_quantities([1.0, 2.0, 10.0, 2.5, 0.5, 0.0, -1.0, float("nan"), float("inf")])
+
+
+# "`quantity` is not an `int`" - None is refused.
+@case("remove-none-quantity-refused")
+def c_rem_none():
+    rem_quantities([None])
+
+
+# "`quantity` is not an `int`" - strings are refused, numeric-looking ones too.
+@case("remove-string-quantity-refused")
+def c_rem_str():
+    rem_quantities(["1", "5", "", "one", " 1", b"1"])
+
+
+# "`quantity` is not an `int`" - containers and other number types are refused.
+@case("remove-other-type-quantity-refused")
+def c_rem_other():
+    rem_quantities([[1], [], (1,), {}, {1}, {"q": 1}, 1 + 0j, Decimal(1), Fraction(1),
+                    Decimal("2.5"), object()])
+
+
+# "Where two refusals apply at once, either may be raised." - it is a ValueError either way.
+@case("two-refusals-at-once-still-valueerror")
+def c_two_refusals():
+    m = load()
+    s, want = stocked(m)
+    for fn in (m.receive, m.remove):
+        refused(fn, s, "", 0)
+        refused(fn, s, None, None)
+        refused(fn, s, [], True)
+        refused(fn, s, 5, 1.0)
+        refused(fn, s, "", -1)
+        refused(fn, s, {}, "1")
+    refused(m.remove, s, "a", -11)
+    refused(m.remove, s, "ghost", 0)
+    refused(m.remove, s, "", 10 ** 9)
+    same(m, s, want)
+
+
+# ------------------------------------ refusals leave the state as it was
+
+def dump_unchanged(fn, s, *args):
+    """'A refused call changes nothing': the state's JSON text is the same after it."""
+    before = json.dumps(s)
+    refused(fn, s, *args)
+    after = json.dumps(s)
+    check(before == after, "refused %s(state, %s) changed the state's data"
+          % (fn.__name__, ", ".join(short(a) for a in args)))
+
+
+# "A refused call changes nothing." / "A refused call leaves the state as it was."
+@case("refused-receive-leaves-state-data-identical")
+def c_dump_receive():
+    m = load()
+    for s in (m.new(), stocked(m)[0], rt(stocked(m)[0])):
+        for bad in bad_quantities():
+            dump_unchanged(m.receive, s, "a", bad)
+            dump_unchanged(m.receive, s, "unseen", bad)
+        for bad in [""] + bad_ids_hashable() + bad_ids_unhashable():
+            dump_unchanged(m.receive, s, bad, 1)
+
+
+# "A refused call changes nothing." / "A refused call leaves the state as it was."
+@case("refused-remove-bad-argument-leaves-state-data-identical")
+def c_dump_remove_args():
+    m = load()
+    for s in (m.new(), stocked(m)[0], rt(stocked(m)[0])):
+        for bad in bad_quantities():
+            dump_unchanged(m.remove, s, "a", bad)
+            dump_unchanged(m.remove, s, "unseen", bad)
+        for bad in [""] + bad_ids_hashable() + bad_ids_unhashable():
+            dump_unchanged(m.remove, s, bad, 1)
+
+
+# "A refused call changes nothing." - taking more than is on hand of a stocked item.
+@case("refused-remove-too-many-leaves-state-data-identical")
+def c_dump_remove_over():
+    m = load()
+    for s in (stocked(m)[0], rt(stocked(m)[0])):
+        dump_unchanged(m.remove, s, "a", 11)
+        dump_unchanged(m.remove, s, "c", 2)
+        dump_unchanged(m.remove, s, "b", 10 ** 30)
+    s = m.new()
+    m.receive(s, "z", 2)
+    m.remove(s, "z", 2)
+    m.receive(s, "y", 1)
+    snapshot = json.dumps(s)
+    refused(m.remove, s, "y", 2)
+    check(json.dumps(s) == snapshot, "refused remove changed the state's data")
+
+
+# "A refused call changes nothing." - taking an item never received (0 on hand).
+@case("refused-remove-never-received-leaves-state-data-identical")
+def c_dump_remove_unknown():
+    m = load()
+    for s in (m.new(), stocked(m)[0], rt(stocked(m)[0]), rt(m.new())):
+        dump_unchanged(m.remove, s, "ghost", 1)
+        dump_unchanged(m.remove, s, "ghost2", 10 ** 30)
+
+
+# "A refused call changes nothing." - valid calls after refusals count from the old value.
+@case("refusals-have-no-partial-effect")
+def c_no_partial():
+    m = load()
+    s = m.new()
+    ret(m.receive(s, "a", 5), 5, "receive 5")
+    refused(m.remove, s, "a", 6)
+    refused(m.receive, s, "a", 0)
+    refused(m.receive, s, "a", True)
+    refused(m.remove, s, "a", 1.0)
+    refused(m.remove, s, "a", -5)
+    ret(m.receive(s, "a", 1), 6, "receive 1 after refusals")
+    refused(m.remove, s, "a", 7)
+    ret(m.remove(s, "a", 6), 0, "remove 6 of 6 after refusals")
+    refused(m.remove, s, "a", 1)
+    ret(m.receive(s, "a", 2), 2, "receive 2 after refusals")
+    oh(m, s, "a", 2)
+
+
+# ------------------------------------------------------- large quantities
+
+# "`quantity` is ... an `int` ... of 1 or more" - no upper limit is stated.
+@case("very-large-quantities-exact")
+def c_large():
+    m = load()
+    s = m.new()
+    big = 10 ** 30
+    ret(m.receive(s, "a", big), big, "receive 10**30")
+    oh(m, s, "a", big)
+    ret(m.receive(s, "a", 1), big + 1, "receive 1 on 10**30")
+    oh(m, s, "a", big + 1)
+    refused(m.remove, s, "a", big + 2)
+    oh(m, s, "a", big + 1)
+    ret(m.remove(s, "a", big), 1, "remove 10**30")
+    oh(m, s, "a", 1)
+    for q in (2 ** 31, 2 ** 53 + 1, 2 ** 63, 2 ** 64 + 1):
+        t = m.new()
+        ret(m.receive(t, "b", q), q, "receive %d" % q)
+        ret(m.receive(t, "b", 1), q + 1, "receive 1 on %d" % q)
+        oh(m, t, "b", q + 1)
+        refused(m.remove, t, "b", q + 2)
+        ret(m.remove(t, "b", 1), q, "remove 1 of %d" % (q + 1))
+        ret(m.remove(t, "b", q), 0, "remove all %d" % q)
+        oh(m, t, "b", 0)
+
+
+# "survives `json.loads(json.dumps(state))` unchanged in behaviour" - large quantities too.
+@case("very-large-quantities-survive-round-trip")
+def c_large_rt():
+    m = load()
+    s = m.new()
+    big = 2 ** 80 + 1
+    m.receive(s, "a", big)
+    m.receive(s, "b", 2 ** 53 + 1)
+    s2 = rt(rt(s))
+    oh(m, s2, "a", big)
+    oh(m, s2, "b", 2 ** 53 + 1)
+    refused(m.remove, s2, "a", big + 1)
+    ret(m.remove(s2, "a", big - 1), 1, "remove after round trip")
+    ret(m.remove(s2, "b", 2 ** 53 + 1), 0, "remove all after round trip")
+    oh(m, s, "a", big)
+
+
+# -------------------------------------------------------- JSON round trip
+
+# "survives `json.loads(json.dumps(state))` unchanged in behaviour" - the empty state too.
+@case("round-trip-of-empty-state")
+def c_rt_empty():
+    m = load()
+    s = rt(m.new())
+    oh(m, s, "a", 0)
+    refused(m.remove, s, "a", 1)
+    ret(m.receive(s, "a", 2), 2, "receive on round-tripped empty state")
+    ret(m.receive(s, "a", 2), 4, "second receive")
+    ret(m.remove(s, "a", 4), 0, "remove all")
+    s = rt(rt(rt(m.new())))
+    oh(m, s, "b", 0)
+    ret(m.receive(s, "b", 1), 1, "receive on thrice round-tripped empty state")
+
+
+# "survives `json.loads(json.dumps(state))` unchanged in behaviour"
+@case("round-trip-mid-use-then-continue")
+def c_rt_mid():
+    m = load()
+    s = m.new()
+    m.receive(s, "a", 10)
+    m.receive(s, "b", 4)
+    m.remove(s, "a", 3)
+    m.receive(s, "gone", 2)
+    m.remove(s, "gone", 2)
+    s2 = rt(s)
+    same(m, s2, {"a": 7, "b": 4, "gone": 0, "never": 0})
+    ret(m.receive(s2, "a", 1), 8, "receive after round trip")
+    ret(m.remove(s2, "b", 4), 0, "remove all after round trip")
+    refused(m.remove, s2, "b", 1)
+    refused(m.remove, s2, "gone", 1)
+    refused(m.remove, s2, "a", 9)
+    ret(m.receive(s2, "gone", 3), 3, "receive emptied item after round trip")
+    ret(m.receive(s2, "c", 6), 6, "receive new item after round trip")
+    ret(m.remove(s2, "a", 8), 0, "remove exactly all after round trip")
+    same(m, s2, {"a": 0, "b": 0, "c": 6, "gone": 3})
+
+
+# The round trip makes a second state; the first "survives" and is not touched by its use.
+@case("round-trip-copy-and-original-independent")
+def c_rt_independent():
+    m = load()
+    s = m.new()
+    m.receive(s, "a", 10)
+    m.receive(s, "b", 4)
+    s2 = rt(s)
+    m.remove(s2, "a", 10)
+    m.receive(s2, "b", 1)
+    m.receive(s2, "c", 9)
+    same(m, s, {"a": 10, "b": 4, "c": 0})
+    m.receive(s, "a", 5)
+    m.remove(s, "b", 4)
+    m.receive(s, "d", 1)
+    same(m, s2, {"a": 0, "b": 5, "c": 9, "d": 0})
+    same(m, s, {"a": 15, "b": 0, "c": 0, "d": 1})
+    s3 = rt(s2)
+    m.remove(s3, "c", 9)
+    same(m, s2, {"a": 0, "b": 5, "c": 9, "d": 0})
+    same(m, s3, {"a": 0, "b": 5, "c": 0, "d": 0})
+
+
+# "survives `json.loads(json.dumps(state))` unchanged in behaviour" - after every call.
+@case("round-trip-after-every-call")
+def c_rt_every():
+    m = load()
+    s = m.new()
+    want = {}
+    steps = [("r", "a", 5), ("r", "b", 1), ("m", "a", 2), ("r", "a", 7), ("m", "b", 1),
+             ("r", "c", 10 ** 18), ("m", "a", 10), ("r", "b", 3), ("m", "c", 1),
+             ("r", " ", 2), ("m", " ", 1), ("m", "b", 3), ("r", "a", 1)]
+    for op, item, q in steps:
+        if op == "r":
+            want[item] = want.get(item, 0) + q
+            ret(m.receive(s, item, q), want[item], "receive(%s, %d)" % (short(item), q))
+        else:
+            want[item] -= q
+            ret(m.remove(s, item, q), want[item], "remove(%s, %d)" % (short(item), q))
+        s = rt(s)
+        same(m, s, want)
+        refused(m.remove, s, item, want[item] + 1)
+        s = rt(s)
+        same(m, s, want)
+
+
+# "unchanged in behaviour" - the refusals hold on a round-tripped state as on the original.
+@case("round-trip-keeps-refusals")
+def c_rt_refusals():
+    m = load()
+    s, want = stocked(m)
+    s2 = rt(s)
+    for fn in (m.receive, m.remove):
+        for bad in bad_quantities():
+            refused(fn, s2, "a", bad)
+        for bad in [""] + bad_ids_hashable() + bad_ids_unhashable():
+            refused(fn, s2, bad, 1)
+    refused(m.remove, s2, "a", 11)
+    refused(m.remove, s2, "ghost", 1)
+    same(m, s2, want)
+    same(m, s, want)
+    ret(m.remove(s2, "a", 10), 0, "remove exactly all after round trip")
+    refused(m.remove, s2, "a", 1)
+
+
+# "survives `json.loads(json.dumps(state))`" - through JSON text, in another process.
+@case("round-trip-text-into-another-process")
+def c_rt_process():
+    m = load()
+    s = m.new()
+    m.receive(s, "a", 10)
+    m.receive(s, "b", 2)
+    m.remove(s, "b", 2)
+    code = (
+        "import importlib.util, json, sys\n"
+        "spec = importlib.util.spec_from_file_location('stock', sys.argv[1])\n"
+        "m = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['stock'] = m\n"
+        "spec.loader.exec_module(m)\n"
+        "s = json.loads(sys.stdin.read())\n"
+        "out = [m.on_hand(s, 'a'), m.on_hand(s, 'b'), m.on_hand(s, 'c')]\n"
+        "out.append(m.remove(s, 'a', 4))\n"
+        "out.append(m.receive(s, 'c', 3))\n"
+        "try:\n"
+        "    m.remove(s, 'b', 1)\n"
+        "    out.append('no refusal')\n"
+        "except ValueError:\n"
+        "    out.append('refused')\n"
+        "print(%r + json.dumps([out, s]))\n" % MARK
+    )
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    p = subprocess.run([sys.executable, "-B", "-c", code, os.path.join(BUILD, "stock.py")],
+                       input=json.dumps(s), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True, timeout=TIMEOUT / 2, env=env)
+    lines = [ln for ln in p.stdout.splitlines() if ln.startswith(MARK)]
+    check(lines, "other process failed: %s" % short(p.stderr.strip().splitlines()[-1:]))
+    out, s2 = json.loads(lines[-1][len(MARK):])
+    check(out == [10, 0, 0, 6, 3, "refused"], "other process got %s" % short(out))
+    same(m, s2, {"a": 6, "b": 0, "c": 3})
+    same(m, s, {"a": 10, "b": 0, "c": 0})
+    ret(m.remove(s2, "a", 6), 0, "remove on state returned from other process")
+
+
+# ----------------------------------------- the module holds no state
+
+# "the module holds no state of its own" - a state works in a separately loaded instance.
+@case("state-usable-by-second-module-instance")
+def c_second_instance():
+    m1 = load("stock")
+    s = m1.new()
+    m1.receive(s, "a", 10)
+    m1.receive(s, "b", 3)
+    m2 = load("stock_second_instance")
+    check(m1 is not m2, "could not load a second instance")
+    same(m2, s, {"a": 10, "b": 3, "c": 0})
+    ret(m2.remove(s, "a", 4), 6, "remove by second instance")
+    ret(m2.receive(s, "c", 2), 2, "receive by second instance")
+    refused(m2.remove, s, "b", 4)
+    same(m1, s, {"a": 6, "b": 3, "c": 2})
+    ret(m1.remove(s, "c", 2), 0, "remove by first instance")
+    refused(m2.remove, s, "c", 1)
+    t = m2.new()
+    oh(m1, t, "a", 0)
+    ret(m1.receive(t, "a", 1), 1, "first instance on second instance's new state")
+    oh(m2, t, "a", 1)
+    oh(m2, s, "a", 6)
+    u = rt(s)
+    ret(m2.remove(u, "a", 6), 0, "second instance on round-tripped state")
+    oh(m1, s, "a", 6)
+
+
+# "the module holds no state of its own" - a fresh instance knows nothing of earlier use.
+@case("fresh-module-instance-starts-empty")
+def c_fresh_instance():
+    m1 = load("stock")
+    s = m1.new()
+    m1.receive(s, "a", 10)
+    m2 = load("stock_second_instance")
+    t = m2.new()
+    oh(m2, t, "a", 0)
+    refused(m2.remove, t, "a", 1)
+    m2.receive(t, "a", 2)
+    oh(m1, s, "a", 10)
+    m3 = load("stock")
+    oh(m3, s, "a", 10)
+    oh(m3, t, "a", 2)
+    oh(m3, m3.new(), "a", 0)
+
+
+# "the module holds no state of its own" - many states used in turn stay apart.
+@case("many-states-interleaved")
+def c_many_states():
+    m = load()
+    states = [m.new() for _ in range(6)]
+    for i, s in enumerate(states):
+        ret(m.receive(s, "a", i + 1), i + 1, "receive on state %d" % i)
+    for i, s in enumerate(states):
+        oh(m, s, "a", i + 1)
+        ret(m.receive(s, "b", 10 * (i + 1)), 10 * (i + 1), "receive b on state %d" % i)
+    states[2] = rt(states[2])
+    for i, s in reversed(list(enumerate(states))):
+        ret(m.remove(s, "a", 1), i, "remove on state %d" % i)
+        refused(m.remove, s, "a", i + 1)
+    for i, s in enumerate(states):
+        same(m, s, {"a": i, "b": 10 * (i + 1)})
+
+
+# ---------------------------------------------------- long mixed sequences
+
+def sequence(seed, steps, with_rt, two_modules):
+    """Every call checked against a plain model of the declared behaviour."""
+    rng = random.Random(seed)
+    mods = [load("stock")]
+    if two_modules:
+        mods.append(load("stock_second_instance"))
+    ids = ["a", "b", "A", " ", "é", "10", "item-7", "x" * 200]
+    states = [mods[0].new() for _ in range(3)]
+    models = [{} for _ in range(3)]
+    for step in range(steps):
+        m = rng.choice(mods)
+        k = rng.randrange(3)
+        s, model = states[k], models[k]
+        item = rng.choice(ids)
+        have = model.get(item, 0)
+        where = "step %d" % step
+        roll = rng.random()
+        if roll < 0.30:
+            q = rng.choice([1, 1, 2, 3, 7, 50, 10 ** 12])
+            model[item] = have + q
+            ret(m.receive(s, item, q), have + q, where + " receive")
+        elif roll < 0.55:
+            if have == 0:
+                refused(m.remove, s, item, rng.randint(1, 3))
+            else:
+                q = have if rng.random() < 0.3 else rng.randint(1, have)
+                model[item] = have - q
+                ret(m.remove(s, item, q), have - q, where + " remove")
+        elif roll < 0.67:
+            refused(m.remove, s, item, have + rng.choice([1, 1, 2, 100]))
+        elif roll < 0.77:
+            fn = rng.choice([m.receive, m.remove])
+            refused(fn, s, item, rng.choice(bad_quantities()))
+        elif roll < 0.85:
+            fn = rng.choice([m.receive, m.remove])
+            bad = rng.choice([""] + bad_ids_hashable() + bad_ids_unhashable())
+            refused(fn, s, bad, rng.randint(1, 3))
+        elif roll < 0.92 and with_rt:
+            states[k] = rt(s)
+        oh(m, states[k], item, model.get(item, 0))
+        if step % 40 == 0 or step == steps - 1:
+            for j in range(3):
+                for i in ids:
+                    oh(m, states[j], i, models[j].get(i, 0))
+
+
+# All of declaration 2 together, in a long mixed sequence on three states.
+@case("long-mixed-sequence")
+def c_seq_plain():
+    sequence(20240611, 1500, False, False)
+
+
+# Declaration 2 with "survives `json.loads(json.dumps(state))`" at random points.
+@case("long-mixed-sequence-with-round-trips")
+def c_seq_rt():
+    sequence(77, 1500, True, False)
+
+
+# The same with "the module holds no state of its own": two instances share the states.
+@case("long-mixed-sequence-two-module-instances-with-round-trips")
+def c_seq_two():
+    sequence(4242, 1500, True, True)
+
+
+# ------------------------------------------------------------------ runner
+
+def run_child(name, build):
+    """Child process: run one behavioural case and report on the last line."""
+    global BUILD
+    BUILD = build
+    sys.dont_write_bytecode = True
+    fn = dict(CASES)[name]
+    try:
+        fn()
+        result = "PASS"
+    except Fail as e:
+        result = "FAIL " + str(e)
+    except BaseException as e:
+        result = "FAIL %s: %s" % (type(e).__name__, e)
+    sys.stdout.flush()
+    sys.stdout.write("\n%s %s\n" % (MARK, " ".join(result.split())[:200]))
+    sys.stdout.flush()
+    os._exit(0)
+
+
+def run_case(name, build, workdir):
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    cmd = [sys.executable, "-B", os.path.abspath(__file__), "--case", name, build]
+    try:
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=TIMEOUT, cwd=workdir, env=env)
+    except subprocess.TimeoutExpired:
+        return "timed out after %d s" % TIMEOUT
+    out = p.stdout.decode("utf-8", "replace")
+    for line in reversed(out.splitlines()):
+        if line.startswith(MARK + " "):
+            res = line[len(MARK) + 1:]
+            if res == "PASS":
+                return None
+            if res.startswith("FAIL "):
+                return res[5:]
+            break
+    return "case process ended without a result (exit %s)" % p.returncode
+
+
+def main(argv):
+    if len(argv) == 4 and argv[1] == "--case":
+        run_child(argv[2], argv[3])
+    if len(argv) != 2:
+        print("usage: check <build-dir>", file=sys.stderr)
+        return 2
+    build = os.path.abspath(argv[1])
+    results = []
+    present = os.path.isfile(os.path.join(build, "stock.py"))
+    for name, fn in STATIC:
+        try:
+            if not present:
+                raise Fail("no stock.py in the build dir")
+            fn(build)
+            results.append((name, None))
+        except Fail as e:
+            results.append((name, str(e)))
+        except Exception as e:
+            results.append((name, "%s: %s" % (type(e).__name__, e)))
+    with tempfile.TemporaryDirectory() as workdir:
+        for name, _ in CASES:
+            if not present:
+                results.append((name, "no stock.py in the build dir"))
+            else:
+                results.append((name, run_case(name, build, workdir)))
+    passed = 0
+    for name, reason in results:
+        if reason is None:
+            passed += 1
+            print("PASS %s" % name)
+        else:
+            print("FAIL %s: %s" % (name, " ".join(reason.split())[:200]))
+    print("%d/%d" % (passed, len(results)))
+    return 0 if passed == len(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
