@@ -82,9 +82,10 @@ def main(argv):
         if os.path.isdir(src):
             shutil.rmtree(src)
         shutil.copytree(staged, src, symlinks=True)
-    os.makedirs(os.path.join(tree, "judge"), exist_ok=True)
     rel = os.path.relpath(unit, tree).replace(os.sep, "/")
-    with open(os.path.join(tree, "judge", "stands.tsv"), "a", encoding="utf-8") as f:
+    stands = os.path.join(tree, "judge", "stands", *rel.split("/")) + ".tsv"
+    os.makedirs(os.path.dirname(stands), exist_ok=True)
+    with open(stands, "a", encoding="utf-8") as f:
         f.write("\t".join([time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()), rel, names[i],
                            show(best), src_hash(src), compared]) + "\n")
     print("judge: %s stands for %s (%s)" % (names[i], rel, compared))
