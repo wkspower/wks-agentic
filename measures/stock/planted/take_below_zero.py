@@ -33,7 +33,7 @@ class Stock:
         self._item(sku)
         _check_qty(qty)
         cur = self._qty.get(sku, 0)
-                self._qty[sku] = cur - qty
+        self._qty[sku] = cur - qty
         return cur - qty
 
     def put_back(self, sku, qty):
