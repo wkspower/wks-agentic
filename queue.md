@@ -144,3 +144,31 @@ requested report makes the verdict fail until the next result. Options:
 A. they count (as now). B. they do not; a change to the definition in
 `root.md`. Waiting costs: the verdict fails after every requested page.
 Answer, word for word: "No." Taken as B.
+
+## Round before the first effect of the user interface
+
+Goal given by the person, word for word: "Next goal: develop a professional
+user interface for the pet shop management system". All 24 runs are spent
+and 1 h 39 of time remains, so nothing is built until these are answered.
+
+### Q19 | decision | asked=2026-11-18T23:45Z | answered=-
+**What kind of interface.** A. A web app in the browser, served only on
+this machine by the Python standard library; Q9's "no network" becomes "no
+network beyond this machine". B. A terminal interface; no rule changes.
+Recommended: A. Strictest: B. Waiting costs: the unit has no purpose.
+
+### Q20 | decision | asked=2026-11-18T23:45Z | answered=-
+**What it covers.** A. Everything the modules offer: catalog with price
+changes, stock, customers with search, selling with a basket, sales
+history, takings. B. Only the six commands of the shop.
+Recommended: A. Strictest: B. Waiting costs: the unit has no purpose.
+
+### Q21 | decision | asked=2026-11-18T23:45Z | answered=-
+**Budget, cost**: agent runs added to the 24 spent. A. 8. B. 12. C. 16.
+Recommended: B (measure, build and alternative, audit, a second attempt,
+and the change to the root's check that Q18 needs). Strictest: A.
+Waiting costs: no effect anywhere.
+
+### Q22 | decision | asked=2026-11-18T23:45Z | answered=-
+**Budget, time**: hours for the whole tree, in place of 4. A. 6. B. 8.
+C. 12. Recommended: B. Strictest: A. Waiting costs: no effect anywhere.
