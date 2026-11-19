@@ -229,13 +229,14 @@ p{margin:.5rem 0}
 .soft{color:var(--soft)}
 .warn{color:var(--warn);font-weight:600}
 .scroll{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:8px}
-table{border-collapse:collapse;width:100%}
+table{border-collapse:separate;border-spacing:0;width:100%}
 th,td{text-align:left;vertical-align:top;white-space:nowrap;padding:.5rem .65rem;border-bottom:1px solid var(--line)}
 tr:last-child td{border-bottom:0}
 th{font-size:.82rem;color:var(--soft);font-weight:600}
 td.words{white-space:normal;min-width:150px}
 .num,.stock{text-align:right;font-variant-numeric:tabular-nums}
 tr.off td{color:var(--soft)}
+td.act,th.act{position:sticky;right:0;background:var(--card);box-shadow:-8px 0 8px -8px rgba(0,0,0,.35)}
 form.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1rem;margin:0 0 1rem;
 display:grid;gap:.8rem;grid-template-columns:repeat(auto-fit,minmax(min(100%,11rem),1fr));align-items:end}
 form.card.stack{display:block}
@@ -298,9 +299,9 @@ def field(label, name, value="", example=None, required=True, **more):
         esc(label), name, esc(value), " required" if required else "", attrs)
 
 
-def select(name, options, label=None, required=True, aria=None):
+def select(name, options, label=None, required=True, aria=None, empty=None):
     """A select that arrives with nothing chosen. options: (value, text)."""
-    inner = '<option value="">%s</option>' % ("Choose…" if required else "None")
+    inner = '<option value="">%s</option>' % (empty or ("Choose…" if required else "None"))
     inner += "".join('<option value="%s">%s</option>' % (esc(value), esc(text)) for value, text in options)
     control = '<select name="%s"%s%s>%s</select>' % (
         name, " required" if required else "", ' aria-label="%s"' % esc(aria) if aria else "", inner)
@@ -349,19 +350,21 @@ def home(db, form):
                 "No product is at or below its threshold.")), here="/")
 
 
+ADJUST = ('<form%s method="post" action="/products/%d/stock"><input name="delta" required inputmode="numeric" '
+          'placeholder="+10 or -2" aria-label="Change the stock of %s by"><button type="submit">Adjust</button></form>')
+
+
 def products(db, form):
     rows = []
     for row in db.execute("SELECT * FROM products ORDER BY id"):
-        adjust = ('<form method="post" action="/products/%d/stock"><input name="delta" required inputmode="numeric" '
-                  'placeholder="+10 or -2" aria-label="Change the stock of %s by"><button type="submit">Adjust</button></form>'
-                  % (row["id"], esc(row["name"])))
+        adjust = ADJUST % ("", row["id"], esc(row["name"]))
         low = row["stock"] <= row["low_at"]
         rows.append(("", [esc(row["name"]), money(row["price_cents"]), str(row["stock"]), str(row["low_at"]),
                           '<span class="warn">low</span>' if low else "", adjust,
                           '<a href="/products/%d/edit">Edit</a>' % row["id"]]))
     return page("Products", (
         table([("Product", "words"), ("Price", "num"), ("Stock", "stock"), ("Low at", "num"), ("", ""),
-               ("Received or removed", ""), ("", "")], rows, "No products yet.")
+               ("Received or removed", ""), ("", "act")], rows, "No products yet.")
         + "<h2>New product</h2>" + product_form("/products", "Add product")
         + '<p class="soft">Prices include tax. Stock changes only by a sale, a void or an adjustment.</p>'),
         here="/products")
@@ -376,8 +379,9 @@ def product_add(db, form):
 def product_edit(db, form, key):
     row = find(db, "products", key)
     return page("Edit " + row["name"], product_form("/products/%d/edit" % key, "Save", row)
-                + '<p class="soft">Stock is %d. It is changed on the list of products, not here.</p>'
-                  '<p><a href="/products">Back to products</a></p>' % row["stock"], here="/products")
+                + "<h2>Stock: %d</h2><p class=\"soft\">Received or removed, like +10 or -2.</p>" % row["stock"]
+                + ADJUST % (' class="card"', key, esc(row["name"]))
+                + '<p><a href="/products">Back to products</a></p>', here="/products")
 
 
 def product_save(db, form, key):
@@ -407,10 +411,10 @@ def customers(db, form):
     pets = [("", [esc(row["name"]), esc(row["species"]), esc(row["customer"]), '<a href="/pets/%d/edit">Edit</a>' % row["id"]])
             for row in db.execute("SELECT p.*, c.name AS customer FROM pets p JOIN customers c ON c.id = p.customer_id ORDER BY p.id")]
     return page("Customers", (
-        table([("Customer", "words"), ("Phone", ""), ("", "")], rows, "No customers yet.")
+        table([("Customer", "words"), ("Phone", ""), ("", "act")], rows, "No customers yet.")
         + "<h2>New customer</h2>" + customer_form("/customers", "Add customer")
         + "<h2>Pets</h2>"
-        + table([("Pet", "words"), ("Species", "words"), ("Customer", "words"), ("", "")], pets, "No pets yet.")
+        + table([("Pet", "words"), ("Species", "words"), ("Customer", "words"), ("", "act")], pets, "No pets yet.")
         + '<h2>New pet</h2><form class="card" method="post" action="/pets">'
         + select("customer_id", [(row["id"], row["name"]) for row in people], "Customer")
         + field("Name", "name", "", "Rex", maxlength=80) + field("Species", "species", "", "dog", maxlength=40)
@@ -475,7 +479,7 @@ def sales(db, form):
     return page("Sales", (
         '<p><a href="/sales/new">New sale</a></p>'
         + table([("No.", "num"), ("When", ""), ("Items", "words"), ("Customer", "words"), ("Paid by", ""),
-                 ("Total", "num"), ("", "")], rows, "No sales yet.")
+                 ("Total", "num"), ("", "act")], rows, "No sales yet.")
         + '<p class="soft">%s A sale is never edited; a mistake is voided whole and entered again.</p>' % said),
         here="/sales")
 
@@ -485,8 +489,9 @@ def sale_new(db, form):
     items = [(row["id"], "%s (%s, %d in stock)" % (row["name"], money(row["price_cents"]), row["stock"]))
              for row in db.execute("SELECT * FROM products ORDER BY name, id")]
     lines = "".join(
-        '<div class="line">%s<input name="qty" inputmode="numeric" placeholder="1" aria-label="Quantity, line %d"></div>'
-        % (select("product_id", items, required=False, aria="Product, line %d" % number), number)
+        '<div class="line">%s<input name="qty" inputmode="numeric"%s aria-label="Quantity, line %d"></div>'
+        % (select("product_id", items, required=False, aria="Product, line %d" % number, empty="Product…"),
+           ' placeholder="2"' if number == 1 else "", number)
         for number in range(1, count + 1))
     methods = "".join('<label><input type="radio" name="method" value="%s" required> %s</label>'
                       % (method, method.capitalize()) for method in METHODS)
@@ -591,7 +596,7 @@ def appointments(db, form):
         + '<button type="submit">Book</button></form>'
         + '<p class="soft">One groomer, one hour each, starting on the hour from 09:00 to 17:00, every day.</p>'
         + "<h2>From today on</h2>"
-        + table([("Date", ""), ("Time", ""), ("Pet", "words"), ("Customer", "words"), ("Phone", ""), ("", "")],
+        + table([("Date", ""), ("Time", ""), ("Pet", "words"), ("Customer", "words"), ("Phone", ""), ("", "act")],
                 rows, "Nothing booked from today on.")), here="/appointments")
 
 
