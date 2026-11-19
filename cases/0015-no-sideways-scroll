@@ -2,6 +2,8 @@
 // Case of lesson L0015 (lessons/0015-no-sideways-scroll.md).
 // Origin: run 001, 2026-11-19. Used by hand at 390 px wide, the sale form ran out of its
 // box and the sales list pushed the page sideways.
+// Looked at again after the first fix: the page no longer scrolled, and prices and button labels
+// were broken in two ("129.9 / 0", "Adjus / t") at every width. The case had passed.
 // Fills the shop with the longest names allowed, then measures every page at three widths.
 // Run from the repository root.
 const { run } = require('../caselib.js');
@@ -32,9 +34,15 @@ run(async (page, base, expect) => {
         return box.right > card.right + 1 || box.left < card.left - 1;
       }).length);
       expect(out === 0, path + ' at ' + width + ' px has ' + out + ' controls outside their form');
+      const broken = await page.$$eval('td.num, td.stock, button, td a', (els) => els.filter((el) => {
+        const range = document.createRange(); range.selectNodeContents(el);
+        return new Set([...range.getClientRects()].map((box) => Math.round(box.top))).size > 1;
+      }).map((el) => el.textContent.trim()));
+      expect(broken.length === 0, path + ' at ' + width + ' px breaks across lines: ' + broken.slice(0, 3).join(', '));
     }
   }
 }, [
   ['a wide table pushes the page sideways', 'overflow-x: auto', 'overflow-x: visible'],
-  ['a long name cannot break', 'overflow-wrap: anywhere', 'overflow-wrap: normal'],
+  ['a long name cannot break', 'overflow-wrap: break-word', 'overflow-wrap: normal'],
+  ['numbers and labels may break', 'white-space: nowrap; }', 'white-space: normal; }'],
 ]);
