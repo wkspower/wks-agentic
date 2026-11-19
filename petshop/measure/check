@@ -13,6 +13,7 @@ its own state file, so nothing is written in the build dir and cases cannot
 see each other. The rule cases (rule 3) read the sources and never run them.
 """
 import ast
+import json
 import os
 import shutil
 import subprocess
@@ -76,7 +77,10 @@ class Shop:
     def raw(self, command, cwd=None):
         env = {"PYTHONDONTWRITEBYTECODE": "1", "PATH": os.environ.get("PATH", ""),
                "HOME": self.path("home", "x")[:-2], "LC_ALL": "C.UTF-8"}
-        words = ["--state", os.path.basename(command[3])] + command[4:]
+        if command[1] == "-c":
+            words = ["python3 -c ..."] + [os.path.basename(a) for a in command[3:]]
+        else:
+            words = ["--state", os.path.basename(command[3])] + command[4:]
         shown = " ".join(repr(a) if (not a or " " in a) else a for a in words)
         try:
             done = subprocess.run(command, cwd=cwd or self.cwd, env=env, timeout=TIMEOUT,
@@ -87,6 +91,11 @@ class Shop:
             raise AssertionError("`%s` did not end within %d s" % (shown, TIMEOUT))
         return (shown, done.returncode, done.stdout.decode("utf-8", "replace"),
                 done.stderr.decode("utf-8", "replace"))
+
+    def python(self, code, *args):
+        """Run a few lines of Python (used only to call the build's own modules)."""
+        shown, status, out, err = self.raw([sys.executable, "-c", code] + list(args))
+        return status, out, err
 
     def ok(self, *args, prints, state=None, cwd=None):
         """The command succeeds: exit 0 and exactly the one line `prints` on stdout."""
@@ -625,6 +634,258 @@ def _(s):
     s.ok("register", "Bruno", prints="C2", state="shop.json")
     expect(os.path.isfile(os.path.join(s.cwd, "shop.json")), "no shop.json where it was run")
     s.ok("register", "Carla", prints="C3", state=os.path.join(s.cwd, "shop.json"))
+
+
+# ------------------------------------------- the state file as one JSON object
+#
+# "The state file ... is one JSON object holding the four units' states under
+# `catalog`, `stock`, `customers`, `sales`." The states themselves are opaque
+# (each unit's document): no case looks inside a value. What is claimed is that
+# the value under a key IS that unit's state, so a whole value moved from one
+# shop's file to another's carries that unit, and only that unit, with it.
+
+UNITS = ("catalog", "stock", "customers", "sales")
+
+
+def state_object(path):
+    """The state file read as the document states it: one JSON object with the
+    four keys (other keys are not looked at)."""
+    data = read(path)
+    expect(data is not None, "there is no state file %s" % os.path.basename(path))
+    try:
+        found = json.loads(data.decode("utf-8"))
+    except ValueError as error:
+        raise AssertionError("the state file is not JSON: %s" % error)
+    expect(isinstance(found, dict),
+           "the state file is not one JSON object but a %s" % type(found).__name__)
+    missing = [key for key in UNITS if key not in found]
+    expect(not missing, "the state file has no key %s (its keys: %s)"
+           % (", ".join(missing), ", ".join(sorted(found)) or "none"))
+    return found
+
+
+def written(s, name, value, **how):
+    """A state file written by hand, not by the shop."""
+    path = s.path("made", name)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, **how)
+    return path
+
+
+def with_value_from(s, name, base, key, other):
+    """A copy of the state file `base` whose whole value under `key` is replaced
+    by the value under `key` of the state file `other`."""
+    mixed = dict(state_object(base))
+    mixed[key] = state_object(other)[key]
+    return written(s, name, mixed)
+
+
+def other_shop(s):
+    """A second shop, in its own file, unlike `stocked` in every unit: food is
+    cheaper, there is fish and no bone or cat, three customers, two sales."""
+    b = s.path("data", "other.json")
+    s.ok("add-item", "food", "Budget food", "product", "990", prints="food", state=b)
+    s.ok("add-item", "fish", "Goldfish", "animal", "300", prints="fish", state=b)
+    s.ok("receive", "food", "4", prints=4, state=b)
+    s.ok("receive", "fish", "50", prints=50, state=b)
+    s.ok("register", "Bia", prints="C1", state=b)
+    s.ok("register", "Caio", prints="C2", state=b)
+    s.ok("register", "Dora", prints="C3", state=b)
+    s.ok("sell", "C2", "food=1", prints="S1 990", state=b)
+    s.ok("sell", "C3", "fish=10", prints="S2 3000", state=b)
+    return b      # on hand: food 3, fish 40; takings 3990
+
+
+@case("state_file_is_one_json_object_with_the_four_keys")
+def _(s):
+    """After every successful command the state file is one JSON object with
+    `catalog`, `stock`, `customers`, `sales`."""
+    steps = [(("add-item", "food", "Dog food", "product", "1250"), "food"),
+             (("receive", "food", "10"), 10),
+             (("register", "Ana"), "C1"),
+             (("sell", "C1", "food=2"), "S1 2500"),
+             (("stock", "food"), 8),
+             (("takings",), 2500)]
+    for args, prints in steps:
+        s.ok(*args, prints=prints)
+        state_object(s.state)
+
+
+@case("state_file_holds_all_four_units_from_the_first_command")
+def _(s):
+    """The file holds the four units' states, not only those a command touched:
+    created by `register` alone, or by `add-item` alone, it has the four keys."""
+    first = s.path("data", "first.json")
+    s.ok("register", "Ana", prints="C1", state=first)
+    state_object(first)
+    s.ok("add-item", "food", "Dog food", "product", "1250", prints="food")
+    state_object(s.state)
+
+
+@case("state_stock_value_from_another_shop_brings_its_quantities")
+def _(s):
+    """`stock` holds the stock unit's state: with the other shop's value under
+    `stock`, the quantities are the other shop's; all else stays this shop's."""
+    stocked(s)
+    mixed = with_value_from(s, "mixed.json", s.state, "stock", other_shop(s))
+    s.ok("stock", "food", prints=3, state=mixed)
+    s.ok("stock", "bone", prints=0, state=mixed)
+    s.ok("stock", "cat", prints=0, state=mixed)
+    s.refused("stock", "fish", state=mixed)
+    s.refused("sell", "C1", "food=4", state=mixed)
+    s.refused("sell", "C2", "food=1", state=mixed)
+    s.ok("takings", prints=0, state=mixed)
+    s.ok("sell", "C1", "food=3", prints="S1 3750", state=mixed)
+    s.ok("stock", "food", prints=0, state=mixed)
+    untouched(s)
+
+
+@case("state_customers_value_from_another_shop_brings_its_ids")
+def _(s):
+    """`customers` holds the customers unit's state: with the other shop's value
+    under `customers`, its three customers are known and the next id is C4."""
+    stocked(s)
+    s.refused("sell", "C3", "food=1")
+    mixed = with_value_from(s, "mixed.json", s.state, "customers", other_shop(s))
+    s.ok("sell", "C3", "food=1", prints="S1 1250", state=mixed)
+    s.ok("register", "Edu", prints="C4", state=mixed)
+    s.ok("sell", "C4", "bone=2", prints="S2 58", state=mixed)
+    s.refused("sell", "C5", "food=1", state=mixed)
+    s.ok("stock", "food", prints=9, state=mixed)
+    s.ok("register", "Bruno", prints="C2")
+    untouched(s)
+
+
+@case("state_catalog_value_from_another_shop_brings_its_items_and_prices")
+def _(s):
+    """`catalog` holds the catalog unit's state: with the other shop's value
+    under `catalog`, items and prices are the other shop's, quantities are not."""
+    stocked(s)
+    mixed = with_value_from(s, "mixed.json", s.state, "catalog", other_shop(s))
+    s.ok("stock", "food", prints=10, state=mixed)
+    s.ok("stock", "fish", prints=0, state=mixed)
+    s.refused("stock", "bone", state=mixed)
+    s.refused("sell", "C1", "cat=1", state=mixed)
+    s.refused("add-item", "fish", "Goldfish", "animal", "300", state=mixed)
+    s.ok("sell", "C1", "food=2", prints="S1 1980", state=mixed)
+    s.ok("stock", "food", prints=8, state=mixed)
+    s.ok("takings", prints=1980, state=mixed)
+    untouched(s)
+
+
+@case("state_sales_value_from_another_shop_brings_its_takings")
+def _(s):
+    """`sales` holds the sales unit's state: with the other shop's value under
+    `sales`, takings are the other shop's and the next sale is S3."""
+    stocked(s)
+    mixed = with_value_from(s, "mixed.json", s.state, "sales", other_shop(s))
+    s.ok("takings", prints=3990, state=mixed)
+    s.ok("stock", "food", prints=10, state=mixed)
+    s.ok("sell", "C1", "food=1", prints="S3 1250", state=mixed)
+    s.ok("takings", prints=5240, state=mixed)
+    s.ok("stock", "food", prints=9, state=mixed)
+    untouched(s)
+
+
+@case("state_file_written_by_hand_from_two_shops_is_that_combination")
+def _(s):
+    """A file written by hand as one object with the four keys is a state file:
+    catalog and stock from one shop, customers and sales from the other."""
+    stocked(s)
+    a, b = state_object(s.state), state_object(other_shop(s))
+    hand = written(s, "by hand.json", {"sales": b["sales"], "customers": b["customers"],
+                                       "stock": a["stock"], "catalog": a["catalog"]},
+                   indent=4)
+    s.ok("stock", "food", prints=10, state=hand)
+    s.ok("takings", prints=3990, state=hand)
+    s.refused("stock", "fish", state=hand)
+    s.refused("sell", "C4", "food=1", state=hand)
+    s.ok("sell", "C3", "cat=1", "bone=2", prints="S3 15058", state=hand)
+    s.ok("register", "Edu", prints="C4", state=hand)
+    s.ok("takings", prints=19048, state=hand)
+    s.ok("stock", "cat", prints=2, state=hand)
+    state_object(hand)
+    untouched(s)
+
+
+@case("state_file_written_by_hand_the_other_way_round")
+def _(s):
+    """The same the other way: catalog and stock from the other shop, customers
+    and sales from this one."""
+    stocked(s)
+    b_file = other_shop(s)
+    a, b = state_object(s.state), state_object(b_file)
+    hand = written(s, "by hand.json", {"catalog": b["catalog"], "stock": b["stock"],
+                                       "customers": a["customers"], "sales": a["sales"]})
+    s.ok("stock", "fish", prints=40, state=hand)
+    s.ok("stock", "food", prints=3, state=hand)
+    s.ok("takings", prints=0, state=hand)
+    s.refused("stock", "cat", state=hand)
+    s.refused("sell", "C2", "fish=1", state=hand)
+    s.ok("sell", "C1", "fish=40", "food=1", prints="S1 12990", state=hand)
+    s.ok("register", "Bruno", prints="C2", state=hand)
+    s.ok("stock", "fish", prints=0, state=hand)
+    s.ok("stock", "fish", prints=40, state=b_file)
+    s.ok("takings", prints=3990, state=b_file)
+
+
+MAKE_WITH_MODULES = '''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import catalog, stock, customers, sales
+c, st, cu, sa = catalog.new(), stock.new(), customers.new(), sales.new()
+catalog.add(c, "food", "Dog food", "product", 1250)
+catalog.add(c, "cat", "Tabby cat", "animal", 15000)
+stock.receive(st, "food", 10)
+customers.register(cu, "Ana")
+customers.register(cu, "Bia")
+sales.sell(sa, "C2", [("food", 2)], lambda i: catalog.get(c, i)["price_cents"],
+           lambda i: stock.on_hand(st, i), lambda i, q: stock.remove(st, i, q))
+with open(sys.argv[2], "w") as handle:
+    json.dump({"catalog": c, "stock": st, "customers": cu, "sales": sa}, handle)
+'''
+
+READ_WITH_MODULES = '''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import catalog, stock, customers, sales
+with open(sys.argv[2], encoding="utf-8") as handle:
+    d = json.load(handle)
+print(json.dumps([catalog.get(d["catalog"], "food")["price_cents"],
+                  [item["id"] for item in catalog.items(d["catalog"])],
+                  stock.on_hand(d["stock"], "food"), stock.on_hand(d["stock"], "cat"),
+                  customers.get(d["customers"], "C3")["name"],
+                  len(customers.find(d["customers"], "")),
+                  sales.takings(d["sales"]), sales.get(d["sales"], "S2")["customer_id"],
+                  len(sales.sales(d["sales"]))]))
+'''
+
+
+@case("state_values_are_the_states_of_the_builds_own_modules")
+def _(s):
+    """Where the build holds the four modules (`catalog.py`, `stock.py`,
+    `customers.py`, `sales.py`): an object of four states made by calling them
+    directly, as their documents state, is a state file for the shop; and each
+    value the shop writes is a state those modules read. (A build without the
+    four module files is not asked this.)"""
+    if not all(os.path.isfile(os.path.join(s.build, unit + ".py")) for unit in UNITS):
+        return
+    made = s.path("made", "by modules.json")
+    code, out, err = s.python(MAKE_WITH_MODULES, s.build, made)
+    expect(code == 0, "the build's modules could not make the four states: %r" % err[-300:])
+    s.ok("stock", "food", prints=8, state=made)
+    s.ok("stock", "cat", prints=0, state=made)
+    s.ok("takings", prints=2500, state=made)
+    s.refused("sell", "C3", "food=1", state=made)
+    s.ok("register", "Caio", prints="C3", state=made)
+    s.ok("sell", "C3", "food=3", prints="S2 3750", state=made)
+    s.ok("receive", "cat", "2", prints=2, state=made)
+    state_object(made)
+    code, out, err = s.python(READ_WITH_MODULES, s.build, made)
+    expect(code == 0, "the build's modules could not read the values the shop wrote: %r"
+           % err[-300:])
+    expect(out.strip() == json.dumps([1250, ["cat", "food"], 5, 2, "Caio", 3, 6250, "C3", 2]),
+           "the modules, given the values the shop wrote, answer %r" % out.strip())
 
 
 # ----------------------------------------- rule 3 of docs/petshop/unit.md

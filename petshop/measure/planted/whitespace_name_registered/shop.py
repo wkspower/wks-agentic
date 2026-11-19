@@ -19,7 +19,7 @@ def load(path):
     if os.path.exists(path):
         with open(path) as handle:
             return json.load(handle)
-    return {"items": {}, "stock": {}, "customers": [], "sales": []}
+    return {"catalog": {}, "stock": {}, "customers": [], "sales": []}
 
 
 def save(path, state):
@@ -28,9 +28,9 @@ def save(path, state):
 
 
 def item(state, item_id):
-    if item_id not in state["items"]:
+    if item_id not in state["catalog"]:
         raise Refused("unknown item: %s" % item_id)
-    return state["items"][item_id]
+    return state["catalog"][item_id]
 
 
 def add_item(state, args):
@@ -41,9 +41,9 @@ def add_item(state, args):
         raise Refused("id and name must not be empty")
     if kind not in ("animal", "product"):
         raise Refused("kind must be animal or product")
-    if item_id in state["items"]:
+    if item_id in state["catalog"]:
         raise Refused("item exists: %s" % item_id)
-    state["items"][item_id] = {"name": name, "kind": kind, "price_cents": number(price)}
+    state["catalog"][item_id] = {"name": name, "kind": kind, "price_cents": number(price)}
     return item_id
 
 
