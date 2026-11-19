@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Case of lesson L0016 (lessons/0016-void-asks-first.md).
+Origin: the person's answer 3 in run 002, 2026-11-19: void confirms on a second page.
+Run from the repository root."""
+import sys
+from html.parser import HTMLParser
+
+sys.path.insert(0, ".")
+from caselib import run
+
+
+class Reader(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.forms, self.links = [], []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form":
+            self.forms.append(((attrs.get("method") or "get").lower(), attrs.get("action") or ""))
+        elif tag == "a":
+            self.links.append(attrs.get("href") or "")
+
+
+def checks(shop):
+    food = shop.add("products", name="Kibble", price="2.50", stock="10", low_at="0")
+    ana = shop.add("customers", name="Ana Lima", phone="")
+    rex = shop.add("pets", customer_id=ana, name="Rex", species="dog")
+    sale = shop.add("sales", method="card", customer_id=ana, product_id=food, qty="3")
+    ask = "/sales/%d/void" % sale
+
+    def read(path, status=200):
+        got, body = shop.request("GET", path)
+        shop.expect(got == status, "GET %s answered %d, expected %d" % (path, got, status))
+        reader = Reader()
+        reader.feed(body)
+        return reader, body
+
+    def state():
+        return shop.row("sales", sale)["voided"], shop.row("products", food)["stock"]
+
+    # No page but the question itself carries a form that voids.
+    for path in ["/", "/products", "/products/%d/edit" % food, "/customers", "/sales", "/sales/new",
+                 "/appointments"]:
+        reader, _ = read(path)
+        voiding = [action for _, action in reader.forms if action.rstrip("/").endswith("/void")]
+        shop.expect(voiding == [], "%s voids on one click: it has a form to %s" % (path, voiding))
+    reader, _ = read("/sales")
+    shop.expect(ask in reader.links, "the list of sales has no link to %s" % ask)
+
+    # The question shows the sale, has the one form, and opening it changes nothing.
+    for _ in range(2):
+        reader, body = read(ask)
+        shop.expect(reader.forms == [("post", ask)], "%s has the forms %s, expected one post to itself"
+                    % (ask, reader.forms))
+        shop.expect("7.50" in body and "Kibble" in body and "Ana Lima" in body,
+                    "%s does not show the sale it asks about" % ask)
+        shop.expect(state() == (False, 7), "opening %s changed the sale or the stock: %s" % (ask, state()))
+    read("/sales/999/void", 404)
+
+    shop.post(303, ask)
+    shop.expect(state() == (True, 10), "after the void the sale and stock are %s" % (state(),))
+    reader, body = read(ask)
+    shop.expect(reader.forms == [], "a sale already voided is offered for voiding again")
+    shop.expect("voided" in body, "the page of a voided sale does not say it is voided")
+    reader, _ = read("/sales")
+    shop.expect(ask not in reader.links, "the list still links to the void of a voided sale")
+
+
+run(checks, wrong=[
+    ("the list voids on one click", '<a href="/sales/%d/void">Void</a>',
+     '<form method="post" action="/sales/%d/void"><button type="submit">Void</button></form>'),
+    ("a voided sale is offered for voiding again", 'if not found["voided"]', "if True"),
+])

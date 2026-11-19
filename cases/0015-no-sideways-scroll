@@ -21,11 +21,12 @@ run(async (page, base, expect) => {
   await post('/pets', { customer_id: '1', name: long('P'), species: 's'.repeat(40) });
   await post('/sales', [['method', 'other'], ['customer_id', '1'], ['product_id', '1'], ['qty', '1000'], ['product_id', '2'], ['qty', '2']]);
   await post('/sales/1/void', {});
+  await post('/sales', [['method', 'other'], ['customer_id', '1'], ['product_id', '1'], ['qty', '1000'], ['product_id', '2'], ['qty', '2']]);
   await post('/appointments', { pet_id: '1', date: new Date().toLocaleDateString('en-CA'), time: '17:00' });
   await post('/appointments', { pet_id: '1', date: '2099-06-01', time: '09:00' });
   for (const width of [320, 390, 1100]) {
     await page.setViewportSize({ width, height: 800 });
-    for (const path of ['/', '/products', '/products/1/edit', '/customers', '/sales', '/sales/new', '/appointments', '/nowhere']) {
+    for (const path of ['/', '/products', '/products/1/edit', '/customers', '/customers/1/edit', '/pets/1/edit', '/sales', '/sales/1/void', '/sales/2/void', '/sales/new', '/appointments', '/nowhere']) {
       await page.goto(base + path);
       const [content, room] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
       expect(content <= room, path + ' at ' + width + ' px is ' + content + ' px wide and scrolls sideways');

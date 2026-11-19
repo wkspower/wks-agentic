@@ -33,8 +33,8 @@ def checks(shop):
     pet = shop.add("pets", customer_id=owner, name="Rex", species="dog")
     filler = dict(FILLER, customer_id=owner, pet_id=pet, product_id=product)
     examples = 0
-    for path in ["/", "/products", "/products/%d/edit" % product, "/customers", "/sales", "/sales/new",
-                 "/appointments"]:
+    for path in ["/", "/products", "/products/%d/edit" % product, "/customers", "/customers/%d/edit" % owner,
+                 "/pets/%d/edit" % pet, "/sales", "/sales/new", "/appointments"]:
         status, body = shop.request("GET", path)
         shop.expect(status == 200, "GET %s answered %d" % (path, status))
         reader = Forms()

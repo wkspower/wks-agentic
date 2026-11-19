@@ -60,11 +60,33 @@ run(async (page, base, expect) => {
   await submit(sale);
   expect((await page.textContent('main')).includes('only 1 in stock'), 'selling 2 with 1 in stock does not say why it was refused');
 
+  // Void asks first (L0016, the person in run 002): the link opens the question, the button there voids.
+  const stock = async () => { await page.goto(base + '/products'); return page.$eval('td.stock', (el) => el.textContent.trim()); };
   await page.goto(base + '/sales');
+  expect(await page.$$eval('form[action$="/void"]', (els) => els.length) === 0, 'the list of sales voids on one click');
+  await Promise.all([page.waitForNavigation(), page.click('main a[href$="/void"]')]);
+  expect((await page.textContent('main')).includes('37.50'), 'the question before a void does not show the sale');
+  expect(await stock() === '1', 'opening the question already returned the stock');
+  await page.goto(base + '/sales');
+  await Promise.all([page.waitForNavigation(), page.click('main a[href$="/void"]')]);
   await submit('form[action$="/void"]');
   expect((await page.textContent('main')).includes('voided'), 'the voided sale is not shown as voided');
-  await page.goto(base + '/products');
-  expect(await page.$eval('td.stock', (el) => el.textContent.trim()) === '4', 'the void did not bring the stock back to 4 on the page');
+  expect(await stock() === '4', 'the void did not bring the stock back to 4 on the page');
+
+  // A customer and a pet can be corrected from the list (L0017, the person in run 002).
+  await page.goto(base + '/customers');
+  await Promise.all([page.waitForNavigation(), page.click('main a[href^="/customers/"][href$="/edit"] >> nth=1')]);
+  const fix = 'form[action^="/customers/"][action$="/edit"]';
+  expect(await page.inputValue(fix + ' input[name=name]') === 'Bruno Sá', 'the form to correct a customer does not hold his name');
+  await page.fill(fix + ' input[name=name]', 'Bruno Sá Neto');
+  await page.fill(fix + ' input[name=phone]', '555-0102');
+  await submit(fix);
+  const people = await page.textContent('main');
+  expect(people.includes('Bruno Sá Neto') && people.includes('555-0102'), 'the corrected customer is not shown');
+  await Promise.all([page.waitForNavigation(), page.click('main a[href^="/pets/"][href$="/edit"]')]);
+  await page.fill('form[action^="/pets/"] input[name=species]', 'poodle');
+  await submit('form[action^="/pets/"]');
+  expect((await page.textContent('main')).includes('poodle'), 'the corrected pet is not shown');
 
   await page.goto(base + '/appointments');
   const book = 'form[action="/appointments"]';

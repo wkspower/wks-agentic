@@ -53,3 +53,5 @@ the lessons and the cases are what lasts.
 - **L0013** Done means every case passes, the app was used by hand in a browser, and what was not verified is said. [why](lessons/0013-done-means-used-by-hand.md) · prose: use by hand is by definition not a program
 - **L0014** Every example a form shows is a value that form accepts. [why](lessons/0014-examples-are-accepted.md) · case: [`cases/0014-examples-are-accepted`](cases/0014-examples-are-accepted)
 - **L0015** No page scrolls sideways, no control leaves its form and no number or label breaks in two, from 320 px wide up, with the longest names allowed. [why](lessons/0015-no-sideways-scroll.md) · case: [`cases/0015-no-sideways-scroll`](cases/0015-no-sideways-scroll)
+- **L0016** Voiding a sale asks first, on a second page that shows the sale; no page voids on one click. [why](lessons/0016-void-asks-first.md) · case: [`cases/0016-void-asks-first`](cases/0016-void-asks-first)
+- **L0017** Customers and pets can be corrected, and nothing is removed. [why](lessons/0017-corrected-never-removed.md) · case: [`cases/0017-corrected-never-removed`](cases/0017-corrected-never-removed)

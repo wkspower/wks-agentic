@@ -19,8 +19,9 @@ complaint on 2026-11-18. The bounds, all refused outside:
 
 ## Source
 The wizardly-cerf run, 2026-11-18 (no upper bound on prices). The person,
-run 001, 2026-11-19 (answers 6 and 13). The numbers themselves are the
-builder's choice under answer 13 and have not been seen by the person.
+run 001, 2026-11-19 (answers 6 and 13). The numbers were the
+builder's choice under answer 13; the person saw the table and kept it in
+run 002, 2026-11-19 (answer 1 of 4).
 
 ## What would be a regression
 A value outside the table stored, a price kept as anything but integer cents,
