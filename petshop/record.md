@@ -1,6 +1,7 @@
 # Record of the pet shop
 
-**State.** Built and standing. Verdict passes (52 scenarios); number 2824.
+**State.** Built and standing. Verdict passes (61 scenarios); number 2824.
+A fifth unit, web, offers the same shop in a browser on the same state file.
 The shop runs: `python3 shop.py --state FILE COMMAND ...` after
 `petshop/build <dir>`.
 
@@ -10,7 +11,8 @@ The shop runs: `python3 shop.py --state FILE COMMAND ...` after
 | stock | 12 cases, 17 planted | alternative over candidate | 862 |
 | customers | 16 cases, 22 planted | alternative over candidate | 753 |
 | sales | 56 cases, 24 planted | candidate over alternative | 1890 |
-| pet shop | 52 scenarios, 25 planted | candidate (2824) over alternative (2883) | 2824 |
+| web | 223 checks, 35 planted | alternative over candidate | 0.028550 |
+| pet shop | 61 scenarios, 29 planted | candidate (2824) over alternative (2883) | 2824 |
 
 **How the shop stood.** Two agents each wrote `shop.py` on unchanged copies
 of the four standing modules, neither seeing the other. `src` holds what was
@@ -27,6 +29,7 @@ Wrong fails: builds that failed the measure and are right by the audit.
 | stock | 60 | 0 of 2 | 0 of 17 |
 | customers | 97 | 0 of 2 | 0 of 22 |
 | sales | 75 | 0 of 2 | 0 of 24 |
+| web | 197 | 0 of 2 | 0 of 35 |
 
 Where the audit passes a planted build (one each for catalog, stock,
 customers), the build breaks rule 3 (a network import), which the audits do
@@ -40,9 +43,9 @@ wrong-pass count rests on 2 builds per unit.
 documents before any build; the three points catalog's builders decided
 became rules with cases.
 
-**Spend.** 17 of 17 runs (`ledger.tsv`).
+**Spend.** 22 of 24 runs (`ledger.tsv`).
 
 **Due next.** The points the builders of stock, customers, sales and the
-shop decided for themselves (their records; for the shop: number
+shop and web decided for themselves (their records; for the shop: number
 spellings, where `--state` goes, when the state file is written) become
-rules with cases: about 4 runs, which the budget does not hold.
+rules with cases: about 5 runs; 2 remain here and 4 at the root.

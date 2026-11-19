@@ -176,3 +176,18 @@ Waiting costs: no effect anywhere.
 Answer, word for word: "8 hours (Recommended)". Taken as B.
 **Budget, time**: hours for the whole tree, in place of 4. A. 6. B. 8.
 C. 12. Recommended: B. Strictest: A. Waiting costs: no effect anywhere.
+
+## After the web interface stood
+
+### Q23 | notice | asked=2026-11-19T00:50Z | answered=-
+**To judge by reading: changes `bfbcd91` and `337db3d`**, which write your
+answers into `root.md` and `queue.md` and hold nothing else: "No." (Q18:
+a page you ask for is not an item) and Q19 to Q22 (cost 36 agent runs,
+time 8 h). Options: A. they stand. B. they do not; say what to restore.
+Recommended: A. Waiting costs: nothing stops; if B, units built under them
+return to their earlier state.
+
+### Q24 | notice | asked=2026-11-19T00:50Z | answered=-
+**Report of a result: the web interface stands**, selected by the judge
+over one alternative, with an audit ([`record.md`](record.md)). Options:
+A. read. Waiting costs: nothing stops.
