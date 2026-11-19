@@ -86,7 +86,7 @@ class Form:
 
 
 def whole(value, label, low, high):
-    if not re.fullmatch(r"-?[0-9]{1,40}", value) or not low <= int(value) <= high:
+    if not re.fullmatch(r"[+-]?[0-9]{1,40}", value) or not low <= int(value) <= high:
         raise Refused("%s must be a whole number from %d to %d." % (label, low, high))
     return int(value)
 
@@ -293,24 +293,27 @@ body { font: 16px/1.45 system-ui, sans-serif; margin: 0; }
 nav { display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
 nav a { text-decoration: none; color: inherit; padding: 2px 0; }
 nav a.here { border-bottom: 3px solid var(--mark); font-weight: 600; }
-main { max-width: 980px; margin: 0 auto; padding: 8px 20px 60px; }
+main { max-width: 980px; margin: 0 auto; padding: 8px 20px 60px; overflow-wrap: anywhere; }
+.scroll { overflow-x: auto; }
 h1 { font-size: 1.5rem; margin: 20px 0 12px; } h2 { font-size: 1.1rem; margin: 28px 0 8px; }
 table { border-collapse: collapse; width: 100%; }
+th { overflow-wrap: normal; white-space: nowrap; }
 th, td { text-align: left; padding: 7px 10px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 td.num, th.num, td.stock { text-align: right; font-variant-numeric: tabular-nums; }
 form.card { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: end; padding: 14px; background: var(--soft);
   border-radius: 8px; }
 form.card.tall { flex-direction: column; align-items: stretch; max-width: 560px; }
-label { display: grid; gap: 3px; font-size: .85rem; }
+label { display: grid; gap: 3px; font-size: .85rem; min-width: 0; max-width: 100%; }
 fieldset { border: 0; padding: 0; margin: 0; display: flex; gap: 16px; flex-wrap: wrap; }
 fieldset label { display: inline-flex; gap: 6px; align-items: center; font-size: 1rem; }
 legend { font-size: .85rem; padding: 0; margin-bottom: 3px; }
-input, select, button { font: inherit; padding: 6px 8px; }
+input, select, button { font: inherit; padding: 6px 8px; max-width: 100%; min-width: 0; }
 input[type=radio] { padding: 0; }
 input.short { width: 6.5em; }
 button { cursor: pointer; }
 td form { display: inline-flex; gap: 6px; }
-.row { display: flex; gap: 10px; } .row select { flex: 1; min-width: 0; }
+.row { display: flex; gap: 10px; } .row select { flex: 1; min-width: 0; width: 0; }
+.heads { font-size: .85rem; justify-content: space-between; margin-bottom: -6px; }
 .off { opacity: .55; text-decoration: line-through; } .tag { font-size: .8rem; padding: 1px 7px;
   border: 1px solid var(--line); border-radius: 99px; }
 .warn { border-left: 4px solid #c0392b; padding: 10px 14px; background: var(--soft); }
@@ -333,7 +336,7 @@ def table(head, body_rows, empty):
     if not body_rows:
         return '<p class="empty">%s</p>' % E(empty)
     cells = "".join('<th class="num">%s</th>' % E(h[1:]) if h.startswith(">") else "<th>%s</th>" % E(h) for h in head)
-    return "<table><thead><tr>%s</tr></thead><tbody>%s</tbody></table>" % (cells, "".join(body_rows))
+    return '<div class="scroll"><table><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>' % (cells, "".join(body_rows))
 
 
 def options(found, label, first):
@@ -447,12 +450,13 @@ def sale_form_page(db):
     customers = options(rows(db, "SELECT * FROM customers ORDER BY name"), lambda c: c["name"],
                         '<option value="">no customer</option>')
     line = ('<div class="row"><select name="product_id" aria-label="Product %d">' + products + "</select>"
-            '<input class="short" name="qty" inputmode="numeric" placeholder="Qty" aria-label="Quantity %d"></div>')
+            '<input class="short" name="qty" inputmode="numeric" aria-label="Quantity %d"></div>')
     methods = "".join('<label><input type="radio" name="method" value="%s" required> %s</label>' % (m, m)
                       for m in METHODS)
     return page("New sale", "/sales", (
         '<form class="card tall" method="post" action="/sales">'
         "<label>Customer (optional) <select name=\"customer_id\">%s</select></label>"
+        '<div class="row heads"><span>Product</span><span>Quantity</span></div>'
         "%s<fieldset><legend>Paid by</legend>%s</fieldset>"
         '<button type="submit">Record sale</button></form>'
         "<p>The amount is worked out from the prices on record. Rows left empty are ignored.</p>"
