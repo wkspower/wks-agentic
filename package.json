@@ -1,0 +1,8 @@
+{
+  "name": "petshop",
+  "private": true,
+  "scripts": {
+    "start": "npm start --prefix sistema",
+    "casos": "node --test --test-concurrency=4 casos/*.caso.js"
+  }
+}
