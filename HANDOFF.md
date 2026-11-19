@@ -2,6 +2,11 @@
 
 ## State (2026-11-19, after run 001)
 
+**Before run 002:** `product/` was deleted on this branch on purpose. This is
+the rebuild test: the lessons and cases of run 001 are all that is left of the
+pet shop. `./check` fails until a product exists again. The lessons L0005 to
+L0015 are here unmerged and unread by the person, exactly as run 001 left them.
+
 Run 001 built the pet shop in `product/` from the one-line prompt. `./check`
 passes: 15 lessons, 11 with a case, 4 prose only. `./check --selftest`
 refuses 11 of 11 wrong trees.
