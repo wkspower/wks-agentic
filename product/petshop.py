@@ -260,6 +260,22 @@ form.card fieldset input{width:auto}
 .line select{flex:1 1 0}
 form.card .line input{flex:0 0 5rem;width:5rem}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:760px){
+.scroll{overflow-x:visible;background:none;border:0;border-radius:0}
+table,tbody,tr,td{display:block}
+thead{display:none}
+tr{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.35rem .7rem;margin:0 0 .6rem}
+td,td.act{display:flex;justify-content:space-between;gap:1rem;white-space:normal;text-align:right;padding:.25rem 0;
+border:0;min-width:0;position:static;box-shadow:none;background:none}
+td::before{content:attr(data-label);flex:none;white-space:nowrap;text-align:left;font-size:.82rem;font-weight:600;
+color:var(--soft)}
+td[data-label=""]::before{content:none}
+td.words,td.block{display:block;text-align:left}
+td.words::before,td.block::before{display:block}
+td:empty{display:none}
+td form{margin:.15rem 0}
+td.act{justify-content:flex-start;padding:.35rem 0 .25rem}
+}
 """
 
 NAV = (("/", "Today"), ("/products", "Products"), ("/customers", "Customers"), ("/sales", "Sales"),
@@ -277,7 +293,10 @@ def page(title, body, status=200, here=None):
 
 
 def table(head, rows, none):
-    """head: (label, class) per column. rows: (row class, [cell html])."""
+    """head: (label, class) per column. rows: (row class, [cell html]).
+
+    A table on a wide screen. On a narrow one the style sheet turns each row into a card: its
+    cells one under another, each named by its data-label."""
     if not rows:
         return '<p class="soft">%s</p>' % esc(none)
     out = ['<div class="scroll"><table><thead><tr>']
@@ -285,7 +304,8 @@ def table(head, rows, none):
     out.append("</tr></thead><tbody>")
     for row_class, cells in rows:
         out.append('<tr class="%s">' % row_class)
-        out += ['<td class="%s">%s</td>' % (cls, cell) for (_, cls), cell in zip(head, cells)]
+        out += ['<td class="%s" data-label="%s">%s</td>' % (cls, esc(label), cell)
+                for (label, cls), cell in zip(head, cells)]
         out.append("</tr>")
     out.append("</tbody></table></div>")
     return "".join(out)
@@ -364,7 +384,7 @@ def products(db, form):
                           '<a href="/products/%d/edit">Edit</a>' % row["id"]]))
     return page("Products", (
         table([("Product", "words"), ("Price", "num"), ("Stock", "stock"), ("Low at", "num"), ("", ""),
-               ("Received or removed", ""), ("", "act")], rows, "No products yet.")
+               ("Received or removed", "block"), ("", "act")], rows, "No products yet.")
         + "<h2>New product</h2>" + product_form("/products", "Add product")
         + '<p class="soft">Prices include tax. Stock changes only by a sale, a void or an adjustment.</p>'),
         here="/products")

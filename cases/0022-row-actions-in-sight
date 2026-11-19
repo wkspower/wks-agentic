@@ -2,8 +2,9 @@
 // A check under lesson L0026 (lessons/0026-narrow-lists-are-cards.md); until run 005 the case of L0022.
 // Origin: run 004, 2026-11-19. Used by hand at 390 px, the list of sales scrolled its Void
 // links out of sight and the list of products its Adjust and Edit, while every case passed.
-// Fills the shop, then looks in every table row that has a link or a button for one that
-// can be seen and reached without scrolling. Run from the repository root.
+// Fills the shop, then looks in every list row that has a link or a button for one that
+// can be seen and reached without scrolling: in the cards of a narrow screen, and at 800 px,
+// where the lists are tables that may still scroll inside their box. Run from the repository root.
 const { run, style } = require('../caselib.js');
 
 run(async (page, base, expect) => {
@@ -13,7 +14,7 @@ run(async (page, base, expect) => {
   };
   await post('/products', { name: 'Cat litter 10 L', price: '8.90', stock: '30', low_at: '5' });
   await post('/products', { name: 'Hypoallergenic grain-free salmon and sweet potato dry food 12 kg', price: '99999.99', stock: '1000000', low_at: '20' });
-  await post('/customers', { name: 'Maria Aparecida de Souza Albuquerque', phone: '+55 11 5550 0101' });
+  await post('/customers', { name: 'Maria Aparecida de Souza Albuquerque', phone: '5'.repeat(30) });
   await post('/customers', { name: 'Bo Li', phone: '' });
   await post('/pets', { customer_id: '1', name: 'Sir Barks a Lot', species: 'golden retriever' });
   await post('/pets', { customer_id: '2', name: 'Mia', species: 'cat' });
@@ -22,7 +23,7 @@ run(async (page, base, expect) => {
   await post('/appointments', { pet_id: '1', date: '2099-06-01', time: '17:00' });
   await post('/appointments', { pet_id: '2', date: '2099-06-01', time: '16:00' });
   let rows = 0;
-  for (const width of [320, 390]) {
+  for (const width of [320, 390, 800]) {
     await page.setViewportSize({ width, height: 800 });
     for (const path of ['/products', '/customers', '/sales', '/appointments']) {
       await page.goto(base + path);
@@ -61,4 +62,8 @@ run(async (page, base, expect) => {
   expect(rows >= 16, 'only ' + rows + ' rows were looked at');
 }, [
   ['the last column scrolls away with the rest', style('td, th { position: static !important; }')],
+  ['the build of run 004 before its fix: a table at every width, the last column scrolling away', style(
+    'table { display: table !important; } tbody { display: table-row-group !important; } tr { display: table-row !important; } '
+    + 'td, th { display: table-cell !important; position: static !important; white-space: nowrap !important; } '
+    + '.scroll { overflow-x: auto !important; }')],
 ]);

@@ -2,7 +2,8 @@
 // A check under lesson L0026 (lessons/0026-narrow-lists-are-cards.md); until run 005 the case of L0018.
 // Origin: run 002, 2026-11-19. Used by hand at 390 px, the items of a sale were squeezed to
 // one word per line while every case passed.
-// Fills the shop with names of several words, then measures every table cell at two widths.
+// Fills the shop with names of several words, then measures every cell of every list: in the
+// cards of a narrow screen, and at 800 px, where the lists are tables.
 // Run from the repository root.
 const { run, style } = require('../caselib.js');
 
@@ -25,7 +26,7 @@ run(async (page, base, expect) => {
   await post('/appointments', { pet_id: '1', date: today, time: '17:00' });
   await post('/appointments', { pet_id: '2', date: today, time: '16:00' });
   let cells = 0;
-  for (const width of [320, 390]) {
+  for (const width of [320, 390, 800]) {
     await page.setViewportSize({ width, height: 800 });
     for (const path of ['/', '/products', '/customers', '/sales', '/appointments']) {
       await page.goto(base + path);
