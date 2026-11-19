@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Case of lesson L0014 (lessons/0014-examples-are-accepted.md).
+Origin: run 001, 2026-11-19. Used by hand, the stock form showed "+10 or -2"
+as its example and refused "+10".
+Reads every placeholder on every page as examples separated by " or ", and
+posts each one in its own form. Run from the repository root."""
+import sys
+from html.parser import HTMLParser
+
+sys.path.insert(0, ".")
+from caselib import run
+
+FILLER = {"name": "Thing", "price": "1.00", "stock": "50", "low_at": "0", "delta": "1", "phone": "",
+          "species": "cat", "qty": "1", "method": "cash", "date": "2099-06-01", "time": "09:00"}
+
+
+class Forms(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.forms = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form":
+            self.forms.append((attrs.get("action"), []))
+        elif tag in ("input", "select") and attrs.get("name") and self.forms:
+            self.forms[-1][1].append((attrs["name"], attrs.get("placeholder")))
+
+
+def checks(shop):
+    product = shop.add("products", name="Kibble", price="2.00", stock="50", low_at="0")
+    owner = shop.add("customers", name="Ana Lima", phone="")
+    pet = shop.add("pets", customer_id=owner, name="Rex", species="dog")
+    filler = dict(FILLER, customer_id=owner, pet_id=pet, product_id=product)
+    examples = 0
+    for path in ["/", "/products", "/products/%d/edit" % product, "/customers", "/sales", "/sales/new",
+                 "/appointments"]:
+        status, body = shop.request("GET", path)
+        shop.expect(status == 200, "GET %s answered %d" % (path, status))
+        reader = Forms()
+        reader.feed(body)
+        for action, fields in reader.forms:
+            for position, (name, placeholder) in enumerate(fields):
+                for example in (placeholder or "").split(" or ") if placeholder else []:
+                    for other, _ in fields:
+                        shop.expect(other in filler, "the case does not know how to fill '%s' on %s" % (other, path))
+                    pairs = [(other, example if spot == position else filler[other])
+                             for spot, (other, _) in enumerate(fields)]
+                    got = shop.request("POST", action, pairs)[0]
+                    shop.expect(got == 303, "on %s the field '%s' shows the example \"%s\" and the form refuses it (%d)"
+                                % (path, name, example, got))
+                    examples += 1
+    shop.expect(examples >= 3, "only %d examples were found on the pages" % examples)
+
+
+run(checks, wrong=[
+    ("a plus sign is refused", 'r"[+-]?[0-9]{1,40}"', 'r"-?[0-9]{1,40}"'),
+])

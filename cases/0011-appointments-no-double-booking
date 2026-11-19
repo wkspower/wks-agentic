@@ -57,7 +57,7 @@ def checks(shop):
 
 run(checks, wrong=[
     ("a taken slot can be booked", "if taken:", "if False:"),
-    ("a cancelled appointment still blocks its slot", "AND date = ? AND time = ? AND cancelled = 0", "AND date = ? AND time = ?"),
+    ("a cancelled appointment still blocks its slot", "WHERE date = ? AND time = ? AND cancelled = 0", "WHERE date = ? AND time = ?"),
     ("any time of day accepted", "if time not in SLOTS:", "if False:"),
     ("an appointment for no known pet", 'if pet is None:', "if False:"),
 ])

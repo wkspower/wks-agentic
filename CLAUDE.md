@@ -17,7 +17,7 @@ the lessons and the cases are what lasts.
 | `CLAUDE.md` | This file. Read at the start of every session. One line per lesson. |
 | `lessons/` | One file per lesson: the reason, the source, what would be a regression. |
 | `cases/` | One executable per checkable lesson. Run from the repository root. |
-| `caselib.py` | What the pet shop cases share: starts the shop, applies wrong variants. |
+| `caselib.py`, `caselib.js` | What the pet shop cases share: start the shop, apply wrong variants. |
 | `check` | Proves the two stay linked. `./check` and `./check --selftest`. |
 | `HANDOFF.md` | State of the work and how to resume. Read it second. |
 | `product/` | Whatever a run builds. May be deleted and rebuilt at any time. |
@@ -51,3 +51,5 @@ the lessons and the cases are what lasts.
 - **L0011** Grooming has one groomer and one-hour slots: an appointment belongs to a pet, and a taken slot is refused. [why](lessons/0011-appointments-no-double-booking.md) · case: [`cases/0011-appointments-no-double-booking`](cases/0011-appointments-no-double-booking)
 - **L0012** What a person does in the forms is checked in a real browser, and a missing browser fails. [why](lessons/0012-forms-in-a-real-browser.md) · case: [`cases/0012-forms-in-a-real-browser`](cases/0012-forms-in-a-real-browser)
 - **L0013** Done means every case passes, the app was used by hand in a browser, and what was not verified is said. [why](lessons/0013-done-means-used-by-hand.md) · prose: use by hand is by definition not a program
+- **L0014** Every example a form shows is a value that form accepts. [why](lessons/0014-examples-are-accepted.md) · case: [`cases/0014-examples-are-accepted`](cases/0014-examples-are-accepted)
+- **L0015** No page scrolls sideways and no control leaves its form, from 320 px wide up, with the longest names allowed. [why](lessons/0015-no-sideways-scroll.md) · case: [`cases/0015-no-sideways-scroll`](cases/0015-no-sideways-scroll)

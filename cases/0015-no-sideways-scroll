@@ -1,0 +1,40 @@
+#!/usr/bin/env node
+// Case of lesson L0015 (lessons/0015-no-sideways-scroll.md).
+// Origin: run 001, 2026-11-19. Used by hand at 390 px wide, the sale form ran out of its
+// box and the sales list pushed the page sideways.
+// Fills the shop with the longest names allowed, then measures every page at three widths.
+// Run from the repository root.
+const { run } = require('../caselib.js');
+
+run(async (page, base, expect) => {
+  const post = async (path, fields) => {
+    const answer = await fetch(base + path, { method: 'POST', body: new URLSearchParams(fields), redirect: 'manual' });
+    if (answer.status !== 303) throw new Error('wrong: POST ' + path + ' answered ' + answer.status);
+  };
+  const long = (letter) => letter.repeat(80);
+  const words = 'Hypoallergenic grain-free salmon and sweet potato dry food for adult dogs 12 kg';
+  await post('/products', { name: long('W'), price: '99999.99', stock: '1000000', low_at: '1000000' });
+  await post('/products', { name: words, price: '18.90', stock: '12', low_at: '3' });
+  await post('/customers', { name: long('M'), phone: '5'.repeat(30) });
+  await post('/pets', { customer_id: '1', name: long('P'), species: 's'.repeat(40) });
+  await post('/sales', [['method', 'other'], ['customer_id', '1'], ['product_id', '1'], ['qty', '1000'], ['product_id', '2'], ['qty', '2']]);
+  await post('/sales/1/void', {});
+  await post('/appointments', { pet_id: '1', date: new Date().toLocaleDateString('en-CA'), time: '17:00' });
+  await post('/appointments', { pet_id: '1', date: '2099-06-01', time: '09:00' });
+  for (const width of [320, 390, 1100]) {
+    await page.setViewportSize({ width, height: 800 });
+    for (const path of ['/', '/products', '/products/1/edit', '/customers', '/sales', '/sales/new', '/appointments', '/nowhere']) {
+      await page.goto(base + path);
+      const [content, room] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+      expect(content <= room, path + ' at ' + width + ' px is ' + content + ' px wide and scrolls sideways');
+      const out = await page.$$eval('form.card input, form.card select, form.card button', (els) => els.filter((el) => {
+        const box = el.getBoundingClientRect(); const card = el.closest('form.card').getBoundingClientRect();
+        return box.right > card.right + 1 || box.left < card.left - 1;
+      }).length);
+      expect(out === 0, path + ' at ' + width + ' px has ' + out + ' controls outside their form');
+    }
+  }
+}, [
+  ['a wide table pushes the page sideways', 'overflow-x: auto', 'overflow-x: visible'],
+  ['a long name cannot break', 'overflow-wrap: anywhere', 'overflow-wrap: normal'],
+]);
