@@ -17,7 +17,7 @@ the lessons and the cases are what lasts.
 | `CLAUDE.md` | This file. Read at the start of every session. One line per lesson. |
 | `lessons/` | One file per lesson: the reason, the source, what would be a regression. |
 | `cases/` | One executable per checkable lesson. Run from the repository root. |
-| `caselib.py`, `caselib.js` | What the pet shop cases share: start the shop, apply wrong variants. |
+| `caselib.py`, `caselib.js` | What the pet shop cases share: start the shop, put a fault in front of it. |
 | `check` | Proves the two stay linked. `./check` and `./check --selftest`. |
 | `HANDOFF.md` | State of the work and how to resume. Read it second. |
 | `product/` | Whatever a run builds. May be deleted and rebuilt at any time. |
@@ -56,3 +56,4 @@ the lessons and the cases are what lasts.
 - **L0016** Voiding a sale asks first, on a second page that shows the sale; no page voids on one click. [why](lessons/0016-void-asks-first.md) · case: [`cases/0016-void-asks-first`](cases/0016-void-asks-first)
 - **L0017** Customers and pets can be corrected, and nothing is removed. [why](lessons/0017-corrected-never-removed.md) · case: [`cases/0017-corrected-never-removed`](cases/0017-corrected-never-removed)
 - **L0018** A table scrolls inside its box before it crushes a column of words to one word per line. [why](lessons/0018-columns-not-crushed.md) · case: [`cases/0018-columns-not-crushed`](cases/0018-columns-not-crushed)
+- **L0019** A wrong variant is a fault put at the product's interface when the case runs; no case names, reads or edits the product's source. [why](lessons/0019-cases-know-no-source.md) · case: [`cases/0019-cases-know-no-source`](cases/0019-cases-know-no-source)
