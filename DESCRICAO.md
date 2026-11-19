@@ -110,6 +110,8 @@ Convenções que valem para todas as telas:
 - Valores em dinheiro aparecem como `R$ 1.234,56`.
 - Campos de dinheiro aceitam vírgula decimal: `12,5` vale R$ 12,50. Texto
   que não é número, ou valor negativo, é recusado com `Valor inválido`.
+  Também valem `12.50`, `1.234,56`, `1234` e `R$ 12,50`. Mais de duas casas
+  decimais é `Valor inválido`.
 
 ### Clientes
 
@@ -118,13 +120,18 @@ Convenções que valem para todas as telas:
 - Ação `Novo cliente` → campos `Nome`, `Telefone`; ação `Salvar`.
   - Sucesso: `Cliente salvo`.
   - Erros: `Nome é obrigatório`; `Telefone é obrigatório`;
-    `Telefone já cadastrado para <nome de quem já usa>`.
+    `Telefone já cadastrado para <nome de quem já usa>`; `Telefone inválido`
+    (sem nenhum dígito).
+  - O telefone é guardado só com dígitos: `(11) 99999-0001` vira
+    `11999990001`, e a comparação de repetido usa os dígitos. Telefone
+    curto (`123`) é aceito.
 - Ações na linha: `Inativar`, `Apagar`.
   - `Apagar` cliente com histórico (venda ou agendamento):
     recusa com `Cliente possui histórico e não pode ser apagado`.
   - `Apagar` sem histórico: `Cliente apagado`, o registro sai do arquivo.
   - `Inativar`: `Cliente inativado`; `ativo` vira `false`; some da lista,
-    da busca e dos campos de escolha; o histórico continua.
+    da busca e dos campos de escolha; o histórico continua. Os pets do
+    cliente são inativados junto.
 
 ### Pets
 
@@ -133,7 +140,8 @@ Convenções que valem para todas as telas:
   o nome do cliente), `Espécie` (`Cão`, `Gato`, `Outro`), `Porte` (`P`,
   `M`, `G`); ação `Salvar`.
   - Sucesso: `Pet salvo`.
-  - Erros: `Nome é obrigatório`; `Dono é obrigatório`.
+  - Erros: `Nome é obrigatório`; `Dono é obrigatório`;
+    `Espécie é obrigatória`; `Porte é obrigatório`.
 - Ações na linha: `Inativar` (`Pet inativado`), `Apagar` (`Pet apagado`).
   - `Apagar` pet com histórico (agendamento):
     recusa com `Pet possui histórico e não pode ser apagado`.
@@ -144,7 +152,11 @@ Convenções que valem para todas as telas:
 - Ação `Novo produto` → campos `Nome`, `Preço`, `Estoque`; ação `Salvar`.
   - Sucesso: `Produto salvo`.
   - Erros: `Nome é obrigatório`; `Valor inválido` (preço); `Estoque inválido`
-    (estoque que não é inteiro maior ou igual a zero).
+    (estoque que não é inteiro maior ou igual a zero);
+    `Já existe um produto com esse nome`.
+  - O preço máximo é R$ 99.999,99; acima disso é `Valor inválido`.
+  - Produto já vendido pode ser apagado. As vendas dele não mudam, e
+    cancelar uma delas depois não recria o produto.
 - Ações na linha: `Editar` (mesmos campos, ação `Salvar`), `Apagar`
   (`Produto apagado`).
 
@@ -165,7 +177,8 @@ Convenções que valem para todas as telas:
   - Sucesso: `Venda finalizada`. Em dinheiro, mostra também `Troco: R$ 0,01`.
   - Erros: `Estoque insuficiente (disponível: 2)`;
     `Desconto maior que o total`; `Valor recebido insuficiente`;
-    `Valor inválido`.
+    `Valor inválido`; `Quantidade inválida`; `Escolha um produto`;
+    `Adicione pelo menos um item`; `Forma de pagamento é obrigatória`.
 - Regras:
   - Subtotal = soma de preço × quantidade. Total = subtotal − desconto.
   - A venda guarda descrição e preço de cada item no momento da venda;
@@ -178,6 +191,8 @@ Convenções que valem para todas as telas:
     `Cancelada`, o estoque dos itens volta, e ela sai do fechamento.
   - Erro: `Motivo é obrigatório`.
   - Venda cancelada não tem mais a ação `Cancelar`.
+  - Cancelar a venda de um serviço não muda o agendamento, que continua
+    `Concluído`.
 
 ### Agenda
 
@@ -188,8 +203,13 @@ Convenções que valem para todas as telas:
   nome do pet), `Serviço`, `Data` (`<input type="date">`), `Hora`
   (`<input type="time">`); ação `Agendar`.
   - Sucesso: `Agendamento marcado`.
-  - Erros: `Horário ocupado`; `Fora do horário de funcionamento`.
-- Funcionamento: segunda a sábado, das 08:00 às 18:00. Um atendimento por vez.
+  - Erros: `Horário ocupado`; `Fora do horário de funcionamento`;
+    `Data já passou`.
+- Funcionamento: segunda a sábado, das 08:00 às 18:00. Um atendimento por
+  vez. O serviço precisa começar a partir das 08:00 e terminar até as 18:00.
+- Agendamento marcado ou concluído ocupa o horário; cancelado libera.
+  Começar na hora exata em que outro termina é permitido.
+- Data anterior a hoje é recusada.
 - Serviços (duração; preço por porte P / M / G):
   - Banho: 60 min; R$ 40,00 / R$ 55,00 / R$ 75,00
   - Tosa: 90 min; R$ 60,00 / R$ 80,00 / R$ 110,00

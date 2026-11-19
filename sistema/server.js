@@ -447,8 +447,9 @@ function salvarProduto(v, id) {
     const preco = lerDinheiro(v.preco);
     const est = texto(v.estoque);
     if (!nome) erros.push('Nome é obrigatório');
-    if (preco === null || Number.isNaN(preco)) erros.push('Valor inválido');
+    if (preco === null || Number.isNaN(preco) || preco > 9999999) erros.push('Valor inválido');
     if (!/^\d{1,7}$/.test(est)) erros.push('Estoque inválido');
+    if (nome && d.produtos.some((x) => x.nome === nome && x.id !== Number(id || 0))) erros.push('Já existe um produto com esse nome');
     if (erros.length) throw new Recusa(erros);
     if (id) {
       const p = porId(d.produtos, id);
