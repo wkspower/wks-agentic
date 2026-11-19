@@ -9,8 +9,14 @@ before today is refused.
 The person, run 001, 2026-11-19 (answer 11). The hours were the builder's
 choice; the person saw them and kept them in run 002, 2026-11-19 (answer 2
 of 4).
+Read as written and accepted by the person, 2026-11-19 (run 005).
 
 ## What would be a regression
 Two live appointments in one slot, an appointment with no pet or for a pet
 that does not exist, a time off the hour accepted, or a cancelled appointment
 still blocking its slot.
+
+## Owed a second look by the person
+The hours (09:00 to 17:00, on the hour, every day) stay as built. The person
+said on 2026-11-19 (run 005) that they will look at them again; until then
+they are not to be changed and not to be asked about.

@@ -41,6 +41,7 @@ one had to be rewritten". The cases were pinning about two dozen lines of
 the program. The person's decision, 2026-11-19: no case names, reads or
 edits the text of the product's source; every rule a case guards is still
 shown something wrong, and refuses it.
+Read as written and accepted by the person, 2026-11-19 (run 005).
 
 ## What would be a regression
 A case that opens a file under `product/` as text, copies it, or changes it;

@@ -12,6 +12,7 @@ appointment already cancelled is shown without the button.
 The person, run 004, 2026-11-19 (answer 1 of 3: "One click"). Runs 001 and
 002 had built it this way without asking and listed it under "Left out, and
 not asked" and "Not yet decided".
+Read as written and accepted by the person, 2026-11-19 (run 005).
 
 ## What would be a regression
 The list of appointments without a form that posts to the cancel address of

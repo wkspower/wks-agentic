@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""check: every lesson has its reason, and every lesson a machine can check
-has a case that runs and passes.
+"""check: every lesson has its reason and says when it applies, and every lesson
+in force that a machine can check has a case that runs and passes.
+
+A lesson carries one or more labels. The product says what it is in
+product/LABELS, one label per line. A lesson is in force when it carries
+`always` or a label the product declared. Only cases of lessons in force run.
 
 Usage: ./check [TREE]       check a tree (default: the one this file is in)
+       ./check --cases      print the cases in force, one per line, and run nothing
        ./check --selftest   run the check against wrong trees it must refuse
 """
 import os
@@ -12,8 +17,11 @@ import subprocess
 import sys
 import tempfile
 
-LINE = re.compile(r"^- \*\*(L\d{4})\*\* (.+?) \[why\]\((lessons/[^)]+)\) · "
-                  r"(?:case: \[[^\]]*\]\((cases/[^)]+)\)|prose: (.*))$")
+LINE = re.compile(r"^- \*\*(L\d{4})\*\* \[([^\]]*)\] (.+?) \[why\]\((lessons/[^)]+)\) · "
+                  r"(?:cases?: (.+)|prose: (.*))$")
+CASE = re.compile(r"\[[^\]]*\]\((cases/[^)]+)\)")
+ALWAYS = "always"
+DECLARED = os.path.join("product", "LABELS")
 
 
 def read(path):
@@ -29,23 +37,97 @@ def section(text, name):
     return found.group(1).strip() if found else ""
 
 
-def check(tree):
-    problems, lines, seen = [], [], set()
-    doc = read(os.path.join(tree, "CLAUDE.md"))
-    for line in doc.splitlines():
+def label(text):
+    return " ".join(text.split()).lower()
+
+
+def lessons(tree, problems):
+    """The lesson lines of CLAUDE.md: (lesson, labels, lesson file, case files, why prose)."""
+    lines, seen = [], set()
+    for line in read(os.path.join(tree, "CLAUDE.md")).splitlines():
         if not line.startswith("- **L"):
             continue
         found = LINE.match(line)
         if not found:
-            problems.append("lesson line not in the expected form: %s" % line[:70])
-        elif found.group(1) in seen:
-            problems.append("%s is listed twice" % found.group(1))
-        else:
-            seen.add(found.group(1))
-            lines.append(found.groups())
-    listed = {"lessons": set(), "cases": set()}
-    ran = prose = 0
-    for lesson, _, lesson_file, case_file, why_prose in lines:
+            problems.append("lesson line not in the expected form "
+                            "(- **L0000** [label, label] text [why](lessons/..) · case: or prose:): %s" % line[:60])
+            continue
+        lesson, labels, _, lesson_file, cases, why_prose = found.groups()
+        labels = [label(word) for word in labels.split(",")]
+        if lesson in seen:
+            problems.append("%s is listed twice" % lesson)
+            continue
+        seen.add(lesson)
+        if not all(labels):
+            problems.append("%s does not say when it applies: an empty label" % lesson)
+            labels = [word for word in labels if word]
+        if cases is not None and not CASE.findall(cases):
+            problems.append("%s: no case named after 'case:'" % lesson)
+        lines.append((lesson, labels, lesson_file, CASE.findall(cases or ""), why_prose))
+    return lines
+
+
+def declared(tree, carried, problems):
+    """The labels the product chose. No product, no labels."""
+    folder = os.path.join(tree, "product")
+    text = read(os.path.join(tree, DECLARED))
+    labels = []
+    for line in text.splitlines():
+        word = label(line.split("#")[0])
+        if word and word in labels:
+            problems.append("%s declares '%s' twice" % (DECLARED, word))
+        elif word:
+            labels.append(word)
+    for word in labels:
+        if word not in carried:
+            problems.append("%s declares '%s', a label no lesson carries: most likely a typo. Carried: %s"
+                            % (DECLARED, word, ", ".join(sorted(carried))))
+    other = [name for name in sorted(os.listdir(folder)) if name != "LABELS"
+             and not name.startswith(".") and name != "__pycache__"] if os.path.isdir(folder) else []
+    if other and not labels:
+        problems.append("product/ holds %s and %s declares no label: a product says what it is"
+                        % (", ".join(other[:3]), DECLARED))
+    return labels
+
+
+def run_case(tree, lesson, case_file, problems):
+    path = os.path.join(tree, case_file)
+    try:
+        done = subprocess.run([path], cwd=tree, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        problems.append("%s: %s did not end within 300 s" % (lesson, case_file))
+        return
+    said = done.stdout.strip().splitlines()
+    if done.returncode != 0:
+        problems.append("%s: %s fails: %s" % (
+            lesson, case_file, said[-1] if said else done.stderr.strip()[-200:] or "no output"))
+    elif not said:
+        problems.append("%s: %s passed without printing what it measured" % (lesson, case_file))
+    else:
+        print("  %s %s: %s" % (lesson, case_file, said[-1]))
+
+
+def check(tree, only_list=False):
+    problems = []
+    lines = lessons(tree, problems)
+    carried = {}
+    for lesson, labels, _, _, _ in lines:
+        for word in labels:
+            carried.setdefault(word, []).append(lesson)
+    chosen = declared(tree, carried, problems)
+    on = set(chosen) | {ALWAYS}
+    if only_list:
+        for lesson, labels, _, cases, _ in lines:
+            if on & set(labels):
+                print("\n".join(cases), end="\n" if cases else "")
+        return not problems
+    listed = {"lessons": set(), "cases": {}}
+    ran = not_run = prose = 0
+    off = []
+    for lesson, labels, lesson_file, cases, why_prose in lines:
+        in_force = bool(on & set(labels))
+        if not in_force:
+            off.append("%s [%s]" % (lesson, ", ".join(labels)))
         listed["lessons"].add(lesson_file)
         text = read(os.path.join(tree, lesson_file))
         if not text:
@@ -53,30 +135,24 @@ def check(tree):
         for name in ("Reason", "Source"):
             if text and not section(text, name):
                 problems.append("%s: %s has no %s" % (lesson, lesson_file, name))
-        if not case_file:
+        if not cases:
             prose += 1
-            if not (why_prose or "").strip():
+            if why_prose is not None and not why_prose.strip():
                 problems.append("%s: prose only, with no word on why it cannot be checked" % lesson)
             continue
-        listed["cases"].add(case_file)
-        path = os.path.join(tree, case_file)
-        if not (os.path.isfile(path) and os.access(path, os.X_OK)):
-            problems.append("%s: %s is missing or not executable" % (lesson, case_file))
-            continue
-        ran += 1
-        try:
-            done = subprocess.run([path], cwd=tree, capture_output=True, text=True, timeout=300)
-        except subprocess.TimeoutExpired:
-            problems.append("%s: %s did not end within 300 s" % (lesson, case_file))
-            continue
-        said = done.stdout.strip().splitlines()
-        if done.returncode != 0:
-            problems.append("%s: %s fails: %s" % (
-                lesson, case_file, said[-1] if said else done.stderr.strip()[-200:] or "no output"))
-        elif not said:
-            problems.append("%s: %s passed without printing what it measured" % (lesson, case_file))
-        else:
-            print("  %s %s: %s" % (lesson, case_file, said[-1]))
+        for case_file in cases:
+            if case_file in listed["cases"]:
+                problems.append("%s: %s is already the case of %s" % (lesson, case_file, listed["cases"][case_file]))
+                continue
+            listed["cases"][case_file] = lesson
+            path = os.path.join(tree, case_file)
+            if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+                problems.append("%s: %s is missing or not executable" % (lesson, case_file))
+            elif in_force:
+                ran += 1
+                run_case(tree, lesson, case_file, problems)
+            else:
+                not_run += 1
     for folder, names in listed.items():
         where = os.path.join(tree, folder)
         for name in sorted(os.listdir(where)) if os.path.isdir(where) else []:
@@ -84,19 +160,29 @@ def check(tree):
                 problems.append("%s/%s belongs to no lesson in CLAUDE.md" % (folder, name))
     if not lines:
         problems.append("no lesson found: an empty record is not a result")
-    print("lessons %d · with a case %d · prose only %d · cases run %d · CLAUDE.md %d bytes"
-          % (len(lines), len(listed["cases"]), prose, ran, len(doc.encode("utf-8"))))
+    for word in sorted(carried, key=lambda word: (word != ALWAYS, word)):
+        print("  label '%s': %s, %d lessons" % (word, "on" if word in on else "off", len(carried[word])))
+    for lesson in off:
+        print("  not in force: %s" % lesson)
+    print("lessons %d · in force %d · not in force %d · with a case %d · prose only %d · "
+          "cases run %d · cases not run %d · product: %s · CLAUDE.md %d bytes"
+          % (len(lines), len(lines) - len(off), len(off), len(lines) - prose, prose, ran, not_run,
+             ", ".join(chosen) or "none", len(read(os.path.join(tree, "CLAUDE.md")).encode("utf-8"))))
     for problem in problems:
         print("FAIL " + problem)
     return not problems
 
 
-# ---- selftest: the check against trees it must refuse ---------------------------------------
+# ---- selftest: the check against trees it must refuse, and right trees it must accept -------
 
-GOOD_LINE = ("- **L0001** One true thing. [why](lessons/0001-x.md) · "
-             "case: [`cases/0001-x`](cases/0001-x)\n")
+def line(number="0001", labels="always", case=True):
+    end = "case: [`cases/%s-x`](cases/%s-x)" % (number, number) if case else "prose: a judgement"
+    return "- **L%s** [%s] One true thing. [why](lessons/%s-x.md) · %s\n" % (number, labels, number, end)
+
+
 GOOD_LESSON = "# L0001\n\n## Reason\nBecause.\n\n## Source\nA run.\n"
 GOOD_CASE = "#!/bin/sh\necho '1 thing measured'\n"
+BAD_CASE = "#!/bin/sh\necho no\nexit 1\n"
 
 
 def write(tree, name, text, executable=False):
@@ -109,10 +195,30 @@ def write(tree, name, text, executable=False):
 
 
 def good(tree):
-    write(tree, "CLAUDE.md", "# x\n\n" + GOOD_LINE)
-    write(tree, "lessons/0001-x.md", GOOD_LESSON)
-    write(tree, "cases/0001-x", GOOD_CASE, True)
+    """One lesson that always holds, one that holds for web pages, and a product that has web pages."""
+    write(tree, "CLAUDE.md", "# x\n\n" + line() + line("0002", "web pages"))
+    for number in ("0001", "0002"):
+        write(tree, "lessons/%s-x.md" % number, GOOD_LESSON)
+        write(tree, "cases/%s-x" % number, GOOD_CASE, True)
+    write(tree, "product/LABELS", "# what this product is\nweb pages\n")
+    write(tree, "product/app.py", "print('a product')\n")
 
+
+def no_product(tree):
+    shutil.rmtree(os.path.join(tree, "product"))
+
+
+RIGHT = {
+    "a right tree (the control)": (lambda t: None, "in force 2 · not in force 0"),
+    "no product: only `always` is in force, and the other lesson is named": (
+        no_product, "not in force: L0002 [web pages]"),
+    "no product, and the case of the lesson not in force fails: it is not run": (
+        lambda t: no_product(t) or write(t, "cases/0002-x", BAD_CASE, True), "cases run 1 · cases not run 1"),
+    "a lesson with two labels is in force when the product chose one of them": (
+        lambda t: write(t, "CLAUDE.md", line() + line("0002", "money, Web  Pages")), "in force 2 · not in force 0"),
+    "a product folder with only its labels in it": (
+        lambda t: os.remove(os.path.join(t, "product/app.py")), "in force 2"),
+}
 
 WRONG = {
     "no lesson at all": lambda t: write(t, "CLAUDE.md", "# x\n"),
@@ -120,48 +226,73 @@ WRONG = {
     "lesson without a reason": lambda t: write(t, "lessons/0001-x.md", "# L0001\n\n## Source\nA run.\n"),
     "lesson without a source": lambda t: write(t, "lessons/0001-x.md", "# L0001\n\n## Reason\nBecause.\n"),
     "case missing": lambda t: os.remove(os.path.join(t, "cases/0001-x")),
-    "case fails": lambda t: write(t, "cases/0001-x", "#!/bin/sh\necho no\nexit 1\n", True),
+    "case fails": lambda t: write(t, "cases/0001-x", BAD_CASE, True),
     "case passes and prints nothing": lambda t: write(t, "cases/0001-x", "#!/bin/sh\nexit 0\n", True),
-    "case that no lesson names": lambda t: write(t, "cases/0002-y", GOOD_CASE, True),
-    "lesson file that no line names": lambda t: write(t, "lessons/0002-y.md", GOOD_LESSON),
+    "case that no lesson names": lambda t: write(t, "cases/0003-y", GOOD_CASE, True),
+    "lesson file that no line names": lambda t: write(t, "lessons/0003-y.md", GOOD_LESSON),
     "prose only, with no word on why": lambda t: write(
-        t, "CLAUDE.md", "- **L0001** One true thing. [why](lessons/0001-x.md) · prose: \n")
-        or os.remove(os.path.join(t, "cases/0001-x")),
-    "same lesson listed twice": lambda t: write(t, "CLAUDE.md", GOOD_LINE + GOOD_LINE),
+        t, "CLAUDE.md", line() + line("0002", "web pages", case=False).replace("a judgement", ""))
+        or os.remove(os.path.join(t, "cases/0002-x")),
+    "same lesson listed twice": lambda t: write(t, "CLAUDE.md", line() + line("0002", "web pages") + line()),
+    "a lesson that does not say when it applies": lambda t: write(
+        t, "CLAUDE.md", line() + line("0002", "web pages").replace("[web pages] ", "")),
+    "a lesson with an empty label": lambda t: write(t, "CLAUDE.md", line() + line("0002", "web pages, ")),
+    "the product declares a label no lesson carries": lambda t: write(t, "product/LABELS", "web pages\nwep pages\n"),
+    "a product that declares no label": lambda t: os.remove(os.path.join(t, "product/LABELS")),
+    "the case of a lesson the product switched on fails": lambda t: write(t, "cases/0002-x", BAD_CASE, True),
+    "the case of a lesson not in force is missing": lambda t: no_product(t) or os.remove(os.path.join(t, "cases/0002-x")),
+    "the lesson file of a lesson not in force is missing": lambda t: no_product(t)
+        or os.remove(os.path.join(t, "lessons/0002-x.md")),
+    "one case named by two lessons": lambda t: write(
+        t, "CLAUDE.md", line() + line("0002", "web pages").replace("cases/0002-x", "cases/0001-x"))
+        or os.remove(os.path.join(t, "cases/0002-x")),
 }
 
+NOT_CAUGHT = (
+    "a lesson marked prose that a machine could check; a case that passes without testing its lesson; "
+    "a reason that is wrong; a label misspelt on a lesson, which only shows as a lesson not in force; "
+    "two labels that mean the same thing; a lesson labelled too narrowly, which the next product never sees, "
+    "or too widely; a product that leaves out a label it should have chosen; "
+    "a case under a general label that only works on the product it was born in")
 
-def passes(tree):
-    return subprocess.run([sys.executable, os.path.abspath(__file__), tree],
-                          capture_output=True).returncode == 0
+
+def said(tree):
+    done = subprocess.run([sys.executable, os.path.abspath(__file__), tree], capture_output=True, text=True)
+    return done.returncode == 0, done.stdout
 
 
 def selftest():
     work = tempfile.mkdtemp()
+    accepted = refused = 0
     try:
-        tree = os.path.join(work, "good")
-        good(tree)
-        control = passes(tree)
-        print("%s  a right tree is accepted (the control)" % ("ok  " if control else "FAIL"))
-        refused = 0
-        for name, spoil in WRONG.items():
-            tree = os.path.join(work, re.sub(r"\W+", "-", name))
+        for count, (name, (change, expected)) in enumerate(RIGHT.items()):
+            tree = os.path.join(work, "right-%d" % count)
+            good(tree)
+            change(tree)
+            passed, out = said(tree)
+            fine = passed and expected in out
+            accepted += fine
+            print("%s  accepted: %s" % ("ok  " if fine else "FAIL", name))
+        for count, (name, spoil) in enumerate(WRONG.items()):
+            tree = os.path.join(work, "wrong-%d" % count)
             good(tree)
             spoil(tree)
-            caught = not passes(tree)
+            caught = not said(tree)[0]
             refused += caught
             print("%s  refused: %s" % ("ok  " if caught else "FAIL", name))
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    print("not caught by this check: a lesson marked prose that a machine could check; "
-          "a case that passes without testing its lesson; a reason that is wrong")
-    print("selftest: control %s, refused %d of %d wrong trees"
-          % ("accepted" if control else "REJECTED", refused, len(WRONG)))
-    return control and refused == len(WRONG)
+    print("not caught by this check: " + NOT_CAUGHT)
+    print("selftest: accepted %d of %d right trees, refused %d of %d wrong trees"
+          % (accepted, len(RIGHT), refused, len(WRONG)))
+    return accepted == len(RIGHT) and refused == len(WRONG)
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--selftest"]:
+    args = sys.argv[1:]
+    if args == ["--selftest"]:
         sys.exit(0 if selftest() else 1)
+    listing = args[:1] == ["--cases"]
+    args = args[1:] if listing else args
     here = os.path.dirname(os.path.abspath(__file__))
-    sys.exit(0 if check(sys.argv[1] if len(sys.argv) > 1 else here) else 1)
+    sys.exit(0 if check(args[0] if args else here, listing) else 1)

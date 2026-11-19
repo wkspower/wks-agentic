@@ -10,6 +10,7 @@ localhost is what makes "no login" acceptable.
 ## Source
 The person, run 001, 2026-11-19 (answers 3, 4 and 7). The overwrite is one of
 the four problems found by hand in the wizardly-cerf run, 2026-11-18.
+Read as written and accepted by the person, 2026-11-19 (run 005).
 
 ## What would be a regression
 A second program that changes the database, an import from outside the
@@ -21,3 +22,8 @@ import from outside the standard library is seen by starting the shop
 without site-packages and reading Python's own record of what it imported.
 "A second program that changes the database" was counted in the source
 before and is now checked by no machine: it needs a reader.
+
+## When it applies
+Three choices under one label, `python stdlib and sqlite on localhost`,
+because one case checks them together. A product that wants one of them
+without the others is the evidence that splits this lesson (L0024).

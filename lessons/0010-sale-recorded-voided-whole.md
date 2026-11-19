@@ -8,6 +8,7 @@ the whole sale, which returns its stock once; the voided sale stays on record.
 
 ## Source
 The person, run 001, 2026-11-19 (answers 8 and 9).
+Read as written and accepted by the person, 2026-11-19 (run 005).
 
 ## What would be a regression
 A total taken from the form, a method outside cash, card and other, a

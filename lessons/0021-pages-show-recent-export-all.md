@@ -11,6 +11,7 @@ is still somewhere: `/export.json` leaves nothing out.
 The person, run 004, 2026-11-19 (answer 3 of 3: "Enough"). Run 002 had
 built it this way without asking and listed both under "Left out, and not
 asked".
+Read as written and accepted by the person, 2026-11-19 (run 005).
 
 ## What would be a regression
 More than 200 sales listed on the page, an older sale missing from
@@ -19,3 +20,8 @@ More than 200 sales listed on the page, an older sale missing from
 The case covers the sales half. A date before today is refused (L0011), so
 no case can put a past appointment in the shop through its interface;
 "appointments before today are on no page" is checked by no machine.
+
+## Owed a second look by the person
+"Appointments before today are on no page" stays as built. The person said
+on 2026-11-19 (run 005) that they will look at it again; until then it is
+not to be changed and not to be asked about.

@@ -14,6 +14,7 @@ The person, run 002, 2026-11-19 (answer 4 of 4: "Edit customers and pets, no
 removal"). In run 001 only products could be edited.
 Kept by the person, run 004, 2026-11-19 (answer 2 of 3: a pet stays with the
 customer it was entered under).
+Read as written and accepted by the person, 2026-11-19 (run 005).
 
 ## What would be a regression
 An edit that skips a bound, changes another row, gives the row a new id or

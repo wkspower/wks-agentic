@@ -9,6 +9,7 @@ chosen for the person in advance on a form that records money or a booking.
 ## Source
 The wizardly-cerf run, 2026-11-18: a customer was preselected on the sale
 form and every check passed. The person, run 001, 2026-11-19 (answer 14).
+Read as written and accepted by the person, 2026-11-19 (run 005).
 
 ## What would be a regression
 The browser case skipping instead of failing when there is no browser, or a

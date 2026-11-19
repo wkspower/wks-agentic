@@ -11,6 +11,7 @@ shop itself.
 The wizardly-cerf run, 2026-11-18: cross-site posts were accepted, and no
 measure, audit or blind build looked for it. The person, run 001, 2026-11-19
 (answer 7: "cross-site posts are still refused").
+Read as written and accepted by the person, 2026-11-19 (run 005).
 
 ## What would be a regression
 A post with a foreign Origin, or `Sec-Fetch-Site` other than same-origin, or
