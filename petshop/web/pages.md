@@ -22,14 +22,14 @@ Money is shown as cents ÷ 100 with exactly two decimals and commas between thou
 - **`GET /customers`**. A form `method="get"` with a text input `q`. A table `id="customers"` with one `<tr data-id="CUSTOMER_ID">` per customer whose name contains `q` ignoring case (all when `q` is empty or absent), in order of registration, holding a cell of class `name`. A form `action="/customers/register"` with a text input `name`.
 - **`GET /sell`**. One form `action="/sell"`: a select `customer` whose options have the customer ids as values, and for every item in id order a number input named `qty-ITEM_ID`, shown with the item's name, price and quantity on hand.
 - **`GET /sales`**. A table `id="sales"` with one `<tr data-id="SALE_ID">` per sale, newest first, holding cells of class `customer` (the customer's name) and `total` (money), each row linking to the sale. An element `id="takings"` (money).
-- **`GET /sales/SALE_ID`**. Elements `id="sale-id"`, `id="customer"` (the name) and `id="total"` (money), and a table `id="lines"` with one `<tr data-id="ITEM_ID">` per line, holding cells of class `name`, `quantity`, `unit-price` and `line-total`. An unknown sale: status 404.
+- **`GET /sales/SALE_ID`**. Elements `id="sale-id"`, `id="customer"` (the name) and `id="total"` (money), and a table `id="lines"` with one `<tr data-id="ITEM_ID">` per line, holding cells of class `name`, `quantity`, `unit-price` and `line-total` (both money, as recorded in the sale, not today's price). The page belongs to the section `/sales`. An unknown sale: status 404.
 
 ## Changes
 
 Each form posts `application/x-www-form-urlencoded` in UTF-8. Field `id` in `/catalog/price`, `/stock/receive` and `/stock/remove` is the item id, however the form offers it.
 
 - **Done**: the state is saved and the response is `303` with `Location` back to the page the form is on (for `/sell`: the new sale's page). The page then shown has exactly one element with `role="status"` saying what was done.
-- **`POST /sell`** makes one sale with one line per item whose quantity is 1 or more, in id order; empty and `0` mean none.
+- **`POST /sell`** makes one sale with one line per item whose quantity is 1 or more, in id order; empty, `0` and an absent quantity field mean none.
 - **Refused**: anything a unit refuses, an item unknown to the catalog, an unknown customer, a number not written as above, a missing field, or a sale with no line. The response is `400` and shows the page the form is on, with exactly one element `role="alert"` giving the reason and the submitted values still in the form's fields. The state file is byte-identical.
 - An unknown path: `404`, a page with the `<nav>`. A known path with another method: `405`.
 
@@ -42,7 +42,7 @@ Hard, on every page above, in a browser 390, 768 and 1280 px wide, with a shop t
 - Everything can be reached and operated with the keyboard alone, and the focused control is visibly marked.
 - No error in the browser console and no request to another host.
 
-Graded: each occurrence is one defect in the number of declaration 5.
+Graded: each occurrence, on each page and at each of the three widths unless a width is named, is one defect in the number of declaration 5. Running text means paragraphs.
 
 - A text whose contrast with its background is below 4.5 to 1.
 - A link, button or form control smaller than 44 by 44 CSS px at 390 px wide (links inside running text excepted).

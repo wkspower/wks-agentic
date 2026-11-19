@@ -28,3 +28,5 @@
 2026-11-18T23:48Z	petshop	1	measure of web, written by an agent that does not build it
 2026-11-18T23:48Z	petshop	1	audit cases for web, written from its document and pages alone
 2026-11-18T23:48Z	petshop	1	case for the state file layout added to the measure of the shop
+2026-11-19T00:39Z	petshop/web	1	build of web (the change), attempt 1
+2026-11-19T00:39Z	petshop/web	1	alternative build of web, made without sight of the change

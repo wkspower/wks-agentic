@@ -1,0 +1,1595 @@
+#!/usr/bin/env python3
+"""Measure of the unit `web` (petshop/web): check <build-dir>.
+
+The build dir holds web.py and the four modules. Every sentence of pages.md is a
+named case below. Two layers:
+
+  1. HTTP layer (standard library): sections "Running", "Every page", "Pages", "Changes".
+  2. Browser layer (Playwright for Node, Chromium): "Rules of a professional interface",
+     hard rules as cases, graded rules as a count of defects.
+
+All hard cases pass: exit 0, last stdout line = graded defects + bytes of web.py / 1,000,000.
+Any hard case fails: exit 1, the failing case names on stderr.
+"""
+import http.client
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from html.parser import HTMLParser
+from urllib.parse import urlencode, urljoin, urlsplit
+
+MODULES = ("catalog.py", "stock.py", "customers.py", "sales.py")
+NAV = ("/", "/catalog", "/customers", "/sell", "/sales")
+ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+# Texts that must never appear raw in a page: they come from names and ids in the state.
+RAW = ("<script>alert(1)</script>", "<b>bold</b>", "<img src=x", '<i>&"q\'', "<u>kept</u>")
+
+CASES = []   # every case name, in the order run
+FAILS = []   # (name, reason)
+
+
+class case:
+    """`with case("what the document claims"):` a failed assertion inside fails the case."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def __enter__(self):
+        CASES.append(self.name)
+
+    def __exit__(self, kind, value, trace):
+        if kind is None:
+            return True
+        if not issubclass(kind, Exception):
+            return False
+        reason = str(value) if kind is AssertionError else "%s: %s" % (kind.__name__, value)
+        FAILS.append((self.name, " ".join(reason.split())[:300]))
+        return True
+
+
+def expect(condition, reason="expectation not met"):
+    if not condition:
+        raise AssertionError(reason)
+
+
+def same(got, want, what):
+    if got != want:
+        raise AssertionError("%s: got %r, want %r" % (what, got, want))
+
+
+# ---- a small HTML tree ---------------------------------------------------------------------
+
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
+        "track", "wbr"}
+CELLS = {"tr", "td", "th"}
+CLOSES = {"tr": CELLS, "td": {"td", "th"}, "th": {"td", "th"}, "option": {"option"},
+          "optgroup": {"option", "optgroup"}, "li": {"li"}, "p": {"p"}, "dt": {"dt", "dd"},
+          "dd": {"dt", "dd"}, "tbody": CELLS | {"thead", "tbody", "tfoot"},
+          "tfoot": CELLS | {"thead", "tbody", "tfoot"}}
+INLINE = {"a", "abbr", "b", "bdi", "code", "em", "i", "kbd", "mark", "s", "small", "span",
+          "strong", "sub", "sup", "u", "var"}
+BLOCKS = {"div", "table", "form", "section", "ul", "ol", "dl", "h1", "h2", "h3", "h4", "nav",
+          "main", "header", "footer", "article", "aside", "fieldset", "details", "pre", "hr"}
+
+
+class Node:
+    def __init__(self, tag, attrs, parent):
+        self.tag, self.attrs, self.parent, self.children = tag, attrs, parent, []
+
+    def walk(self):
+        for child in self.children:
+            if isinstance(child, Node):
+                yield child
+                yield from child.walk()
+
+    def all(self, *tags, **attrs):
+        """Descendants with one of the tags and all the attributes (class_ = a class token)."""
+        found = []
+        for node in self.walk():
+            if tags and node.tag not in tags:
+                continue
+            if all((value in node.attrs.get("class", "").split()) if key == "class_"
+                   else node.attrs.get(key.replace("_", "-")) == value
+                   for key, value in attrs.items()):
+                found.append(node)
+        return found
+
+    def raw_text(self):
+        parts = []
+        for child in self.children:
+            if isinstance(child, str):
+                parts.append(child)
+            elif child.tag in INLINE:
+                parts.append(child.raw_text())
+            elif child.tag not in ("script", "style", "template"):
+                parts.append(" " + child.raw_text() + " ")   # cells and blocks are apart
+        return "".join(parts)
+
+    def text(self):
+        return " ".join(self.raw_text().split())
+
+    def inside(self, tag):
+        node = self.parent
+        while node is not None and node.tag != tag:
+            node = node.parent
+        return node
+
+
+class Tree(HTMLParser):
+    def __init__(self, text):
+        super().__init__(convert_charrefs=True)
+        self.root = Node("#root", {}, None)
+        self.stack = [self.root]
+        self.feed(text)
+        self.close()
+
+    def handle_starttag(self, tag, attrs):
+        closes = CLOSES.get(tag, set())
+        while len(self.stack) > 1 and (self.stack[-1].tag in closes or (
+                self.stack[-1].tag == "p" and tag in BLOCKS)):
+            self.stack.pop()
+        values = {}
+        for key, value in attrs:
+            values.setdefault(key, "" if value is None else value)
+        node = Node(tag, values, self.stack[-1])
+        self.stack[-1].children.append(node)
+        if tag not in VOID:
+            self.stack.append(node)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in VOID:
+            self.stack.pop()
+
+    def handle_endtag(self, tag):
+        if any(node.tag == tag for node in self.stack[1:]):
+            while self.stack.pop().tag != tag:
+                pass
+
+    def handle_data(self, data):
+        self.stack[-1].children.append(data)
+
+
+def norm(text):
+    return " ".join(text.split())
+
+
+def money(cents):
+    return "%s.%02d" % (format(cents // 100, ","), cents % 100)
+
+
+def numbers(node):
+    """The numbers written in an element, e.g. ['1,234,567.89']."""
+    return re.findall(r"\d[\d,]*(?:\.\d+)?", node.text())
+
+
+def by_id(doc, name, tag=None):
+    found = [node for node in doc.walk() if node.attrs.get("id") == name]
+    expect(len(found) == 1, "want exactly one element id=%r, found %d" % (name, len(found)))
+    if tag:
+        same(found[0].tag, tag, "tag of #%s" % name)
+    return found[0]
+
+
+def rows(table):
+    return [row for row in table.all("tr") if "data-id" in row.attrs]
+
+
+def row_ids(table):
+    return [row.attrs["data-id"] for row in rows(table)]
+
+
+def cell(row, name):
+    found = row.all("td", "th", class_=name)
+    expect(found, "row %r has no cell of class %r" % (row.attrs.get("data-id"), name))
+    return found[0]
+
+
+def forms(doc, action):
+    return doc.all("form", action=action)
+
+
+def controls(form, name):
+    return [node for node in form.all("input", "select", "textarea")
+            if node.attrs.get("name") == name]
+
+
+def holds(form, name, value):
+    """Does the form's field `name` hold `value` (as a browser would show it)?"""
+    for node in controls(form, name):
+        if node.tag == "select":
+            options = node.all("option")
+            chosen = [o for o in options if "selected" in o.attrs] or options[:1]
+            if chosen and chosen[-1].attrs.get("value", chosen[-1].text()) == value:
+                return True
+        elif node.tag == "textarea":
+            if node.raw_text().strip("\n") == value:
+                return True
+        elif node.attrs.get("value", "") == value:
+            return True
+    return False
+
+
+# ---- the program under test ----------------------------------------------------------------
+
+class Response:
+    def __init__(self, status, headers, body):
+        self.status, self.headers, self.body = status, headers, body
+        charset = re.search(r"charset=([\w-]+)", headers.get("content-type", ""), re.I)
+        try:
+            self.text = body.decode(charset.group(1) if charset else "utf-8", "replace")
+        except LookupError:
+            self.text = body.decode("utf-8", "replace")
+        self._doc = None
+
+    @property
+    def doc(self):
+        if self._doc is None:
+            self._doc = Tree(self.text).root
+        return self._doc
+
+
+class Server:
+    """One running `python3 web.py --state FILE [--port N]`, always killed at the end."""
+    running = []
+    patience = 15   # seconds to wait for the ready line; short once a start has failed
+
+    def __init__(self, build, state, port=0):
+        self.state, self.line, self.port = state, None, None
+        command = [sys.executable, os.path.join(build, "web.py"), "--state", state]
+        if port is not None:
+            command += ["--port", str(port)]
+        self.proc = subprocess.Popen(command, cwd=build, env=ENV, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        Server.running.append(self)
+        ready = threading.Event()
+
+        def read():
+            for raw in self.proc.stdout:
+                if self.line is None:
+                    self.line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                    ready.set()
+            ready.set()
+        threading.Thread(target=read, daemon=True).start()
+        ready.wait(Server.patience)
+        found = re.fullmatch(r"http://127\.0\.0\.1:(\d+)/", self.line or "")
+        if found:
+            self.port = int(found.group(1))
+        else:
+            Server.patience = 3
+
+    def started(self):
+        expect(self.port, "no ready line http://127.0.0.1:PORT/ on stdout within 15 s "
+               "(first line: %r)" % (self.line,))
+
+    def request(self, method, path, fields=None, cookie=None):
+        self.started()
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=15)
+        try:
+            headers, body = {}, None
+            if fields is not None:
+                body = urlencode(fields).encode("ascii")
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+            elif method in ("POST", "PUT"):
+                body = b""
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+            if cookie:
+                headers["Cookie"] = cookie
+            connection.request(method, path, body=body, headers=headers)
+            answer = connection.getresponse()
+            return Response(answer.status, {k.lower(): v for k, v in answer.getheaders()},
+                            answer.read())
+        except socket.timeout:
+            self.kill()   # a program that hangs is ended: every later request fails at once
+            raise AssertionError("no answer to %s %s within 15 s" % (method, path)) from None
+        finally:
+            connection.close()
+
+    def get(self, path):
+        return self.request("GET", path)
+
+    def post(self, path, fields):
+        return self.request("POST", path, fields)
+
+    def alive(self):
+        return self.proc.poll() is None
+
+    def kill(self):
+        if self.proc.poll() is None:
+            self.proc.kill()
+        try:
+            self.proc.wait(5)
+        except Exception:
+            pass
+
+    @classmethod
+    def kill_all(cls):
+        for server in cls.running:
+            server.kill()
+
+
+def snapshot(path):
+    """What a state file is right now: None when missing, else its bytes."""
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except FileNotFoundError:
+        return None
+
+
+# The shop's own modules, run from the build, to make and to read a state file in the layout
+# the shop documents: {"catalog": ..., "stock": ..., "customers": ..., "sales": ...}.
+MAKE = r'''
+import json, os, sys
+import catalog, stock, customers, sales
+s = {"sales": sales.new(), "customers": customers.new(), "stock": stock.new(),
+     "catalog": catalog.new()}
+for op in json.load(sys.stdin):
+    if op[0] == "add": catalog.add(s["catalog"], op[1], op[2], op[3], op[4])
+    elif op[0] == "price": catalog.set_price(s["catalog"], op[1], op[2])
+    elif op[0] == "receive": stock.receive(s["stock"], op[1], op[2])
+    elif op[0] == "remove": stock.remove(s["stock"], op[1], op[2])
+    elif op[0] == "register": customers.register(s["customers"], op[1])
+    elif op[0] == "sell":
+        sales.sell(s["sales"], op[1], [tuple(line) for line in op[2]],
+                   lambda i: catalog.get(s["catalog"], i)["price_cents"],
+                   lambda i: stock.on_hand(s["stock"], i),
+                   lambda i, q: stock.remove(s["stock"], i, q))
+with open(sys.argv[1] + ".making", "w", encoding="utf-8") as f:
+    json.dump(s, f, indent=2)
+os.replace(sys.argv[1] + ".making", sys.argv[1])
+'''
+DUMP = r'''
+import json, sys
+import catalog, stock, customers, sales
+with open(sys.argv[1], encoding="utf-8") as f:
+    s = json.load(f)
+assert isinstance(s, dict), "the state file is not one JSON object"
+print(json.dumps({
+    "keys": sorted(s),
+    "items": [dict(i, on_hand=stock.on_hand(s["stock"], i["id"]))
+              for i in catalog.items(s["catalog"])],
+    "customers": customers.find(s["customers"], ""),
+    "sales": sales.sales(s["sales"]),
+    "takings": sales.takings(s["sales"])}))
+'''
+
+
+def modules(build, script, path, ops=None):
+    done = subprocess.run([sys.executable, "-c", script, path], cwd=build, env=ENV,
+                          input=json.dumps(ops), capture_output=True, text=True, timeout=30)
+    expect(done.returncode == 0, "modules failed on the state file: " + done.stderr[-300:])
+    return done.stdout
+
+
+def make_state(build, path, ops):
+    modules(build, MAKE, path, ops)
+
+
+def dump(build, path):
+    """What the shop's modules read in a state file."""
+    return json.loads(modules(build, DUMP, path))
+
+
+# ---- what every page must be ---------------------------------------------------------------
+
+def nav_of(doc):
+    for nav in doc.all("nav"):
+        hrefs = [a.attrs.get("href") for a in nav.all("a")]
+        if all(href in hrefs for href in NAV):
+            return nav
+    raise AssertionError("no <nav> linking to /, /catalog, /customers, /sell and /sales")
+
+
+def no_raw(page):
+    for marker in RAW:
+        expect(marker not in page.text, "text from the state is not HTML-escaped: %r" % marker)
+
+
+def nothing_fetched_elsewhere(page):
+    for node in page.doc.walk():
+        for key in ("src", "srcset", "poster", "data") + (("href",) if node.tag == "link" else ()):
+            value = node.attrs.get(key, "").strip()
+            expect(not re.match(r"(?i)([a-z][a-z0-9+.-]*:)?//", value) or re.match(
+                r"(?i)https?://127\.0\.0\.1(:\d+)?(/|$)", value),
+                "<%s %s=%r> is fetched from another server" % (node.tag, key, value))
+        if node.tag == "style":
+            css = "".join(c for c in node.children if isinstance(c, str))
+            other = re.search(r"(?i)(url\(\s*['\"]?|@import\s+['\"])\s*(https?:)?//[^)'\"]*", css)
+            expect(not other, "the style sheet fetches from another server: %r"
+                   % (other.group(0) if other else ""))
+
+
+def page_basics(page, section):
+    """The sentences of "Every page" that hold for any page of the six."""
+    doc = page.doc
+    expect(page.text.lstrip("﻿ \r\n\t").lower().startswith("<!doctype html"),
+           "not an HTML5 document: it does not begin with <!doctype html>")
+    html_ = doc.all("html")
+    expect(len(html_) == 1 and html_[0].attrs.get("lang", "").strip(), "<html> has no lang")
+    titles = doc.all("title")
+    expect(len(titles) == 1, "want exactly one <title>")
+    expect(re.fullmatch(r"\S.* · Pet shop", titles[0].text()),
+           "title %r is not of the form 'PAGE · Pet shop'" % titles[0].text())
+    same(len(doc.all("h1")), 1, "number of <h1>")
+    expect(doc.all("main"), "no <main>")
+    links = nav_of(doc).all("a")
+    if section:
+        expect(any(a.attrs.get("href") == section and a.attrs.get("aria-current") == "page"
+                   for a in links), 'the nav link to %s lacks aria-current="page"' % section)
+        for a in links:
+            expect(a.attrs.get("href") == section or "aria-current" not in a.attrs,
+                   "the nav link to %s carries aria-current on the page of section %s"
+                   % (a.attrs.get("href"), section))
+    no_raw(page)
+    nothing_fetched_elsewhere(page)
+
+
+def section_of(path):
+    return "/sales" if path.startswith("/sales/") else path.split("?")[0]
+
+
+def fetch(server, path, status=200):
+    page = server.get(path)
+    same(page.status, status, "status of GET %s" % path)
+    page_basics(page, section_of(path))
+    return page
+
+
+def one(doc, role):
+    found = [node for node in doc.walk() if node.attrs.get("role") == role]
+    same(len(found), 1, 'number of elements role="%s"' % role)
+    expect(found[0].text(), 'the element role="%s" says nothing' % role)
+
+
+PAGE_MARK = {"/catalog": lambda doc: by_id(doc, "items", "table"),
+             "/customers": lambda doc: by_id(doc, "customers", "table"),
+             "/sell": lambda doc: expect(len(forms(doc, "/sell")) == 1, "no form /sell")}
+FORM_PAGE = {"/catalog/add": "/catalog", "/catalog/price": "/catalog",
+             "/stock/receive": "/catalog", "/stock/remove": "/catalog",
+             "/customers/register": "/customers", "/sell": "/sell"}
+
+
+def refused(server, action, fields, keep=None):
+    """POST that must be refused: 400, the form's page, one alert, values kept, file as it was.
+
+    `keep`: the fields that must still hold the submitted value (default: all of them)."""
+    before = snapshot(server.state)
+    page = server.post(action, fields)
+    same(page.status, 400, "status of refused POST %s %r" % (action, fields))
+    home = FORM_PAGE[action]
+    page_basics(page, home)
+    PAGE_MARK[home](page.doc)
+    one(page.doc, "alert")
+    names = list(fields) if keep is None else keep
+    if names:
+        expect(any(all(holds(form, name, fields[name]) for name in names)
+                   for form in forms(page.doc, action)),
+               "after refused POST %s the form does not still hold %r"
+               % (action, {name: fields[name] for name in names}))
+    expect(snapshot(server.state) == before,
+           "the state file changed on refused POST %s %r" % (action, fields))
+
+
+def done(server, action, fields, where=None):
+    """POST that must succeed: 303 back to the form's page, which then shows one status."""
+    answer = server.post(action, fields)
+    same(answer.status, 303, "status of POST %s %r" % (action, fields))
+    location = answer.headers.get("location")
+    expect(location, "303 without Location")
+    target = urlsplit(urljoin("http://127.0.0.1:%d%s" % (server.port, action), location))
+    same(target.netloc, "127.0.0.1:%d" % server.port, "host of Location")
+    if where is None:
+        same(target.path, FORM_PAGE[action], "page of Location after POST %s" % action)
+    else:
+        expect(re.fullmatch(where, target.path), "Location %r after POST %s" % (location, action))
+    cookie = "; ".join(v.split(";")[0] for k, v in answer.headers.items() if k == "set-cookie")
+    path = target.path + ("?" + target.query if target.query else "")
+    page = server.request("GET", path, cookie=cookie or None)
+    same(page.status, 200, "status of the page shown after POST %s" % action)
+    page_basics(page, section_of(target.path))
+    one(page.doc, "status")
+    return target.path, page
+
+
+def verify_pages(server, shop, label):
+    """The six pages show exactly what the shop's modules read in the state file (`shop`)."""
+    items, people, sold = shop["items"], shop["customers"], shop["sales"]
+    names = {person["id"]: person["name"] for person in people}
+    item_names = {item["id"]: item["name"] for item in items}
+
+    with case("GET / : count-items, count-customers, count-sales, takings (money) [%s]" % label):
+        doc = fetch(server, "/").doc
+        same(numbers(by_id(doc, "count-items")), [str(len(items))], "count-items")
+        same(numbers(by_id(doc, "count-customers")), [str(len(people))], "count-customers")
+        same(numbers(by_id(doc, "count-sales")), [str(len(sold))], "count-sales")
+        same(numbers(by_id(doc, "takings")), [money(shop["takings"])], "takings")
+
+    with case("GET / : table out-of-stock, one row per item with none on hand, id order [%s]"
+              % label):
+        doc = fetch(server, "/").doc
+        same(row_ids(by_id(doc, "out-of-stock", "table")),
+             [item["id"] for item in items if item["on_hand"] == 0], "rows of out-of-stock")
+
+    with case("GET /catalog : table items, rows in id order, cells name kind price on-hand [%s]"
+              % label):
+        doc = fetch(server, "/catalog").doc
+        table = by_id(doc, "items", "table")
+        same(row_ids(table), [item["id"] for item in items], "rows of items")
+        for row, item in zip(rows(table), items):
+            same(cell(row, "name").text(), norm(item["name"]), "name of %s" % item["id"])
+            expect(item["kind"] in cell(row, "kind").text().lower(), "kind of %s" % item["id"])
+            same(numbers(cell(row, "price")), [money(item["price_cents"])],
+                 "price of %s" % item["id"])
+            same(numbers(cell(row, "on-hand")), [str(item["on_hand"])],
+                 "on-hand of %s" % item["id"])
+
+    with case("GET /customers : table customers, rows in order of registration, cell name [%s]"
+              % label):
+        doc = fetch(server, "/customers").doc
+        table = by_id(doc, "customers", "table")
+        same(row_ids(table), [person["id"] for person in people], "rows of customers")
+        for row, person in zip(rows(table), people):
+            same(cell(row, "name").text(), norm(person["name"]), "name of %s" % person["id"])
+
+    with case("GET /sell : select customer has the customer ids as option values [%s]" % label):
+        doc = fetch(server, "/sell").doc
+        same(len(forms(doc, "/sell")), 1, "number of forms action=/sell")
+        form = forms(doc, "/sell")[0]
+        same(form.attrs.get("method", "").lower(), "post", "method of the form /sell")
+        selects = [node for node in form.all("select") if node.attrs.get("name") == "customer"]
+        same(len(selects), 1, "number of selects named customer")
+        values = [o.attrs.get("value", "") for o in selects[0].all("option")]
+        same(sorted(v for v in values if v), sorted(names), "option values")
+
+    with case("GET /sell : a number input qty-ITEM_ID per item in id order, shown with name, "
+              "price and quantity on hand [%s]" % label):
+        form = forms(fetch(server, "/sell").doc, "/sell")[0]
+        inputs = [node for node in form.all("input")
+                  if node.attrs.get("name", "").startswith("qty-")]
+        same([node.attrs["name"] for node in inputs], ["qty-" + item["id"] for item in items],
+             "names of the quantity inputs")
+        for node in inputs:
+            same(node.attrs.get("type", "").lower(), "number", "type of %s" % node.attrs["name"])
+        shown, tokens = form.text(), numbers(form)
+        for item in items:
+            expect(norm(item["name"]) in shown, "name of %s not shown" % item["id"])
+            expect(money(item["price_cents"]) in tokens, "price of %s not shown" % item["id"])
+            expect(str(item["on_hand"]) in tokens, "on hand of %s not shown" % item["id"])
+
+    with case("GET /sales : table sales, newest first, cells customer (name) and total, each "
+              "row links to the sale; takings [%s]" % label):
+        doc = fetch(server, "/sales").doc
+        table = by_id(doc, "sales", "table")
+        newest = list(reversed(sold))
+        same(row_ids(table), [sale["id"] for sale in newest], "rows of sales")
+        for row, sale in zip(rows(table), newest):
+            same(cell(row, "customer").text(), norm(names[sale["customer_id"]]),
+                 "customer of %s" % sale["id"])
+            same(numbers(cell(row, "total")), [money(sale["total_cents"])],
+                 "total of %s" % sale["id"])
+            expect(any(a.attrs.get("href") == "/sales/" + sale["id"] for a in row.all("a")),
+                   "row %s has no link to /sales/%s" % (sale["id"], sale["id"]))
+        same(numbers(by_id(doc, "takings")), [money(shop["takings"])], "takings")
+
+    with case("GET /sales/SALE_ID : sale-id, customer (name), total, table lines with cells "
+              "name quantity unit-price line-total [%s]" % label):
+        for sale in sold[:3] + sold[-2:]:
+            doc = fetch(server, "/sales/" + sale["id"]).doc
+            expect(sale["id"] in by_id(doc, "sale-id").text().split(), "sale-id")
+            same(by_id(doc, "customer").text(), norm(names[sale["customer_id"]]), "customer")
+            same(numbers(by_id(doc, "total")), [money(sale["total_cents"])], "total")
+            table = by_id(doc, "lines", "table")
+            same(row_ids(table), [line["item_id"] for line in sale["lines"]], "rows of lines")
+            for row, line in zip(rows(table), sale["lines"]):
+                same(cell(row, "name").text(), norm(item_names[line["item_id"]]), "line name")
+                same(numbers(cell(row, "quantity")), [str(line["quantity"])], "line quantity")
+                same(numbers(cell(row, "unit-price")), [money(line["unit_price_cents"])],
+                     "line unit-price")
+                same(numbers(cell(row, "line-total")), [money(line["line_total_cents"])],
+                     "line line-total")
+
+
+# ---- the data ------------------------------------------------------------------------------
+
+LONG = ("Aquarium with stand, filter, heater and a very long descriptive name that goes on and "
+        "on so that the table of items becomes wide")
+NASTY_ID = 'x<i>&"q\''
+NASTY_ITEM = 'Tom & "Jerry" \'treats\' <b>bold</b>'
+SCRIPT_ITEM = "Parrot <script>alert(1)</script>"
+NASTY_PERSON = '<img src=x onerror=alert(1)> & "Bo" O\'Neil'
+PEOPLE = ["Ana Lima", NASTY_PERSON, "Élodie Durand", "ana maria", "Carl", "Dora", "Emil",
+          "Fay", "Gus", "Joana", "Kim"]
+IDS = ["a10", "a9", "k1", "m1", NASTY_ID, "z0"]   # id order
+
+# What is done through the web forms on an empty shop, and the same through the modules.
+# (form action, fields)  /  the module operation it must amount to.
+WEB_STORY = [
+    ("/catalog/add", {"id": "a10", "name": "Goldfish", "kind": "animal", "price": "3"},
+     ("add", "a10", "Goldfish", "animal", 300)),
+    ("/catalog/add", {"id": "a9", "name": SCRIPT_ITEM, "kind": "animal", "price": "1234567.89"},
+     ("add", "a9", SCRIPT_ITEM, "animal", 123456789)),
+    ("/catalog/add", {"id": NASTY_ID, "name": NASTY_ITEM, "kind": "product", "price": "260.5"},
+     ("add", NASTY_ID, NASTY_ITEM, "product", 26050)),
+    ("/catalog/add", {"id": "k1", "name": "Kibble", "kind": "product", "price": "0.05"},
+     ("add", "k1", "Kibble", "product", 5)),
+    ("/catalog/add", {"id": "z0", "name": "Zebra finch é", "kind": "animal", "price": "0"},
+     ("add", "z0", "Zebra finch é", "animal", 0)),
+    ("/catalog/add", {"id": "m1", "name": LONG, "kind": "product", "price": "12345678.9"},
+     ("add", "m1", LONG, "product", 1234567890)),
+    ("/catalog/price", {"id": "a10", "price": "3.50"}, ("price", "a10", 350)),
+    ("/stock/receive", {"id": "a10", "quantity": "137"}, ("receive", "a10", 137)),
+    ("/stock/receive", {"id": "a9", "quantity": "3"}, ("receive", "a9", 3)),
+    ("/stock/receive", {"id": NASTY_ID, "quantity": "468"}, ("receive", NASTY_ID, 468)),
+    ("/stock/receive", {"id": "k1", "quantity": "4"}, ("receive", "k1", 4)),
+    ("/stock/receive", {"id": "m1", "quantity": "12"}, ("receive", "m1", 12)),
+    ("/stock/remove", {"id": "k1", "quantity": "4"}, ("remove", "k1", 4)),
+    ("/stock/remove", {"id": "a10", "quantity": "7"}, ("remove", "a10", 7)),
+] + [("/customers/register", {"name": name}, ("register", name)) for name in PEOPLE] + [
+    # quantities posted in reverse id order; empty and 0 mean none; lines come in id order
+    ("/sell", [("qty-z0", ""), ("qty-" + NASTY_ID, "2"), ("qty-m1", "0"), ("qty-k1", ""),
+               ("qty-a9", "1"), ("qty-a10", "0"), ("customer", "C2")],
+     ("sell", "C2", [["a9", 1], [NASTY_ID, 2]])),
+    ("/sell", {"customer": "C1", "qty-a10": "3", "qty-a9": "", "qty-k1": "", "qty-m1": "",
+               "qty-" + NASTY_ID: "", "qty-z0": ""}, ("sell", "C1", [["a10", 3]])),
+    ("/sell", {"customer": "C11", "qty-a10": "1", "qty-a9": "0", "qty-k1": "0", "qty-m1": "2",
+               "qty-" + NASTY_ID: "0", "qty-z0": "0"}, ("sell", "C11", [["a10", 1], ["m1", 2]])),
+]
+
+# A shop made by the modules alone (as shop.py would): prices change between sales, ten sales.
+MODULE_STORY = [
+    ("add", "a10", "Goldfish", "animal", 300),
+    ("add", "a9", SCRIPT_ITEM, "animal", 123456789),
+    ("add", NASTY_ID, NASTY_ITEM, "product", 26050),
+    ("add", "k1", "Kibble", "product", 5),
+    ("add", "z0", "Zebra finch", "animal", 0),
+    ("add", "m1", LONG, "product", 100000),
+    ("receive", "a10", 150), ("receive", "a9", 3), ("receive", NASTY_ID, 470),
+    ("receive", "k1", 2), ("receive", "m1", 12),
+] + [("register", name) for name in PEOPLE] + [
+    ("sell", "C2", [["a9", 1], [NASTY_ID, 2]]),
+    ("sell", "C1", [["a10", 3], ["k1", 2]]),
+    ("price", "a10", 350),
+] + [("sell", "C%d" % n, [["a10", 1]]) for n in range(3, 11)] + [
+    ("sell", "C11", [["a10", 2], ["m1", 1]]),
+]
+EMPTY_QTY = {"qty-" + item_id: "" for item_id in IDS}
+BAD_PRICES = ["", "abc", "3.505", "1e3", "-1", "3.", "1,000", "3.5.0", "0x10", "+3", "3 50"]
+BAD_QUANTITIES = ["0", "-1", "1.5", "abc", "", "1e2", "+2"]
+
+
+def loopback_only(port):
+    """The listening socket is on 127.0.0.1 and nowhere else."""
+    wanted = "%04X" % port
+    try:
+        with open("/proc/net/tcp") as handle:
+            for line in handle.read().splitlines()[1:]:
+                part = line.split()
+                address, _, local_port = part[1].partition(":")
+                if part[3] == "0A" and local_port == wanted:
+                    same(address, "0100007F", "address of the listening socket (/proc/net/tcp)")
+        with open("/proc/net/tcp6") as handle:
+            for line in handle.read().splitlines()[1:]:
+                part = line.split()
+                address, _, local_port = part[1].partition(":")
+                expect(not (part[3] == "0A" and local_port == wanted and not address.strip("0")),
+                       "listening on every IPv6 address (::)")
+    except OSError:
+        pass   # no /proc here: the connections below decide
+    others = set()
+    if sys.platform.startswith("linux"):
+        others.add("127.0.0.2")
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.connect(("192.0.2.1", 9))
+        others.add(probe.getsockname()[0])
+        probe.close()
+    except OSError:
+        pass
+    try:
+        others.update(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        pass
+    for address in sorted(others - {"127.0.0.1", "0.0.0.0"}):
+        try:
+            socket.create_connection((address, port), timeout=2).close()
+        except OSError:
+            continue   # refused or unreachable: not listening there
+        raise AssertionError("the program also answers on %s" % address)
+
+
+def free_port():
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    return port
+
+
+# ---- layer 1: HTTP -------------------------------------------------------------------------
+
+def http_layer(build, work):
+    # .... Scenario A: an empty shop, no state file yet, a port asked by number ..............
+    state_a = os.path.join(work, "a", "shop.json")
+    os.makedirs(os.path.dirname(state_a))
+    port = free_port()
+    a = Server(build, state_a, port)
+
+    with case("Running: prints one line http://127.0.0.1:PORT/ once ready, on the port N asked"):
+        a.started()
+        same(a.line, "http://127.0.0.1:%d/" % port, "ready line")
+        same(a.get("/").status, 200, "status of GET /")
+
+    with case("Running: listens on 127.0.0.1 only"):
+        a.started()
+        loopback_only(a.port)
+
+    with case("Every page (empty shop, state file missing): the five pages answer 200 as HTML5 "
+              "with lang, title 'PAGE · Pet shop', one h1, main, nav, aria-current"):
+        for path in NAV:
+            fetch(a, path)
+
+    with case("GET / on an empty shop: counts 0, takings 0.00, no out-of-stock row"):
+        doc = fetch(a, "/").doc
+        for name in ("count-items", "count-customers", "count-sales"):
+            same(numbers(by_id(doc, name)), ["0"], name)
+        same(numbers(by_id(doc, "takings")), ["0.00"], "takings")
+        same(row_ids(by_id(doc, "out-of-stock", "table")), [], "rows of out-of-stock")
+
+    with case("Running: a GET never changes the state file (missing stays missing)"):
+        for path in NAV + ("/customers?q=a", "/sales/S1", "/nope"):
+            a.get(path)
+        expect(snapshot(state_a) is None, "a GET created the state file")
+
+    with case("Refused: the state file is as it was (missing stays missing)"):
+        refused(a, "/catalog/add", {"id": "p1", "name": "Ball", "kind": "product", "price": "x"})
+        refused(a, "/customers/register", {"name": ""})
+        expect(snapshot(state_a) is None, "a refused request created the state file")
+
+    with case("Running: the state file is created on the first successful change, one JSON "
+              "object with catalog, stock, customers, sales"):
+        action, fields, _ = WEB_STORY[0]
+        done(a, action, fields)
+        made = json.loads(snapshot(state_a).decode("utf-8"))
+        expect(isinstance(made, dict), "the state file is not a JSON object")
+        for key in ("catalog", "stock", "customers", "sales"):
+            expect(key in made, "the state file has no %r" % key)
+        same(dump(build, state_a)["items"],
+             [{"id": "a10", "name": "Goldfish", "kind": "animal", "price_cents": 300,
+               "on_hand": 0}], "what the modules read after the first change")
+
+    with case("Done: every form answers 303 with Location back to its page (/sell: the new "
+              "sale's page), and the page then shown has exactly one role=status"):
+        for action, fields, _ in WEB_STORY[1:]:
+            done(a, action, fields, r"/sales/S\d+" if action == "/sell" else None)
+
+    shop_a = None
+    with case("Same state file as the shop: what was done through the forms is what the "
+              "modules read (money as entered: 3, 260.5, 3.50, 0, 0.05; UTF-8; sale lines "
+              "one per item with quantity 1 or more, in id order; empty and 0 mean none)"):
+        twin = os.path.join(work, "a", "twin.json")
+        make_state(build, twin, [op for _, _, op in WEB_STORY])
+        got, want = dump(build, state_a), dump(build, twin)
+        for key in ("items", "customers", "sales", "takings"):
+            same(got[key], want[key], key)
+        shop_a = got
+
+    if shop_a:
+        verify_pages(a, shop_a, "shop made through the forms")
+
+    with case("Running: serves until killed (still running after the empty-shop scenario)"):
+        expect(a.alive(), "the program ended by itself")
+    a.kill()
+
+    # .... Scenario B: a shop made by the modules alone, served on a free port (--port 0) ....
+    state_b = os.path.join(work, "b", "shop.json")
+    os.makedirs(os.path.dirname(state_b))
+    make_state(build, state_b, MODULE_STORY)
+    shop_b = dump(build, state_b)
+    b = Server(build, state_b, 0)
+
+    with case("Running: --port 0 means any free port, printed in the ready line"):
+        b.started()
+        expect(b.port != 0, "port 0 in the ready line")
+
+    verify_pages(b, shop_b, "shop made by the modules")
+
+    with case("Every page: the link of the current section carries aria-current (the sale "
+              "page belongs to /sales), the other links do not"):
+        for path in NAV + ("/sales/S1", "/customers?q=an"):
+            fetch(b, path)
+
+    with case("Every text taken from the state is HTML-escaped: tables, selects, receipt"):
+        for path in NAV + ("/sales/S1", "/sales/S11", "/customers?q=bo"):
+            no_raw(b.get(path))
+        doc = b.get("/sell").doc
+        expect(any(n.attrs.get("name") == "qty-" + NASTY_ID for n in doc.all("input")),
+               "the item id %r is not escaped in the name of its quantity input" % NASTY_ID)
+        expect(NASTY_ID in row_ids(by_id(b.get("/catalog").doc, "items")),
+               "the item id %r is not escaped in data-id" % NASTY_ID)
+
+    with case("Money: exactly two decimals, commas between thousands"):
+        prices = {row.attrs["data-id"]: numbers(cell(row, "price"))
+                  for row in rows(by_id(b.get("/catalog").doc, "items"))}
+        same(prices["a9"], ["1,234,567.89"], "123456789 cents")
+        same(prices[NASTY_ID], ["260.50"], "26050 cents")
+        same(prices["m1"], ["1,000.00"], "100000 cents")
+        same(prices["k1"], ["0.05"], "5 cents")
+        same(prices["z0"], ["0.00"], "0 cents")
+
+    with case("GET /catalog: forms method=post /catalog/add (text inputs id, name, price; "
+              "select kind with animal, product), /catalog/price (id, price), /stock/receive "
+              "and /stock/remove (id, quantity)"):
+        doc = b.get("/catalog").doc
+        for action, fields in (("/catalog/add", ("id", "name", "price", "kind")),
+                               ("/catalog/price", ("id", "price")),
+                               ("/stock/receive", ("id", "quantity")),
+                               ("/stock/remove", ("id", "quantity"))):
+            found = forms(doc, action)
+            expect(found, "no form action=%s" % action)
+            for form in found:
+                same(form.attrs.get("method", "").lower(), "post", "method of form %s" % action)
+                for name in fields:
+                    expect(controls(form, name), "form %s has no field %r" % (action, name))
+        add = forms(doc, "/catalog/add")[0]
+        for name in ("id", "name", "price"):
+            node = controls(add, name)[0]
+            expect(node.tag == "input" and node.attrs.get("type", "text").lower() == "text",
+                   "field %r of /catalog/add is not a text input" % name)
+        kind = controls(add, "kind")[0]
+        same(kind.tag, "select", "field kind")
+        values = [o.attrs.get("value", o.text()) for o in kind.all("option")]
+        expect("animal" in values and "product" in values, "options of kind: %r" % values)
+
+    with case("GET /customers: a form method=get with a text input q; a form "
+              "action=/customers/register with a text input name"):
+        doc = b.get("/customers").doc
+        search = [form for form in doc.all("form") if controls(form, "q")]
+        expect(search, "no form with a field q")
+        same(search[0].attrs.get("method", "get").lower(), "get", "method of the search form")
+        q = controls(search[0], "q")[0]
+        expect(q.tag == "input" and q.attrs.get("type", "text").lower() in ("text", "search"),
+               "q is not a text input")
+        register = forms(doc, "/customers/register")
+        expect(register, "no form action=/customers/register")
+        same(register[0].attrs.get("method", "").lower(), "post", "method of the register form")
+        name = controls(register[0], "name")
+        expect(name and name[0].tag == "input"
+               and name[0].attrs.get("type", "text").lower() == "text", "name: no text input")
+
+    with case("GET /customers?q=: customers whose name contains q ignoring case, in order of "
+              "registration; all when q is empty or absent"):
+        def found(query):
+            return row_ids(by_id(fetch(b, "/customers" + query).doc, "customers", "table"))
+        everyone = ["C%d" % n for n in range(1, 12)]
+        same(found(""), everyone, "q absent")
+        same(found("?q="), everyone, "q empty")
+        same(found("?q=ana"), ["C1", "C4", "C10"], "q=ana")
+        same(found("?q=ANA"), ["C1", "C4", "C10"], "q=ANA")
+        same(found("?q=a+m"), ["C4"], "q='a m'")
+        same(found("?q=%C3%A9lo"), ["C3"], "q=élo (UTF-8)")
+        same(found("?q=zzz"), [], "q=zzz")
+        same(found("?q=%3Cimg"), ["C2"], "q=<img")
+
+    with case("GET /sales/SALE_ID: an unknown sale is 404"):
+        same(b.get("/sales/S999").status, 404, "status of GET /sales/S999")
+        same(b.get("/sales/nope").status, 404, "status of GET /sales/nope")
+
+    with case("An unknown path: 404, a page with the nav"):
+        for path in ("/nope", "/catalog/nope", "/index.html"):
+            page = b.get(path)
+            same(page.status, 404, "status of GET %s" % path)
+            nav_of(page.doc)
+        same(b.post("/nope", {"a": "b"}).status, 404, "status of POST /nope")
+
+    with case("A known path with another method: 405"):
+        for path in ("/", "/catalog", "/customers", "/sales", "/sales/S1"):
+            same(b.post(path, {"name": "x"}).status, 405, "status of POST %s" % path)
+        for path in ("/catalog/add", "/catalog/price", "/stock/receive", "/stock/remove",
+                     "/customers/register"):
+            same(b.get(path).status, 405, "status of GET %s" % path)
+        same(b.request("PUT", "/catalog").status, 405, "status of PUT /catalog")
+        same(b.request("DELETE", "/sell").status, 405, "status of DELETE /sell")
+
+    with case("Running: a GET never changes the state file (bytes, mtime, inode)"):
+        info = os.stat(state_b)
+        expect(snapshot(state_b) is not None, "the state file is gone")
+        before = snapshot(state_b)
+        for path in NAV + ("/customers?q=ana", "/sales/S1", "/sales/S999", "/nope",
+                           "/catalog/add"):
+            b.get(path)
+        after = os.stat(state_b)
+        expect(snapshot(state_b) == before, "a GET changed the bytes of the state file")
+        same((after.st_mtime_ns, after.st_ino), (info.st_mtime_ns, info.st_ino),
+             "mtime and inode of the state file")
+
+    good_add = {"id": "n1", "name": "Net", "kind": "product", "price": "1.00"}
+    with case("Refused /catalog/add: what the catalog refuses (id that exists, empty id, "
+              "empty name, a kind that is none of the two)"):
+        refused(b, "/catalog/add", {"id": "a9", "name": 'She said "hi" <u>kept</u> & left',
+                                    "kind": "animal", "price": "2.5"})
+        refused(b, "/catalog/add", dict(good_add, id=""))
+        refused(b, "/catalog/add", dict(good_add, name=""))
+        refused(b, "/catalog/add", dict(good_add, kind="fish"), keep=["id", "name", "price"])
+
+    with case("Refused /catalog/add: a price not written as digits with an optional point and "
+              "one or two decimals ('', abc, 3.505, 1e3, -1, '3.', '1,000', 3.5.0, 0x10, +3, "
+              "'3 50')"):
+        for price in BAD_PRICES:
+            refused(b, "/catalog/add", dict(good_add, price=price))
+
+    with case("Refused /catalog/add: a missing field"):
+        for name in good_add:
+            fields = {key: value for key, value in good_add.items() if key != name}
+            refused(b, "/catalog/add", fields)
+
+    with case("Refused /catalog/price: an item unknown to the catalog, a wrong price, a "
+              "missing field"):
+        refused(b, "/catalog/price", {"id": "nope", "price": "2.00"}, keep=[])
+        for price in ("", "abc", "3.505", "1e3", "-1", "2."):
+            refused(b, "/catalog/price", {"id": "k1", "price": price})
+        refused(b, "/catalog/price", {"id": "k1"})
+        refused(b, "/catalog/price", {"price": "2.00"})
+
+    with case("Refused /stock/receive: an item unknown to the catalog, a quantity not written "
+              "as digits or refused by stock (0, -1, 1.5, abc, '', 1e2, +2), a missing field"):
+        refused(b, "/stock/receive", {"id": "nope", "quantity": "5"}, keep=[])
+        for quantity in BAD_QUANTITIES:
+            refused(b, "/stock/receive", {"id": "k1", "quantity": quantity})
+        refused(b, "/stock/receive", {"id": "k1"})
+        refused(b, "/stock/receive", {"quantity": "5"})
+
+    with case("Refused /stock/remove: more than is on hand, an item unknown to the catalog, a "
+              "wrong quantity, a missing field"):
+        refused(b, "/stock/remove", {"id": "a9", "quantity": "9999"})
+        refused(b, "/stock/remove", {"id": "z0", "quantity": "1"})
+        refused(b, "/stock/remove", {"id": "nope", "quantity": "1"}, keep=[])
+        for quantity in ("0", "abc", "2.0", ""):
+            refused(b, "/stock/remove", {"id": "a10", "quantity": quantity})
+        refused(b, "/stock/remove", {"id": "a10"})
+        refused(b, "/stock/remove", {"quantity": "1"})
+
+    with case("Refused /customers/register: an empty name, a name of spaces only, a missing "
+              "field"):
+        refused(b, "/customers/register", {"name": ""})
+        refused(b, "/customers/register", {"name": "   "}, keep=[])
+        refused(b, "/customers/register", {})
+
+    with case("Refused /sell: an unknown customer, a missing customer"):
+        refused(b, "/sell", dict(EMPTY_QTY, customer="C999", **{"qty-a10": "2"}),
+                keep=list(EMPTY_QTY))
+        refused(b, "/sell", dict(EMPTY_QTY, **{"qty-a10": "2"}))
+
+    with case("Refused /sell: a sale with no line (every quantity empty, every quantity 0, "
+              "a mix of both)"):
+        refused(b, "/sell", dict(EMPTY_QTY, customer="C3"))
+        refused(b, "/sell", dict({key: "0" for key in EMPTY_QTY}, customer="C3"))
+        refused(b, "/sell", dict(EMPTY_QTY, customer="C3", **{"qty-a9": "0", "qty-m1": "0"}))
+
+    with case("Refused /sell: more than is on hand (nothing of the sale is made), an item "
+              "with none on hand"):
+        refused(b, "/sell", dict(EMPTY_QTY, customer="C4", **{"qty-a10": "1", "qty-a9": "3"}))
+        refused(b, "/sell", dict(EMPTY_QTY, customer="C4", **{"qty-m1": "12"}))
+        refused(b, "/sell", dict(EMPTY_QTY, customer="C4", **{"qty-a10": "1", "qty-z0": "1"}))
+
+    with case("Refused /sell: a quantity not written as digits (abc, -1, 1.5, 1e1)"):
+        for quantity in ("abc", "-1", "1.5", "1e1"):
+            refused(b, "/sell", dict(EMPTY_QTY, customer="C4",
+                                     **{"qty-a10": "1", "qty-k1": quantity}),
+                    keep=["customer", "qty-a10"])
+
+    with case("Refused: after all the refusals the shop is what it was"):
+        same(dump(build, state_b), shop_b, "what the modules read")
+
+    with case("Running: the state file is always replaced whole (written beside itself, then "
+              "renamed): the old file is never written into"):
+        old, old_inode = snapshot(state_b), os.stat(state_b).st_ino
+        link = os.path.join(work, "b-old-link.json")
+        try:
+            os.link(state_b, link)
+        except OSError:
+            link = None
+        done(b, "/customers/register", {"name": "  Lena  "})
+        expect(snapshot(state_b) != old, "the state file did not change")
+        expect(os.stat(state_b).st_ino != old_inode,
+               "the state file was written in place, not replaced by a rename")
+        if link:
+            expect(snapshot(link) == old, "the old file was written into")
+        json.loads(snapshot(state_b).decode("utf-8"))
+        same(dump(build, state_b)["customers"][-1], {"id": "C12", "name": "Lena"},
+             "the customer the modules read")
+
+    with case("Done /catalog/add, /catalog/price, /stock/receive, /stock/remove on a shop "
+              "made by the modules: 303 to /catalog, one status, the modules read the change"):
+        done(b, "/catalog/add", {"id": "n1", "name": "Net", "kind": "product", "price": "7.5"})
+        done(b, "/catalog/price", {"id": "k1", "price": "1000"})
+        done(b, "/stock/receive", {"id": "z0", "quantity": "5"})
+        done(b, "/stock/remove", {"id": "z0", "quantity": "2"})
+        now = {item["id"]: item for item in dump(build, state_b)["items"]}
+        same(now["n1"], {"id": "n1", "name": "Net", "kind": "product", "price_cents": 750,
+                         "on_hand": 0}, "item n1")
+        same(now["k1"]["price_cents"], 100000, "price of k1")
+        same(now["z0"]["on_hand"], 3, "on hand of z0")
+
+    with case("POST /sell: one sale, one line per item whose quantity is 1 or more, in id "
+              "order; 303 to the new sale's page with one status and the sale on it"):
+        fields = [("qty-z0", "3"), ("qty-n1", ""), ("qty-m1", "0"), ("qty-k1", ""),
+                  ("qty-" + NASTY_ID, "0"), ("qty-a9", "2"), ("qty-a10", "10"),
+                  ("customer", "C2")]
+        path, page = done(b, "/sell", fields, r"/sales/S12")
+        sale = dump(build, state_b)["sales"][-1]
+        same(sale["id"], "S12", "id of the sale")
+        same(sale["customer_id"], "C2", "customer of the sale")
+        same([(line["item_id"], line["quantity"]) for line in sale["lines"]],
+             [("a10", 10), ("a9", 2), ("z0", 3)], "lines of the sale")
+        doc = page.doc
+        expect("S12" in by_id(doc, "sale-id").text().split(), "sale-id")
+        same(by_id(doc, "customer").text(), norm(NASTY_PERSON), "customer")
+        same(numbers(by_id(doc, "total")), ["2,469,170.78"], "total")
+        same(row_ids(by_id(doc, "lines", "table")), ["a10", "a9", "z0"], "rows of lines")
+        stock_now = {item["id"]: item["on_hand"] for item in dump(build, state_b)["items"]}
+        same((stock_now["a10"], stock_now["a9"], stock_now["z0"]), (127, 0, 0), "stock left")
+
+    shop_b2 = None
+    with case("After the changes the shop is readable by the modules"):
+        shop_b2 = dump(build, state_b)
+    if shop_b2:
+        verify_pages(b, shop_b2, "after the changes")
+
+    with case("Running: the state file is read at every request, so a change made outside "
+              "(as shop.py would) shows on the next page"):
+        b.started()
+        make_state(build, state_b, [("add", "h1", "Hamster", "animal", 1999),
+                                    ("receive", "h1", 4), ("register", "Zoe"),
+                                    ("sell", "C1", [["h1", 1]])])
+        doc = b.get("/catalog").doc
+        same(row_ids(by_id(doc, "items")), ["h1"], "rows of items after the outside change")
+        same(numbers(by_id(b.get("/").doc, "takings")), ["19.99"], "takings")
+        same(b.get("/sales/S2").status, 404, "status of GET /sales/S2")
+        done(b, "/customers/register", {"name": "Yan"})
+        now = dump(build, state_b)
+        same([person["name"] for person in now["customers"]], ["Zoe", "Yan"], "customers")
+        same([item["id"] for item in now["items"]], ["h1"], "items")
+
+    shop_b3 = None
+    with case("After the outside change the shop is readable by the modules"):
+        shop_b3 = dump(build, state_b)
+    if shop_b3:
+        verify_pages(b, shop_b3, "after a change made outside")
+
+    with case("Running: serves until killed (still running after every request above)"):
+        expect(b.alive(), "the program ended by itself")
+        same(b.get("/").status, 200, "status of GET /")
+    b.kill()
+
+    # .... Scenario C: no --port given ........................................................
+    with case("Running: the default port is 8000 (skipped when 8000 is taken on this machine)"):
+        probe = socket.socket()
+        try:
+            probe.bind(("127.0.0.1", 8000))
+            free = True
+        except OSError:
+            free = False
+        probe.close()
+        if free:
+            c = Server(build, os.path.join(work, "c.json"), None)
+            try:
+                same(c.line, "http://127.0.0.1:8000/", "ready line without --port")
+                # connect and leave first, so that port 8000 is free again at once
+                socket.create_connection(("127.0.0.1", 8000), timeout=5).close()
+            finally:
+                c.kill()
+        else:
+            print("note: port 8000 is taken here; the default port was not checked")
+
+
+# ---- layer 2: a real browser ---------------------------------------------------------------
+
+BROWSER_STORY = MODULE_STORY
+BROWSER_JS = r'''
+const fs = require('fs');
+const cfg = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+let chromium;
+try { ({ chromium } = require('playwright')); }
+catch (e) { console.log(JSON.stringify({ fatal: 'Playwright for Node is not available: ' + e.message })); process.exit(0); }
+
+const results = [];   // {name, ok, detail}: the hard rules
+const graded = [];    // {kind, where, what}: one entry per graded defect
+const rec = (name, ok, detail) =>
+  results.push({ name, ok: !!ok, detail: ok ? '' : String(detail === undefined ? '' : detail).slice(0, 400) });
+
+// Runs in the page: looks at everything that needs no interaction.
+function inspect(opts) {
+  const out = { tables: [], unnamed: [], negative: [], graded: [] };
+  const de = document.documentElement;
+  window.scrollTo(100000, 0);
+  out.scroll = { scrollWidth: de.scrollWidth, clientWidth: de.clientWidth, scrollX: window.scrollX };
+  window.scrollTo(0, 0);
+  const desc = el => {
+    let s = el.tagName.toLowerCase();
+    if (el.id) s += '#' + el.id;
+    if (el.getAttribute('name')) s += '[name=' + el.getAttribute('name') + ']';
+    if (el.getAttribute('href')) s += '[href=' + el.getAttribute('href') + ']';
+    const t = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 30);
+    return t ? s + ' "' + t + '"' : s;
+  };
+  const visible = el => {
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && cs.visibility === 'visible' && cs.display !== 'none';
+  };
+  // a wide table scrolls inside its own container (it is not cut off instead)
+  for (const table of document.querySelectorAll('table')) {
+    for (let a = table.parentElement; a; a = a.parentElement) {
+      const ox = getComputedStyle(a).overflowX;
+      if (ox === 'visible') continue;
+      if ((ox === 'hidden' || ox === 'clip') && table.getBoundingClientRect().width > a.clientWidth + 1)
+        out.tables.push(desc(table) + ' is cut off by ' + desc(a).slice(0, 40));
+      break;
+    }
+  }
+  // every form control has a label a screen reader announces
+  const text = el => (el ? (el.textContent || '').trim() : '');
+  const nameOf = el => {
+    const label = (el.getAttribute('aria-label') || '').trim();
+    if (label) return label;
+    const ids = (el.getAttribute('aria-labelledby') || '').trim();
+    if (ids) {
+      const t = ids.split(/\s+/).map(id => text(document.getElementById(id))).join(' ').trim();
+      if (t) return t;
+    }
+    for (const l of (el.labels || [])) if (text(l)) return text(l);
+    if (el.tagName === 'BUTTON') {
+      if (text(el)) return text(el);
+      const img = el.querySelector('img[alt]');
+      if (img && img.alt.trim()) return img.alt;
+    }
+    if (el.tagName === 'INPUT') {
+      const type = (el.getAttribute('type') || 'text').toLowerCase();
+      if (type === 'submit' || type === 'reset') return el.value || type;
+      if (type === 'button' && el.value.trim()) return el.value;
+      if (type === 'image' && (el.getAttribute('alt') || '').trim()) return el.alt;
+    }
+    return (el.getAttribute('title') || '').trim();
+  };
+  for (const el of document.querySelectorAll('input:not([type=hidden]), select, textarea, button'))
+    if (!nameOf(el)) out.unnamed.push(desc(el));
+
+  // what the keyboard must reach, and how each looks before it has the focus
+  const snap = el => {
+    const cs = getComputedStyle(el);
+    return {
+      os: cs.outlineStyle, ow: cs.outlineWidth, oc: cs.outlineColor, shadow: cs.boxShadow,
+      border: ['Top', 'Right', 'Bottom', 'Left'].map(s =>
+        cs['border' + s + 'Width'] + cs['border' + s + 'Style'] + cs['border' + s + 'Color']).join('|'),
+      bg: cs.backgroundColor + cs.backgroundImage, deco: cs.textDecorationLine,
+    };
+  };
+  const wanted = [...document.querySelectorAll('a[href], button, input:not([type=hidden]), select, textarea')]
+    .filter(el => visible(el) && !el.disabled);
+  window.__chk = { snap, desc, pre: [] };
+  wanted.forEach((el, i) => {
+    el.setAttribute('data-chk', i);
+    window.__chk.pre.push(snap(el));
+    if (el.tabIndex < 0) out.negative.push(desc(el));
+  });
+  out.wanted = wanted.map(desc);
+
+  // ---- graded ----
+  const rgba = s => {
+    const m = /^rgba?\(([^)]+)\)$/.exec(s.trim());
+    if (!m) return null;
+    const p = m[1].split(/[\s,\/]+/).filter(Boolean).map(parseFloat);
+    if (p.length < 3 || p.some(isNaN)) return null;
+    return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
+  };
+  const over = (top, under) => {
+    const a = top[3];
+    return [0, 1, 2].map(i => top[i] * a + under[i] * (1 - a)).concat([1]);
+  };
+  const lum = c => {
+    const f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]);
+  };
+  // the colour behind an element: its nearest backgrounds up the tree, over a white page
+  const backgroundOf = el => {
+    const layers = [];
+    for (let a = el; a; a = a.parentElement) {
+      const cs = getComputedStyle(a);
+      if (cs.backgroundImage !== 'none') return null;   // a picture or gradient: not judged
+      const c = rgba(cs.backgroundColor);
+      if (!c) return null;
+      if (c[3] > 0) layers.push(c);
+      if (c[3] >= 1) break;
+    }
+    let bg = [255, 255, 255, 1];
+    for (let i = layers.length - 1; i >= 0; i--) bg = over(layers[i], bg);
+    return bg;
+  };
+  const judgeText = (el, color, what) => {
+    const cs = getComputedStyle(el);
+    if (parseFloat(cs.fontSize) < 14)
+      out.graded.push({ kind: 'text smaller than 14 px', what: what + ' at ' + cs.fontSize });
+    const fg = rgba(color), bg = backgroundOf(el);
+    if (!fg || !bg) return;
+    let alpha = fg[3];
+    for (let a = el; a; a = a.parentElement) alpha *= parseFloat(getComputedStyle(a).opacity);
+    const shown = over([fg[0], fg[1], fg[2], alpha], bg);
+    const l1 = lum(shown), l2 = lum(bg);
+    const ratio = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    if (ratio < 4.5)
+      out.graded.push({ kind: 'contrast below 4.5 to 1', what: what + ' at ' + ratio.toFixed(2) });
+  };
+  const skip = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'OPTION', 'OPTGROUP', 'TITLE', 'HEAD']);
+  for (const el of document.body.querySelectorAll('*')) {
+    if (skip.has(el.tagName) || !visible(el)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) continue;
+    if (el.tagName === 'SELECT') {
+      if (el.options.length) judgeText(el, getComputedStyle(el).color, desc(el));
+    } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+      const type = (el.getAttribute('type') || 'text').toLowerCase();
+      if (['checkbox', 'radio', 'range', 'color', 'file', 'image', 'hidden'].includes(type)) continue;
+      if (el.value) judgeText(el, getComputedStyle(el).color, desc(el));
+      else if (el.placeholder) judgeText(el, getComputedStyle(el, '::placeholder').color, desc(el) + ' placeholder');
+    } else if ([...el.childNodes].some(n => n.nodeType === 3 && n.nodeValue.trim())) {
+      judgeText(el, getComputedStyle(el).color, desc(el));
+    }
+  }
+  if (opts.targets) {
+    for (const el of wanted) {
+      if (el.tagName === 'A') {
+        const run = el.closest('p, li');
+        if (run && text(run).length > text(el).length) continue;   // a link inside running text
+      }
+      const r = el.getBoundingClientRect();
+      if (r.width < 43.99 || r.height < 43.99)
+        out.graded.push({ kind: 'target smaller than 44 by 44 px', what: desc(el) + ' is ' + Math.round(r.width) + 'x' + Math.round(r.height) });
+    }
+  }
+  if (opts.lines) {
+    for (const p of document.querySelectorAll('p')) {
+      if (!visible(p)) continue;
+      const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      let line = null; const lines = [];
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        for (let i = 0; i < node.nodeValue.length; i++) {
+          range.setStart(node, i); range.setEnd(node, i + 1);
+          const r = range.getClientRects()[0];
+          if (!r || r.width === 0) continue;
+          if (!line || (r.top + r.bottom) / 2 > line.bottom) { line = { bottom: r.bottom, n: 0 }; lines.push(line); }
+          line.n++;
+          line.bottom = Math.max(line.bottom, r.bottom);
+        }
+      }
+      for (const l of lines)
+        if (l.n > 90) out.graded.push({ kind: 'line of running text longer than 90 characters', what: desc(p).slice(0, 50) + ' has a line of ' + l.n });
+    }
+  }
+  return out;
+}
+
+// Runs in the page after a Tab: what has the focus, and is it visibly marked?
+function focusedInfo() {
+  const el = document.activeElement;
+  if (!el || !el.hasAttribute('data-chk')) return null;
+  const ids = [+el.getAttribute('data-chk')];
+  if (el.tagName === 'INPUT' && el.type === 'radio' && el.name)
+    for (const other of document.querySelectorAll('input[type=radio][data-chk]'))
+      if (other.name === el.name && other.form === el.form) ids.push(+other.getAttribute('data-chk'));
+  const pre = window.__chk.pre[ids[0]], now = window.__chk.snap(el);
+  const alpha = c => { const m = /^rgba?\(([^)]+)\)$/.exec(c); if (!m) return 1; const p = m[1].split(/[\s,\/]+/).filter(Boolean); return p.length > 3 ? parseFloat(p[3]) : 1; };
+  const outline = now.os !== 'none' && parseFloat(now.ow) > 0 && alpha(now.oc) > 0 &&
+    (now.os !== pre.os || now.ow !== pre.ow || now.oc !== pre.oc);
+  const mark = outline || now.shadow !== pre.shadow || now.border !== pre.border || now.bg !== pre.bg || now.deco !== pre.deco;
+  return { ids, mark, desc: window.__chk.desc(el) };
+}
+
+async function checkPage(browser, base, path, width) {
+  const where = 'GET ' + path + ' at ' + width + ' px';
+  const host = new URL(base).host;
+  const context = await browser.newContext({ viewport: { width, height: 900 } });
+  try {
+    const foreign = [], errors = [];
+    await context.route('**/*', route => {
+      const url = new URL(route.request().url());
+      if (url.host === host || url.protocol === 'data:' || url.protocol === 'about:' || url.protocol === 'blob:') return route.continue();
+      foreign.push(url.href.slice(0, 120));
+      return route.abort();
+    });
+    const page = await context.newPage();
+    page.setDefaultTimeout(10000);
+    page.on('console', m => { if (m.type() === 'error' && !/net::ERR_FAILED/.test(m.text())) errors.push('console: ' + m.text()); });
+    page.on('pageerror', e => errors.push('page error: ' + e.message));
+    const response = await page.goto(base + path, { waitUntil: 'load' });
+    rec('Browser: the page is served [' + where + ']', response && response.status() === 200, 'status ' + (response && response.status()));
+    const info = await page.evaluate(inspect, { targets: width === 390, lines: width === 1280 });
+    rec('The page never scrolls sideways [' + where + ']',
+      info.scroll.scrollWidth <= info.scroll.clientWidth && info.scroll.scrollX === 0,
+      'scrollWidth ' + info.scroll.scrollWidth + ' > clientWidth ' + info.scroll.clientWidth);
+    rec('A wide table scrolls inside its own container [' + where + ']', info.tables.length === 0, info.tables.join('; '));
+    rec('Every form control has a label a screen reader announces [' + where + ']', info.unnamed.length === 0, 'no label: ' + info.unnamed.join('; '));
+    for (const g of info.graded) graded.push({ kind: g.kind, where, what: g.what });
+
+    const n = info.wanted.length, reached = new Set(), unmarked = new Set();
+    for (let k = 0; k < n + 30 && reached.size < n; k++) {
+      await page.keyboard.press('Tab');
+      let f = await page.evaluate(focusedInfo);
+      if (!f) continue;
+      if (!f.mark) { await page.waitForTimeout(400); f = await page.evaluate(focusedInfo); }
+      if (!f) continue;
+      f.ids.forEach(i => reached.add(i));
+      if (!f.mark) unmarked.add(f.desc);
+    }
+    const missed = info.wanted.filter((d, i) => !reached.has(i));
+    rec('Everything can be reached with the keyboard alone [' + where + ']',
+      missed.length === 0 && info.negative.length === 0,
+      'Tab never reaches: ' + missed.concat(info.negative).join('; '));
+    rec('The focused control is visibly marked [' + where + ']', unmarked.size === 0, 'no visible change on focus: ' + [...unmarked].join('; '));
+    rec('No error in the browser console [' + where + ']', errors.length === 0, errors.join('; '));
+    rec('No request to another host [' + where + ']', foreign.length === 0, foreign.join('; '));
+  } catch (e) {
+    rec('Browser: the page can be checked [' + where + ']', false, e.message);
+  } finally {
+    await context.close();
+  }
+}
+
+// ---- flows on a shop that starts empty: the real forms are filled and submitted ----
+async function formFor(page, action, itemId) {
+  // the form with that action whose field `id` can be the item (text input, select or hidden)
+  const forms = page.locator('form[action="' + action + '"]');
+  const n = await forms.count();
+  for (let i = 0; i < n; i++) {
+    const form = forms.nth(i);
+    if (itemId === undefined) return form;
+    const field = form.locator('[name="id"]').first();
+    if (!(await field.count())) continue;
+    const kind = await field.evaluate(e => e.tagName === 'SELECT' ? 'select' : (e.getAttribute('type') || 'text').toLowerCase());
+    if (kind === 'select') {
+      if (await field.locator('option').evaluateAll((os, v) => os.some(o => o.value === v), itemId)) { await field.selectOption(itemId); return form; }
+    } else if (kind === 'hidden' || kind === 'radio') {
+      if (await field.evaluate((e, v) => e.value === v, itemId)) { if (kind === 'radio') await field.check(); return form; }
+    } else { await field.fill(itemId); return form; }
+  }
+  throw new Error('no form ' + action + ' that can be filled' + (itemId ? ' for item ' + itemId : ''));
+}
+async function submit(page, form) {
+  const button = form.locator('button:not([type=button]):not([type=reset]), input[type=submit], input[type=image]').first();
+  const navigated = page.waitForNavigation({ waitUntil: 'load', timeout: 6000 });
+  if (await button.count()) await button.click();
+  else await form.locator('input:not([type=hidden])').first().press('Enter');
+  await navigated;
+}
+async function step(name, fn) {
+  try { const problem = await fn(); rec(name, !problem, problem); }
+  catch (e) { rec(name, false, e.message); }
+}
+const statusCount = page => page.locator('[role=status]').count();
+const pathOf = page => new URL(page.url()).pathname;
+
+async function noScriptFlow(browser, base) {
+  const context = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 1280, height: 900 } });
+  const page = await context.newPage();
+  page.setDefaultTimeout(6000);
+  const pre = 'With scripts disabled: ';
+  await step(pre + 'add an item by the form /catalog/add', async () => {
+    await page.goto(base + '/catalog');
+    const form = await formFor(page, '/catalog/add');
+    await form.locator('[name="id"]').fill('flow1');
+    await form.locator('[name="name"]').fill('Flow hamster');
+    await form.locator('[name="price"]').fill('12.50');
+    await form.locator('select[name="kind"]').selectOption('animal');
+    await submit(page, form);
+    if (pathOf(page) !== '/catalog') return 'ended on ' + page.url();
+    if (await statusCount(page) !== 1) return 'no single role=status';
+    if (await page.locator('#items tr[data-id="flow1"]').count() !== 1) return 'no row for the item';
+  });
+  await step(pre + 'receive stock by the form /stock/receive', async () => {
+    await page.goto(base + '/catalog');
+    const form = await formFor(page, '/stock/receive', 'flow1');
+    await form.locator('[name="quantity"]').fill('5');
+    await submit(page, form);
+    if (pathOf(page) !== '/catalog') return 'ended on ' + page.url();
+    if (await statusCount(page) !== 1) return 'no single role=status';
+    const shown = (await page.locator('#items tr[data-id="flow1"] .on-hand').first().innerText()).trim();
+    if (!/(^|\D)5(\D|$)/.test(shown)) return 'on hand shows ' + shown;
+  });
+  await step(pre + 'register a customer by the form /customers/register', async () => {
+    await page.goto(base + '/customers');
+    const form = await formFor(page, '/customers/register');
+    await form.locator('[name="name"]').fill('Flow Customer');
+    await submit(page, form);
+    if (pathOf(page) !== '/customers') return 'ended on ' + page.url();
+    if (await statusCount(page) !== 1) return 'no single role=status';
+    if (await page.locator('#customers tr[data-id="C1"]').count() !== 1) return 'no row for the customer';
+  });
+  await step(pre + 'make a sale by the form /sell and see the receipt', async () => {
+    await page.goto(base + '/sell');
+    const form = await formFor(page, '/sell');
+    await form.locator('select[name="customer"]').selectOption('C1');
+    await form.locator('input[name="qty-flow1"]').fill('2');
+    await submit(page, form);
+    if (pathOf(page) !== '/sales/S1') return 'ended on ' + page.url();
+    if (await statusCount(page) !== 1) return 'no single role=status';
+    if (!(await page.locator('#total').innerText()).includes('25.00')) return 'total is not 25.00';
+    if ((await page.locator('#customer').innerText()).trim() !== 'Flow Customer') return 'customer not shown';
+    if (await page.locator('#lines tr[data-id="flow1"]').count() !== 1) return 'no line for the item';
+  });
+  await context.close();
+}
+
+async function keyboardFlow(browser, base) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await context.newPage();
+  page.setDefaultTimeout(6000);
+  const tabTo = async (what, test) => {
+    for (let k = 0; k < 80; k++) {
+      await page.keyboard.press('Tab');
+      if (await page.evaluate(test)) return;
+    }
+    throw new Error('Tab never reaches ' + what);
+  };
+  await step('Everything can be operated with the keyboard alone: a sale made with Tab, typing and Enter', async () => {
+    await page.goto(base + '/sell');
+    await tabTo('the select customer', () => { const e = document.activeElement; return e && e.tagName === 'SELECT' && e.name === 'customer'; });
+    for (let k = 0; k < 3 && await page.evaluate(() => document.activeElement.value) !== 'C1'; k++) await page.keyboard.press('ArrowDown');
+    await tabTo('the input qty-flow1', () => { const e = document.activeElement; return e && e.name === 'qty-flow1'; });
+    await page.keyboard.type('1');
+    let moved = page.waitForNavigation({ waitUntil: 'load', timeout: 2500 }).then(() => true, () => false);
+    await page.keyboard.press('Enter');
+    if (!(await moved)) {
+      await tabTo('a submit button of the form', () => { const e = document.activeElement; return e && e.form && e.form.getAttribute('action') === '/sell' && (e.tagName === 'BUTTON' || ['submit', 'button', 'image'].includes(e.type)); });
+      moved = page.waitForNavigation({ waitUntil: 'load', timeout: 4000 }).then(() => true, () => false);
+      await page.keyboard.press('Enter');
+      if (!(await moved)) return 'the form /sell cannot be submitted from the keyboard';
+    }
+    if (pathOf(page) !== '/sales/S2') return 'ended on ' + page.url();
+    if (!(await page.locator('#total').innerText()).includes('12.50')) return 'total is not 12.50';
+  });
+  await context.close();
+}
+
+// a program that stops answering must not hold the measure: say what is known and leave
+setTimeout(() => {
+  rec('Browser layer: every page and flow ends within 100 s', false, 'the browser run was still going after 100 s');
+  console.log(JSON.stringify({ results, graded }));
+  process.exit(0);
+}, 100000);
+
+(async () => {
+  let browser;
+  try { browser = await chromium.launch(); }
+  catch (e) { console.log(JSON.stringify({ fatal: 'Chromium cannot be started: ' + e.message.split('\n')[0] })); return; }
+  try {
+    const jobs = [];
+    for (const width of cfg.widths) for (const path of cfg.paths) jobs.push(checkPage(browser, cfg.shop, path, width));
+    jobs.push((async () => { await noScriptFlow(browser, cfg.flow); await keyboardFlow(browser, cfg.flow); })());
+    await Promise.all(jobs);
+    console.log(JSON.stringify({ results, graded }));
+  } catch (e) {
+    console.log(JSON.stringify({ fatal: 'the browser run broke: ' + e.message }));
+  } finally {
+    await browser.close().catch(() => {});
+    process.exit(0);
+  }
+})();
+'''
+
+
+def browser_layer(build, work):
+    """Returns the graded defects (a list), or None when the layer could not run."""
+    node = shutil.which("node")
+    if not node:
+        FAILS.append(("Browser layer: node is available", "node was not found on PATH; the "
+                      "browser rules cannot be checked, which is a fail and never a pass"))
+        return None
+    state = os.path.join(work, "browser", "shop.json")
+    os.makedirs(os.path.dirname(state))
+    make_state(build, state, BROWSER_STORY)
+    shop = Server(build, state, 0)
+    flow = Server(build, os.path.join(work, "browser", "flow.json"), 0)
+    with case("Browser layer: the program starts for the browser"):
+        shop.started()
+        flow.started()
+    if not (shop.port and flow.port):
+        return None
+    script = os.path.join(work, "browser", "browser.js")
+    config = os.path.join(work, "browser", "config.json")
+    with open(script, "w", encoding="utf-8") as handle:
+        handle.write(BROWSER_JS)
+    with open(config, "w", encoding="utf-8") as handle:
+        json.dump({"shop": "http://127.0.0.1:%d" % shop.port,
+                   "flow": "http://127.0.0.1:%d" % flow.port, "widths": [390, 768, 1280],
+                   "paths": ["/", "/catalog", "/customers", "/sell", "/sales", "/sales/S1"]},
+                  handle)
+    run = None
+    try:
+        run = subprocess.Popen([node, script, config], cwd=os.path.join(work, "browser"),
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+        stdout, stderr = run.communicate(timeout=150)
+        lines = [line for line in stdout.splitlines() if line.startswith("{")]
+        answer = json.loads(lines[-1]) if lines else {
+            "fatal": "node gave no result: " + (stderr.strip()[-300:] or "no output")}
+    except subprocess.TimeoutExpired:
+        answer = {"fatal": "the browser run did not end within 150 s"}
+    except OSError as error:
+        answer = {"fatal": "node cannot be run: %s" % error}
+    except ValueError as error:
+        answer = {"fatal": "the browser run gave no JSON: %s" % error}
+    finally:
+        if run is not None and run.poll() is None:
+            try:
+                os.killpg(run.pid, 9)   # node and the browser it started
+            except OSError:
+                run.kill()
+            run.wait(10)
+        shop.kill()
+        flow.kill()
+    if "fatal" in answer:
+        FAILS.append(("Browser layer: Playwright and Chromium run", answer["fatal"]))
+        return None
+    for result in answer["results"]:
+        CASES.append(result["name"])
+        if not result["ok"]:
+            FAILS.append((result["name"], result["detail"]))
+    return answer["graded"]
+
+
+def main():
+    if len(sys.argv) != 2:
+        print("usage: check <build-dir>", file=sys.stderr)
+        return 2
+    source = os.path.abspath(sys.argv[1])
+    missing = [name for name in ("web.py",) + MODULES
+               if not os.path.isfile(os.path.join(source, name))]
+    if missing:
+        print("FAIL the build holds web.py and the four modules: missing %s"
+              % ", ".join(missing), file=sys.stderr)
+        return 1
+    started = time.time()
+    work = tempfile.mkdtemp(prefix="web-measure-")
+    graded = None
+    try:
+        build = os.path.join(work, "build")
+        os.makedirs(build)
+        for name in os.listdir(source):
+            path = os.path.join(source, name)
+            if os.path.isfile(path):
+                shutil.copy(path, os.path.join(build, name))
+        size = os.path.getsize(os.path.join(build, "web.py"))
+        http_layer(build, work)
+        http_cases = len(CASES)
+        graded = browser_layer(build, work)
+    finally:
+        Server.kill_all()
+        shutil.rmtree(work, ignore_errors=True)
+    counts = {}
+    for defect in graded or []:
+        counts[defect["kind"]] = counts.get(defect["kind"], 0) + 1
+        print("graded defect: %s [%s] %s" % (defect["kind"], defect["where"], defect["what"]))
+    print("cases: %d over HTTP, %d in the browser; %d failed; %.1f s"
+          % (http_cases, len(CASES) - http_cases, len(FAILS), time.time() - started))
+    if FAILS:
+        for name, reason in FAILS:
+            print("FAIL %s -- %s" % (name, reason), file=sys.stderr)
+        return 1
+    defects = len(graded)
+    print("graded defects: %d (%s)" % (defects, ", ".join(
+        "%s: %d" % pair for pair in sorted(counts.items())) or "none"))
+    print("bytes of web.py: %d" % size)
+    print("%.6f" % (defects + size / 1000000))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

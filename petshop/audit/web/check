@@ -1,0 +1,2174 @@
+#!/usr/bin/env python3
+"""Audit of the pet shop's web interface: check <build-dir>
+
+Cases written from docs/web.md (declaration 2) and docs/pages.md alone. Each case is
+preceded by a one-line comment naming the sentence of pages.md (or web.md) it rests on.
+Prints `PASS name` / `FAIL name: reason` per case, then `<passed>/<total>`; exit 0 only
+if all pass. Standard library only; everything is done over HTTP.
+"""
+import atexit
+import http.client
+import importlib
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+from html.parser import HTMLParser
+from urllib.parse import quote, unquote, urlencode, urljoin, urlsplit
+
+sys.dont_write_bytecode = True
+
+SECTIONS = ["/", "/catalog", "/customers", "/sell", "/sales"]
+KEYS = ("catalog", "stock", "customers", "sales")
+TIMEOUT = 10
+WORK = None      # temp dir holding the copy of the build
+APP = None       # the copy of the build
+MODS = {}        # the four modules, imported from the copy
+SERVERS = []
+
+
+class Fail(Exception):
+    pass
+
+
+def ensure(condition, message):
+    if not condition:
+        raise Fail(message)
+
+
+# ----------------------------------------------------------------------------- HTML
+
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+        "source", "track", "wbr"}
+TABLE_PARTS = ("td", "th", "tr", "thead", "tbody", "tfoot")
+IMPLIED = {"option": ("option",), "optgroup": ("option", "optgroup"), "li": ("li",),
+           "tr": ("td", "th", "tr"), "td": ("td", "th"), "th": ("td", "th"),
+           "tbody": TABLE_PARTS, "thead": TABLE_PARTS, "tfoot": TABLE_PARTS,
+           "dt": ("dt", "dd"), "dd": ("dt", "dd"), "p": ("p",)}
+CLOSES_P = {"div", "table", "form", "ul", "ol", "dl", "h1", "h2", "h3", "h4", "h5", "h6",
+            "section", "article", "nav", "main", "header", "footer", "fieldset", "pre",
+            "aside", "details", "figure", "hr", "address", "blockquote"}
+
+
+class Node:
+    def __init__(self, tag, attrs, parent):
+        self.tag = tag
+        self.attrs = {}
+        for key, value in attrs:
+            self.attrs.setdefault(key, "" if value is None else value)
+        self.kids = []
+        self.parent = parent
+
+    def walk(self):
+        for kid in self.kids:
+            if isinstance(kid, Node):
+                yield kid
+                yield from kid.walk()
+
+    def all(self, *tags):
+        return [node for node in self.walk() if node.tag in tags]
+
+    def text(self, sep=""):
+        parts = []
+
+        def collect(node):
+            for kid in node.kids:
+                if isinstance(kid, Node):
+                    if kid.tag not in ("script", "style", "template"):
+                        collect(kid)
+                else:
+                    parts.append(kid)
+        collect(self)
+        return sep.join(parts)
+
+    def clean(self):
+        return " ".join(self.text().split())
+
+    def has_class(self, name):
+        return name in self.attrs.get("class", "").split()
+
+
+class Dom(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = Node("#root", [], None)
+        self.cur = self.root
+        self.doctype = None
+
+    def handle_decl(self, decl):
+        if self.doctype is None:
+            self.doctype = decl
+
+    def handle_starttag(self, tag, attrs):
+        while self.cur.tag in IMPLIED.get(tag, ()):
+            self.cur = self.cur.parent
+        if tag in CLOSES_P and self.cur.tag == "p":
+            self.cur = self.cur.parent
+        node = Node(tag, attrs, self.cur)
+        self.cur.kids.append(node)
+        if tag not in VOID:
+            self.cur = node
+
+    def handle_endtag(self, tag):
+        node = self.cur
+        while node is not None and node.tag != tag:
+            node = node.parent
+        if node is not None and node.parent is not None:
+            self.cur = node.parent
+
+    def handle_data(self, data):
+        self.cur.kids.append(data)
+
+
+def parse(text):
+    dom = Dom()
+    dom.feed(text)
+    dom.close()
+    return dom
+
+
+# ----------------------------------------------------------------------------- server
+
+class Response:
+    def __init__(self, status, headers, body, path):
+        self.status = status
+        self.headers = headers          # list of (name, value)
+        self.body = body
+        self.path = path
+        self._dom = None
+
+    def header(self, name):
+        for key, value in self.headers:
+            if key.lower() == name.lower():
+                return value
+        return None
+
+    @property
+    def text(self):
+        try:
+            return self.body.decode("utf-8")
+        except UnicodeDecodeError:
+            raise Fail("%s: the body is not UTF-8" % self.path)
+
+    @property
+    def dom(self):
+        if self._dom is None:
+            self._dom = parse(self.text)
+        return self._dom
+
+    @property
+    def root(self):
+        return self.dom.root
+
+
+class Server:
+    def __init__(self, port=0):
+        self.dir = tempfile.mkdtemp(prefix="state-", dir=WORK)
+        self.state = os.path.join(self.dir, "shop.json")
+        self.first_line = None
+        self.port = None
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        self.proc = subprocess.Popen(
+            [sys.executable, "web.py", "--state", self.state, "--port", str(port)],
+            cwd=APP, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL)
+        SERVERS.append(self)
+        got = []
+
+        def reader():
+            got.append(self.proc.stdout.readline())
+            while self.proc.stdout.read(4096):       # keep the pipe drained
+                pass
+        thread = threading.Thread(target=reader, daemon=True)
+        thread.start()
+        for _ in range(TIMEOUT * 20):
+            if got or self.proc.poll() is not None:
+                break
+            thread.join(0.05)
+        if not got:
+            thread.join(0.2)
+        if not got or not got[0]:
+            self.stop()
+            raise Fail("the program printed no line on stdout within %d s" % TIMEOUT)
+        self.first_line = got[0].decode("utf-8", "replace").rstrip("\r\n")
+        match = re.fullmatch(r"http://127\.0\.0\.1:([0-9]+)/", self.first_line)
+        if not match:
+            self.stop()
+            raise Fail("first stdout line is %r, not http://127.0.0.1:PORT/" % self.first_line)
+        self.port = int(match.group(1))
+        self.base = "http://127.0.0.1:%d" % self.port
+
+    def stop(self):
+        if self.proc.poll() is None:
+            self.proc.kill()
+        try:
+            self.proc.wait(5)
+        except Exception:
+            pass
+
+    # state file
+    def raw(self):
+        try:
+            with open(self.state, "rb") as handle:
+                return handle.read()
+        except FileNotFoundError:
+            return None
+
+    def put(self, shop):
+        data = shop if isinstance(shop, bytes) else shop.dump()
+        temp = os.path.join(self.dir, "audit-put.tmp")
+        with open(temp, "wb") as handle:
+            handle.write(data)
+        os.replace(temp, self.state)
+
+    def clear(self):
+        if os.path.exists(self.state):
+            os.remove(self.state)
+
+    def shop(self):
+        """The state file as it is now, read through the modules."""
+        data = self.raw()
+        ensure(data is not None, "the state file does not exist")
+        try:
+            obj = json.loads(data.decode("utf-8"))
+        except ValueError:
+            raise Fail("the state file is not valid JSON")
+        ensure(isinstance(obj, dict), "the state file is not one JSON object")
+        for key in KEYS:
+            ensure(key in obj, "the state file has no %r" % key)
+        return Shop(obj)
+
+    # requests
+    def request(self, method, path, body=None, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=TIMEOUT)
+        try:
+            send = {"Connection": "close"}
+            send.update(headers or {})
+            conn.request(method, path, body=body, headers=send)
+            resp = conn.getresponse()
+            return Response(resp.status, resp.getheaders(), resp.read(), path)
+        except (OSError, http.client.HTTPException) as error:
+            raise Fail("%s %s: no answer (%s)" % (method, path, error))
+        finally:
+            conn.close()
+
+    def get(self, path, headers=None):
+        return self.request("GET", path, headers=headers)
+
+    def post(self, path, fields=()):
+        body = urlencode(list(fields), encoding="utf-8").encode("ascii")
+        return self.request("POST", path, body=body, headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Length": str(len(body))})
+
+
+def stop_all():
+    for server in SERVERS:
+        server.stop()
+    if WORK:
+        shutil.rmtree(WORK, ignore_errors=True)
+
+
+# ----------------------------------------------------------------------------- the shop
+
+class Shop:
+    """A shop state built and read only through the four modules' documented functions."""
+
+    def __init__(self, obj=None):
+        self.s = obj if obj is not None else {key: MODS[key].new() for key in KEYS}
+
+    def item(self, item_id, name, kind, cents, on_hand=0):
+        MODS["catalog"].add(self.s["catalog"], item_id, name, kind, cents)
+        if on_hand:
+            MODS["stock"].receive(self.s["stock"], item_id, on_hand)
+        return self
+
+    def cust(self, name):
+        return MODS["customers"].register(self.s["customers"], name)
+
+    def sell(self, customer_id, lines):
+        return MODS["sales"].sell(
+            self.s["sales"], customer_id, lines,
+            lambda i: MODS["catalog"].get(self.s["catalog"], i)["price_cents"],
+            lambda i: MODS["stock"].on_hand(self.s["stock"], i),
+            lambda i, q: MODS["stock"].remove(self.s["stock"], i, q))
+
+    def items(self):
+        return MODS["catalog"].items(self.s["catalog"])
+
+    def ids(self):
+        return [item["id"] for item in self.items()]
+
+    def get(self, item_id):
+        return MODS["catalog"].get(self.s["catalog"], item_id)
+
+    def price(self, item_id):
+        return self.get(item_id)["price_cents"]
+
+    def on_hand(self, item_id):
+        return MODS["stock"].on_hand(self.s["stock"], item_id)
+
+    def custs(self):
+        return MODS["customers"].find(self.s["customers"], "")
+
+    def cust_name(self, customer_id):
+        return MODS["customers"].get(self.s["customers"], customer_id)["name"]
+
+    def sales(self):
+        return MODS["sales"].sales(self.s["sales"])
+
+    def takings(self):
+        return MODS["sales"].takings(self.s["sales"])
+
+    def out(self):
+        return [i for i in self.ids() if self.on_hand(i) == 0]
+
+    def dump(self):
+        return json.dumps(self.s).encode("utf-8")
+
+
+def std():
+    """Items, customers and two sales; ids added out of order."""
+    shop = Shop()
+    shop.item("cat", "Tabby cat", "animal", 12345, 5)
+    shop.item("i9", "Nine lives tonic", "product", 26050, 0)
+    shop.item("ant", "Ant farm", "product", 5, 140)
+    shop.item("i10", "Ten gallon tank", "product", 99999999, 4)
+    shop.item("bee", "Bee hotel", "product", 0, 0)
+    shop.cust("Ann Lee")
+    shop.cust("bob ANNson")
+    shop.cust("Carl")
+    shop.sell("C2", [("ant", 3), ("cat", 2)])
+    shop.sell("C1", [("i10", 2)])
+    return shop
+
+
+def special():
+    """Names and ids with HTML-special and non-ASCII characters."""
+    shop = Shop()
+    shop.item("a&b\"<c>'", "<b>Rex</b> & \"Co\" 'x'", "animal", 150, 9)
+    shop.item("fc", "Fish & Chips", "product", 250, 9)
+    shop.item("kö", "Köter 犬", "animal", 350, 9)
+    shop.cust("<i>Tom</i> & \"Jerry\" 'x'")
+    shop.cust("Black & White")
+    shop.cust("Émile Ñandú 猫")
+    shop.sell("C1", [("a&b\"<c>'", 1), ("fc", 2), ("kö", 1)])
+    shop.sell("C2", [("fc", 1)])
+    shop.sell("C3", [("kö", 2)])
+    return shop
+
+
+def money(cents):
+    return "{:,}.{:02d}".format(cents // 100, cents % 100)
+
+
+# ----------------------------------------------------------------------------- checks
+
+def numbers(text):
+    """Every number written in a text, with its commas and decimals."""
+    return re.findall(r"[0-9][0-9,]*(?:\.[0-9]+)?", text)
+
+
+def path_of(base_path, href):
+    return unquote(urlsplit(urljoin("http://127.0.0.1" + base_path, href)).path)
+
+
+def by_id(root, ident):
+    found = [node for node in root.walk() if node.attrs.get("id") == ident]
+    ensure(found, 'no element with id="%s"' % ident)
+    return found[0]
+
+
+def roles(root, role):
+    return [node for node in root.walk() if node.attrs.get("role") == role]
+
+
+def shows_money(root, ident, cents, where):
+    got = numbers(by_id(root, ident).text(" "))
+    ensure(got == [money(cents)], "%s: #%s shows %r, expected %s" % (
+        where, ident, by_id(root, ident).clean(), money(cents)))
+
+
+def shows_count(root, ident, count, where):
+    got = numbers(by_id(root, ident).text(" "))
+    ensure(got == [str(count)], "%s: #%s shows %r, expected %d" % (
+        where, ident, by_id(root, ident).clean(), count))
+
+
+def table_rows(root, ident, may_be_absent=False):
+    tables = [node for node in root.all("table") if node.attrs.get("id") == ident]
+    if not tables:
+        ensure(may_be_absent, 'no <table id="%s">' % ident)
+        return []
+    return [row for row in tables[0].all("tr") if "data-id" in row.attrs]
+
+
+def row_ids(root, ident, expected, where):
+    rows = table_rows(root, ident, may_be_absent=not expected)
+    got = [row.attrs["data-id"] for row in rows]
+    ensure(got == expected, "%s: rows of #%s are %r, expected %r" % (where, ident, got, expected))
+    return rows
+
+
+def cell(row, name):
+    cells = [node for node in row.all("td", "th") if node.has_class(name)]
+    ensure(cells, 'row data-id="%s" has no cell of class "%s"' % (row.attrs.get("data-id"), name))
+    return cells[0]
+
+
+def cell_is(row, name, expected):
+    got = cell(row, name).clean()
+    ensure(got == " ".join(expected.split()), "row %r: cell %s shows %r, expected %r" % (
+        row.attrs.get("data-id"), name, got, expected))
+
+
+def cell_number(row, name, expected):
+    got = numbers(cell(row, name).text(" "))
+    ensure(got == [expected], "row %r: cell %s shows %r, expected %s" % (
+        row.attrs.get("data-id"), name, cell(row, name).clean(), expected))
+
+
+def check_page(resp, section=None, nav_only=False):
+    """What pages.md states under 'Every page'. section: the nav link to carry aria-current."""
+    where = resp.path
+    root = resp.root
+    if not nav_only:
+        doctype = (resp.dom.doctype or "").lower().split()
+        ensure(doctype[:2] == ["doctype", "html"], "%s: no <!DOCTYPE html>" % where)
+        htmls = root.all("html")
+        ensure(htmls and htmls[0].attrs.get("lang", "").strip(), "%s: <html> has no lang" % where)
+        titles = root.all("title")
+        ensure(titles, "%s: no <title>" % where)
+        title = titles[0].text().strip()
+        ensure(re.fullmatch(r"\S(.*\S)? · Pet shop", title, re.S),
+               "%s: title %r is not of the form 'PAGE · Pet shop'" % (where, title))
+        ensure(len(root.all("h1")) == 1, "%s: %d <h1>, expected exactly one" % (
+            where, len(root.all("h1"))))
+        ensure(root.all("main"), "%s: no <main>" % where)
+    navs = root.all("nav")
+    ensure(navs, "%s: no <nav>" % where)
+    links = [(path_of(where, a.attrs["href"]), a.attrs.get("aria-current"))
+             for nav in navs for a in nav.all("a") if "href" in a.attrs]
+    for target in SECTIONS:
+        ensure(any(path == target for path, _ in links), "%s: <nav> has no link to %s" % (
+            where, target))
+    if section is not None:
+        ensure(any(path == section and current == "page" for path, current in links),
+               '%s: the nav link to %s lacks aria-current="page"' % (where, section))
+        for path, current in links:
+            ensure(not (current == "page" and path in SECTIONS and path != section),
+                   '%s: the nav link to %s carries aria-current="page"' % (where, path))
+
+
+def get_page(srv, path, section=None):
+    resp = srv.get(path)
+    ensure(resp.status == 200, "GET %s: status %d, expected 200" % (path, resp.status))
+    check_page(resp, section)
+    return resp
+
+
+def forms(resp, action, method="post"):
+    found = []
+    for form in resp.root.all("form"):
+        if form.attrs.get("method", "get").strip().lower() != method:
+            continue
+        if "action" in form.attrs and path_of(resp.path, form.attrs["action"]) == action:
+            found.append(form)
+    return found
+
+
+def one_form(resp, action, method="post"):
+    found = forms(resp, action, method)
+    ensure(found, '%s: no form method="%s" action="%s"' % (resp.path, method, action))
+    return found[0]
+
+
+def control(form, name, required=True):
+    for node in form.all("input", "select", "textarea"):
+        if node.attrs.get("name") == name:
+            return node
+    ensure(not required, 'form %s has no field named "%s"' % (form.attrs.get("action"), name))
+    return None
+
+
+def is_text_input(node):
+    return node.tag == "input" and node.attrs.get("type", "text").strip().lower() in ("text", "")
+
+
+def option_value(option):
+    return option.attrs["value"] if "value" in option.attrs else option.clean()
+
+
+def value_of(node):
+    if node.tag == "select":
+        options = node.all("option")
+        chosen = [o for o in options if "selected" in o.attrs]
+        if chosen:
+            return option_value(chosen[-1])
+        return option_value(options[0]) if options else ""
+    if node.tag == "textarea":
+        return node.text()
+    return node.attrs.get("value", "")
+
+
+def holds(form, name, expected):
+    node = control(form, name, required=False)
+    return node is not None and value_of(node) == expected
+
+
+def keeps(resp, action, values):
+    """Some form with this action still holds every submitted value."""
+    candidates = forms(resp, action)
+    ensure(candidates, "%s: no form with action %s on the refusal page" % (resp.path, action))
+    for form in candidates:
+        if all(holds(form, name, value) for name, value in values.items()):
+            return
+    raise Fail("the form %s does not hold the submitted values %r" % (action, values))
+
+
+def done(srv, path, fields, back):
+    """A change that is done: 303, Location, then a page with exactly one role=status."""
+    resp = srv.post(path, fields)
+    ensure(resp.status == 303, "POST %s %r: status %d, expected 303" % (
+        path, list(fields), resp.status))
+    location = resp.header("Location")
+    ensure(location, "POST %s: 303 without Location" % path)
+    url = urlsplit(urljoin(srv.base + path, location))
+    ensure(url.hostname == "127.0.0.1" and url.port == srv.port,
+           "POST %s: Location %r leaves this server" % (path, location))
+    ensure(unquote(url.path) == back, "POST %s: Location %r, expected the page %s" % (
+        path, location, back))
+    headers = {}
+    cookies = [v.split(";")[0] for k, v in resp.headers if k.lower() == "set-cookie"]
+    if cookies:
+        headers["Cookie"] = "; ".join(cookies)
+    target = url.path + ("?" + url.query if url.query else "")
+    page = srv.get(target, headers)
+    page.path = target
+    ensure(page.status == 200, "GET %s after POST %s: status %d" % (target, path, page.status))
+    count = len(roles(page.root, "status"))
+    ensure(count == 1, 'page after POST %s has %d elements role="status", expected exactly one'
+           % (path, count))
+    ensure(roles(page.root, "status")[0].clean(), 'role="status" after POST %s is empty' % path)
+    srv.shop()              # the file is one valid JSON object with the four states
+    return page
+
+
+def refused(srv, path, fields, section):
+    """A change that is refused: 400, the form's page, one role=alert, file byte-identical."""
+    before = srv.raw()
+    resp = srv.post(path, fields)
+    ensure(resp.status == 400, "POST %s %r: status %d, expected 400" % (
+        path, list(fields), resp.status))
+    after = srv.raw()
+    ensure(after == before, "POST %s %r refused, but the state file %s" % (
+        path, list(fields), "was created" if before is None else "changed"))
+    check_page(resp, section)
+    count = len(roles(resp.root, "alert"))
+    ensure(count == 1, 'refusal of POST %s %r has %d elements role="alert", expected exactly one'
+           % (path, list(fields), count))
+    ensure(roles(resp.root, "alert")[0].clean(), 'role="alert" is empty')
+    if section == "/catalog":
+        ensure([n for n in resp.root.all("table") if n.attrs.get("id") == "items"],
+               "refusal of POST %s does not show the catalog page (no table #items)" % path)
+        one_form(resp, path)
+    elif section == "/customers":
+        one_form(resp, "/customers/register")
+    else:
+        one_form(resp, "/sell")
+    return resp
+
+
+def sell_fields(shop, customer, quantities):
+    fields = [] if customer is None else [("customer", customer)]
+    for item_id in shop.ids():
+        fields.append(("qty-" + item_id, quantities.get(item_id, "")))
+    return fields
+
+
+def check_receipt(resp, shop, sale):
+    root = resp.root
+    found = re.findall(r"S[0-9]+", by_id(root, "sale-id").text(" "))
+    ensure(found == [sale["id"]], "#sale-id shows %r, expected %s" % (
+        by_id(root, "sale-id").clean(), sale["id"]))
+    name = " ".join(shop.cust_name(sale["customer_id"]).split())
+    ensure(name in by_id(root, "customer").clean(), "#customer shows %r, expected %r" % (
+        by_id(root, "customer").clean(), name))
+    shows_money(root, "total", sale["total_cents"], resp.path)
+    rows = table_rows(root, "lines")
+    got = sorted(row.attrs["data-id"] for row in rows)
+    want = sorted(line["item_id"] for line in sale["lines"])
+    ensure(got == want, "rows of #lines are %r, expected %r" % (got, want))
+    for row in rows:
+        line = [l for l in sale["lines"] if l["item_id"] == row.attrs["data-id"]][0]
+        cell_is(row, "name", shop.get(line["item_id"])["name"])
+        cell_number(row, "quantity", str(line["quantity"]))
+        cell_number(row, "unit-price", money(line["unit_price_cents"]))
+        cell_number(row, "line-total", money(line["line_total_cents"]))
+
+
+def answers(host, port):
+    """True when something speaks HTTP on host:port."""
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=2)
+        try:
+            conn.request("GET", "/")
+            conn.getresponse().read()
+            return True
+        finally:
+            conn.close()
+    except (OSError, http.client.HTTPException):
+        return False
+
+
+def outside_address():
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("192.0.2.1", 9))
+            address = probe.getsockname()[0]
+        finally:
+            probe.close()
+        return None if address.startswith("127.") else address
+    except OSError:
+        return None
+
+
+# ----------------------------------------------------------------------------- cases
+
+GROUPS = []
+
+
+def group(name):
+    GROUPS.append((name, []))
+
+
+def case(name):
+    def register(function):
+        GROUPS[-1][1].append((name, function))
+        return function
+    return register
+
+
+# ============================================================ running
+group("running")
+
+
+# pages.md Running: "Once ready it prints one line `http://127.0.0.1:PORT/` on stdout"
+@case("run_prints_address_and_serves")
+def _(srv):
+    ensure(re.fullmatch(r"http://127\.0\.0\.1:[0-9]+/", srv.first_line), srv.first_line)
+    ensure(srv.port != 0, "port 0 printed")
+    ensure(srv.get("/").status == 200, "GET / is not 200")
+
+
+# pages.md Running: "listens on `127.0.0.1` only, on port N"
+@case("run_port_option")
+def _(srv):
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    other = Server(port)
+    try:
+        ensure(other.port == port, "asked for port %d, printed %s" % (port, other.first_line))
+        ensure(other.get("/").status == 200, "GET / on the asked port is not 200")
+    finally:
+        other.stop()
+
+
+# pages.md Running / web.md Interface: "listens on `127.0.0.1` only"
+@case("run_loopback_only")
+def _(srv):
+    ensure(answers("127.0.0.1", srv.port), "no answer on 127.0.0.1")
+    ensure(not answers("127.0.0.2", srv.port), "the server also answers on 127.0.0.2")
+    ensure(not answers("::1", srv.port), "the server also answers on ::1")
+    address = outside_address()
+    if address:
+        ensure(not answers(address, srv.port), "the server also answers on %s" % address)
+
+
+# pages.md Running: "It is created on the first successful change when missing"; "A GET never
+# changes it" - so with no file every page shows an empty shop and no file appears
+@case("run_missing_state_is_an_empty_shop")
+def _(srv):
+    srv.clear()
+    for path in SECTIONS:
+        resp = get_page(srv, path, path)
+        ensure(srv.raw() is None, "GET %s created the state file" % path)
+        if path == "/":
+            for ident in ("count-items", "count-customers", "count-sales"):
+                shows_count(resp.root, ident, 0, path)
+            shows_money(resp.root, "takings", 0, path)
+            row_ids(resp.root, "out-of-stock", [], path)
+        if path == "/catalog":
+            row_ids(resp.root, "items", [], path)
+        if path == "/customers":
+            row_ids(resp.root, "customers", [], path)
+        if path == "/sales":
+            row_ids(resp.root, "sales", [], path)
+            shows_money(resp.root, "takings", 0, path)
+
+
+# pages.md Running: "It is created on the first successful change when missing"; the state
+# file is "one JSON object holding the four units' states under catalog, stock, customers, sales"
+@case("run_first_change_creates_state_file")
+def _(srv):
+    srv.clear()
+    done(srv, "/customers/register", [("name", "First")], "/customers")
+    shop = srv.shop()
+    ensure([c["name"] for c in shop.custs()] == ["First"], "the customer is not in the file")
+    ensure(shop.items() == [] and shop.sales() == [], "the new file is not an empty shop")
+
+
+# ============================================================ every page
+group("every page")
+
+PAGES = [("overview", "/", "/"), ("catalog", "/catalog", "/catalog"),
+         ("customers", "/customers", "/customers"), ("sell", "/sell", "/sell"),
+         ("sales", "/sales", "/sales"), ("sale", "/sales/S1", None)]
+
+for _name, _path, _section in PAGES:
+    # pages.md Every page: "An HTML5 document with `lang`, a `<title>` of the form
+    # `PAGE · Pet shop`, exactly one `<h1>`, a `<main>`, and a `<nav>` linking to ..."
+    @case("page_structure_" + _name)
+    def _(srv, path=_path):
+        srv.put(std())
+        get_page(srv, path)
+
+    if _section:
+        # pages.md Every page: "the link of the current section carries aria-current="page""
+        @case("page_aria_current_" + _name)
+        def _(srv, path=_path, section=_section):
+            srv.put(std())
+            get_page(srv, path, section)
+
+
+# ============================================================ overview
+group("overview")
+
+
+# pages.md GET /: "Elements with id count-items, count-customers, count-sales (the counts)"
+@case("overview_counts")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    root = get_page(srv, "/").root
+    shows_count(root, "count-items", 5, "/")
+    shows_count(root, "count-customers", 3, "/")
+    shows_count(root, "count-sales", 2, "/")
+
+
+# pages.md GET /: "and `takings` (money)"
+@case("overview_takings")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    shows_money(get_page(srv, "/").root, "takings", 3 * 5 + 2 * 12345 + 2 * 99999999, "/")
+
+
+# pages.md GET /: "A table id="out-of-stock" with one <tr data-id="ITEM_ID"> per item with
+# none on hand, in id order"
+@case("overview_out_of_stock_rows")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    ensure(shop.out() == ["bee", "i9"], "audit state")
+    row_ids(get_page(srv, "/").root, "out-of-stock", ["bee", "i9"], "/")
+
+
+# pages.md GET /: out-of-stock "in id order" (the catalog's: `items` "ordered by id")
+@case("overview_out_of_stock_id_order")
+def _(srv):
+    shop = Shop()
+    for item_id in ("i9", "cat", "i10", "ant", "i1", "bee"):
+        shop.item(item_id, "Name " + item_id, "product", 100, 1 if item_id == "cat" else 0)
+    srv.put(shop)
+    row_ids(get_page(srv, "/").root, "out-of-stock", shop.out(), "/")
+
+
+# pages.md GET /: "one row per item with none on hand" - selling the last one adds the row
+@case("overview_out_of_stock_after_selling_last")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    done(srv, "/sell", sell_fields(shop, "C3", {"cat": "3"}), "/sales/S3")
+    row_ids(get_page(srv, "/").root, "out-of-stock", ["bee", "cat", "i9"], "/")
+
+
+# pages.md GET /: "one row per item with none on hand" - receiving removes the row
+@case("overview_out_of_stock_after_receiving")
+def _(srv):
+    srv.put(std())
+    done(srv, "/stock/receive", [("id", "bee"), ("quantity", "1")], "/catalog")
+    row_ids(get_page(srv, "/").root, "out-of-stock", ["i9"], "/")
+
+
+# pages.md GET /: "one row per item with none on hand" - removing the last ones adds the row
+@case("overview_out_of_stock_after_removing_all")
+def _(srv):
+    srv.put(std())
+    done(srv, "/stock/remove", [("id", "ant"), ("quantity", "137")], "/catalog")
+    row_ids(get_page(srv, "/").root, "out-of-stock", ["ant", "bee", "i9"], "/")
+
+
+# ============================================================ catalog
+group("catalog page")
+
+
+# pages.md GET /catalog: "A table id="items" with one <tr data-id="ITEM_ID"> per item in id order"
+@case("catalog_rows_in_id_order")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    ensure(shop.ids() == ["ant", "bee", "cat", "i10", "i9"], "audit state")
+    row_ids(get_page(srv, "/catalog").root, "items", shop.ids(), "/catalog")
+
+
+# pages.md GET /catalog: "holding cells of class name, kind, price (money) and on-hand"
+@case("catalog_cells")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    for row in row_ids(get_page(srv, "/catalog").root, "items", shop.ids(), "/catalog"):
+        item = shop.get(row.attrs["data-id"])
+        cell_is(row, "name", item["name"])
+        ensure(item["kind"] in cell(row, "kind").clean().lower(), "row %s: kind cell shows %r" % (
+            item["id"], cell(row, "kind").clean()))
+        cell_number(row, "price", money(item["price_cents"]))
+        cell_number(row, "on-hand", str(shop.on_hand(item["id"])))
+
+
+# pages.md GET /catalog: "action="/catalog/add": text inputs id, name, price and a select
+# kind (animal, product)", "Forms, each method="post""
+@case("catalog_form_add")
+def _(srv):
+    srv.put(std())
+    form = one_form(get_page(srv, "/catalog"), "/catalog/add")
+    for name in ("id", "name", "price"):
+        ensure(is_text_input(control(form, name)), "add form: %s is not a text input" % name)
+    kind = control(form, "kind")
+    ensure(kind.tag == "select", "add form: kind is not a select")
+    values = sorted(option_value(o) for o in kind.all("option") if option_value(o) != "")
+    ensure(values == ["animal", "product"], "add form: kind offers %r" % values)
+
+
+# pages.md GET /catalog: "action="/catalog/price": id, price"
+@case("catalog_form_price")
+def _(srv):
+    srv.put(std())
+    form = one_form(get_page(srv, "/catalog"), "/catalog/price")
+    control(form, "id")
+    control(form, "price")
+
+
+for _action in ("/stock/receive", "/stock/remove"):
+    # pages.md GET /catalog: "action="/stock/receive" and action="/stock/remove": id, quantity"
+    @case("catalog_form_" + _action.split("/")[-1])
+    def _(srv, action=_action):
+        srv.put(std())
+        form = one_form(get_page(srv, "/catalog"), action)
+        control(form, "id")
+        control(form, "quantity")
+
+
+# ============================================================ money shown
+group("money shown")
+
+SHOWN = [(0, "0.00"), (5, "0.05"), (50, "0.50"), (99, "0.99"), (100, "1.00"), (26050, "260.50"),
+         (99999, "999.99"), (100000, "1,000.00"), (99999999, "999,999.99"),
+         (100000000, "1,000,000.00"), (123456789, "1,234,567.89")]
+
+
+# pages.md Every page: "Money is shown as cents ÷ 100 with exactly two decimals and commas
+# between thousands (26050 -> 260.50, 123456789 -> 1,234,567.89)"
+@case("money_shown_in_catalog")
+def _(srv):
+    shop = Shop()
+    for index, (cents, _text) in enumerate(SHOWN):
+        shop.item("m%02d" % index, "Thing %d" % index, "product", cents, 1)
+    srv.put(shop)
+    rows = row_ids(get_page(srv, "/catalog").root, "items", shop.ids(), "/catalog")
+    for row, (cents, text) in zip(rows, SHOWN):
+        ensure(money(cents) == text, "audit")
+        cell_number(row, "price", text)
+
+
+# pages.md Every page: money "with exactly two decimals and commas between thousands", on the
+# overview's and the sales page's takings, the totals and the receipt
+@case("money_shown_large_takings_and_receipt")
+def _(srv):
+    shop = Shop()
+    shop.item("big", "Big", "product", 99999999, 5)
+    shop.item("sml", "Small", "product", 5, 5)
+    shop.cust("Ann")
+    sale = shop.sell("C1", [("big", 3), ("sml", 1)])
+    srv.put(shop)
+    ensure(money(sale["total_cents"]) == "3,000,000.02", "audit")
+    shows_money(get_page(srv, "/").root, "takings", 300000002, "/")
+    root = get_page(srv, "/sales").root
+    shows_money(root, "takings", 300000002, "/sales")
+    cell_number(row_ids(root, "sales", ["S1"], "/sales")[0], "total", "3,000,000.02")
+    resp = get_page(srv, "/sales/S1")
+    check_receipt(resp, shop, sale)
+    rows = {row.attrs["data-id"]: row for row in table_rows(resp.root, "lines")}
+    cell_number(rows["big"], "unit-price", "999,999.99")
+    cell_number(rows["big"], "line-total", "2,999,999.97")
+    cell_number(rows["sml"], "unit-price", "0.05")
+    cell_number(rows["sml"], "line-total", "0.05")
+
+
+# pages.md Every page: "Money is shown ... with exactly two decimals" - a sale of nothing but
+# free items totals 0.00
+@case("money_shown_zero_total")
+def _(srv):
+    shop = Shop()
+    shop.item("free", "Free", "product", 0, 5)
+    shop.cust("Ann")
+    sale = shop.sell("C1", [("free", 2)])
+    srv.put(shop)
+    check_receipt(get_page(srv, "/sales/S1"), shop, sale)
+    shows_money(get_page(srv, "/sales").root, "takings", 0, "/sales")
+
+
+# ============================================================ customers page
+group("customers page")
+
+
+def people():
+    shop = std()
+    shop.cust("Tom & Jerry")
+    shop.cust("Émile")
+    return shop
+
+
+# pages.md GET /customers: "A table id="customers" with one <tr data-id="CUSTOMER_ID"> per
+# customer ... (all when q is empty or absent), in order of registration, holding a cell of
+# class name"
+@case("customers_all_in_order_of_registration")
+def _(srv):
+    shop = Shop()
+    for index in range(1, 13):
+        shop.cust("Person %d" % (13 - index))
+    srv.put(shop)
+    want = ["C%d" % index for index in range(1, 13)]
+    ensure([c["id"] for c in shop.custs()] == want, "audit state")
+    rows = row_ids(get_page(srv, "/customers").root, "customers", want, "/customers")
+    for row in rows:
+        cell_is(row, "name", shop.cust_name(row.attrs["data-id"]))
+
+
+# pages.md GET /customers: "A form method="get" with a text input q"
+@case("customers_search_form")
+def _(srv):
+    srv.put(people())
+    resp = get_page(srv, "/customers")
+    found = [form for form in resp.root.all("form")
+             if form.attrs.get("method", "get").strip().lower() == "get"
+             and control(form, "q", required=False) is not None]
+    ensure(found, 'no form method="get" with a field q')
+    q = control(found[0], "q")
+    ensure(is_text_input(q) or q.attrs.get("type", "").strip().lower() == "search",
+           "q is not a text input")
+    if "action" in found[0].attrs:
+        ensure(path_of("/customers", found[0].attrs["action"]) == "/customers",
+               "the search form does not lead to /customers")
+
+
+# pages.md GET /customers: "A form action="/customers/register" with a text input name"
+@case("customers_register_form")
+def _(srv):
+    srv.put(people())
+    form = one_form(get_page(srv, "/customers"), "/customers/register")
+    ensure(is_text_input(control(form, "name")), "name is not a text input")
+
+
+SEARCHES = [("contains", "ann", ["C1", "C2"]), ("upper_case", "ANN", ["C1", "C2"]),
+            ("mixed_case", "aNNs", ["C2"]), ("inner", "n l", ["C1"]), ("none", "zzz", []),
+            ("empty", "", ["C1", "C2", "C3", "C4", "C5"]), ("ampersand", "&", ["C4"]),
+            ("one_letter", "E", ["C1", "C4", "C5"]),
+            ("non_ascii_lower", "émile", ["C5"]), ("non_ascii_upper", "ÉMILE", ["C5"])]
+
+for _name, _q, _want in SEARCHES:
+    # pages.md GET /customers: "one row per customer whose name contains q ignoring case (all
+    # when q is empty or absent), in order of registration"
+    @case("customers_search_" + _name)
+    def _(srv, q=_q, expected=_want):
+        shop = people()
+        srv.put(shop)
+        want = [c["id"] for c in MODS["customers"].find(shop.s["customers"], q)]
+        ensure(want == expected, "audit state")
+        path = "/customers?" + urlencode([("q", q)])
+        rows = row_ids(get_page(srv, path, "/customers").root, "customers", want, path)
+        for row in rows:
+            cell_is(row, "name", shop.cust_name(row.attrs["data-id"]))
+
+
+# ============================================================ sell page
+group("sell page")
+
+
+# pages.md GET /sell: "One form action="/sell"" (Changes: each form posts)
+@case("sell_one_form")
+def _(srv):
+    srv.put(std())
+    resp = get_page(srv, "/sell")
+    count = len(forms(resp, "/sell"))
+    ensure(count == 1, "%d forms post to /sell, expected one" % count)
+
+
+# pages.md GET /sell: "a select customer whose options have the customer ids as values"
+@case("sell_customer_options")
+def _(srv):
+    shop = Shop()
+    shop.item("ant", "Ant farm", "product", 5, 3)
+    for index in range(11):
+        shop.cust("Person %d" % index)
+    srv.put(shop)
+    select = control(one_form(get_page(srv, "/sell"), "/sell"), "customer")
+    ensure(select.tag == "select", "customer is not a select")
+    values = [option_value(o) for o in select.all("option") if option_value(o) != ""]
+    ensure(sorted(values) == sorted(c["id"] for c in shop.custs()),
+           "customer options are %r" % values)
+
+
+# pages.md GET /sell: "for every item in id order a number input named qty-ITEM_ID"
+@case("sell_quantity_inputs_in_id_order")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    form = one_form(get_page(srv, "/sell"), "/sell")
+    inputs = [n for n in form.all("input") if n.attrs.get("name", "").startswith("qty-")]
+    got = [n.attrs["name"] for n in inputs]
+    ensure(got == ["qty-" + i for i in shop.ids()], "quantity inputs are %r" % got)
+    for node in inputs:
+        ensure(node.attrs.get("type", "").strip().lower() == "number",
+               "%s is not a number input" % node.attrs["name"])
+
+
+# pages.md GET /sell: "shown with the item's name, price and quantity on hand"
+@case("sell_shows_name_price_on_hand")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    resp = get_page(srv, "/sell")
+    text = " ".join(resp.root.all("main")[0].text(" ").split())
+    found = numbers(text)
+    for item in shop.items():
+        ensure(item["name"] in text, "the name %r is not shown" % item["name"])
+        ensure(money(item["price_cents"]) in found, "the price %s of %s is not shown" % (
+            money(item["price_cents"]), item["id"]))
+        if shop.on_hand(item["id"]):
+            ensure(str(shop.on_hand(item["id"])) in found, "the %d on hand of %s are not shown"
+                   % (shop.on_hand(item["id"]), item["id"]))
+
+
+# ============================================================ sales pages
+group("sales pages")
+
+
+def many_sales():
+    shop = std()
+    for index in range(10):
+        shop.sell("C%d" % (index % 3 + 1), [("ant", index + 1)])
+    return shop
+
+
+# pages.md GET /sales: "A table id="sales" with one <tr data-id="SALE_ID"> per sale, newest first"
+@case("sales_newest_first")
+def _(srv):
+    shop = many_sales()
+    srv.put(shop)
+    want = [sale["id"] for sale in reversed(shop.sales())]
+    ensure(want == ["S%d" % n for n in range(12, 0, -1)], "audit state")
+    row_ids(get_page(srv, "/sales").root, "sales", want, "/sales")
+
+
+# pages.md GET /sales: "newest first" - also for a sale made here after S12
+@case("sales_newest_first_after_selling")
+def _(srv):
+    shop = many_sales()
+    srv.put(shop)
+    done(srv, "/sell", sell_fields(shop, "C1", {"ant": "1"}), "/sales/S13")
+    row_ids(get_page(srv, "/sales").root, "sales", ["S%d" % n for n in range(13, 0, -1)],
+            "/sales")
+
+
+# pages.md GET /sales: "holding cells of class customer (the customer's name) and total (money)"
+@case("sales_cells")
+def _(srv):
+    shop = many_sales()
+    srv.put(shop)
+    sales_by_id = {sale["id"]: sale for sale in shop.sales()}
+    for row in table_rows(get_page(srv, "/sales").root, "sales"):
+        sale = sales_by_id[row.attrs["data-id"]]
+        cell_is(row, "customer", shop.cust_name(sale["customer_id"]))
+        cell_number(row, "total", money(sale["total_cents"]))
+
+
+# pages.md GET /sales: "each row linking to the sale"
+@case("sales_rows_link_to_sale")
+def _(srv):
+    shop = many_sales()
+    srv.put(shop)
+    rows = table_rows(get_page(srv, "/sales").root, "sales")
+    ensure(len(rows) == 12, "expected 12 rows")
+    for row in rows:
+        targets = [path_of("/sales", a.attrs["href"]) for a in row.all("a") if "href" in a.attrs]
+        ensure("/sales/" + row.attrs["data-id"] in targets, "row %s has no link to its sale: %r"
+               % (row.attrs["data-id"], targets))
+
+
+# pages.md GET /sales: "An element id="takings" (money)"
+@case("sales_takings")
+def _(srv):
+    shop = many_sales()
+    srv.put(shop)
+    shows_money(get_page(srv, "/sales").root, "takings", shop.takings(), "/sales")
+
+
+# pages.md GET /sales/SALE_ID: "Elements id="sale-id", id="customer" (the name) and id="total"
+# (money), and a table id="lines" with one <tr data-id="ITEM_ID"> per line, holding cells of
+# class name, quantity, unit-price and line-total"
+@case("sale_receipt")
+def _(srv):
+    shop = many_sales()
+    srv.put(shop)
+    for sale in shop.sales():
+        check_receipt(get_page(srv, "/sales/" + sale["id"]), shop, sale)
+
+
+# pages.md GET /sales/SALE_ID: cells unit-price and line-total are the line's (sales.md: a
+# line holds unit_price_cents and line_total_cents) - a later price does not rewrite a receipt
+@case("sale_receipt_keeps_price_of_the_sale")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    done(srv, "/catalog/price", [("id", "cat"), ("price", "1.00")], "/catalog")
+    now = srv.shop()
+    ensure(now.price("cat") == 100, "the price was not changed")
+    sale = now.sales()[0]
+    ensure(sale["total_cents"] == 15 + 24690, "the recorded sale changed")
+    check_receipt(get_page(srv, "/sales/S1"), now, sale)
+    shows_money(get_page(srv, "/").root, "takings", 15 + 24690 + 199999998, "/")
+
+
+for _name, _path in (("S3", "/sales/S3"), ("S0", "/sales/S0"), ("lower_case", "/sales/s1"),
+                     ("word", "/sales/nope"), ("S1x", "/sales/S1x")):
+    # pages.md GET /sales/SALE_ID: "An unknown sale: status 404"
+    @case("sale_unknown_404_" + _name)
+    def _(srv, path=_path):
+        srv.put(std())
+        resp = srv.get(path)
+        ensure(resp.status == 404, "GET %s: status %d, expected 404" % (path, resp.status))
+
+
+# ============================================================ escaping and UTF-8
+group("escaping")
+
+RAW_FORBIDDEN = ["<b>Rex", "<i>Tom", "Fish & Chips", "Black & White", "<c>"]
+ESC_PAGES = ["/", "/catalog", "/customers", "/customers?q=tom", "/sell", "/sales", "/sales/S1",
+             "/sales/S2", "/sales/S3"]
+
+for _path in ESC_PAGES:
+    # pages.md Every page: "Every text taken from the state is HTML-escaped"
+    @case("escape_raw_" + (_path.strip("/").replace("/", "_").replace("?", "_") or "overview"))
+    def _(srv, path=_path):
+        srv.put(special())
+        resp = get_page(srv, path)
+        for bad in RAW_FORBIDDEN:
+            ensure(bad not in resp.text, "GET %s: %r appears unescaped" % (path, bad))
+
+
+# pages.md Every page: "Every text taken from the state is HTML-escaped" - names in the catalog
+@case("escape_catalog_names_and_ids")
+def _(srv):
+    shop = special()
+    srv.put(shop)
+    for row in row_ids(get_page(srv, "/catalog").root, "items", shop.ids(), "/catalog"):
+        cell_is(row, "name", shop.get(row.attrs["data-id"])["name"])
+
+
+# pages.md Every page: "Every text taken from the state is HTML-escaped" - names of customers
+@case("escape_customer_names")
+def _(srv):
+    shop = special()
+    srv.put(shop)
+    for row in row_ids(get_page(srv, "/customers").root, "customers", ["C1", "C2", "C3"],
+                       "/customers"):
+        cell_is(row, "name", shop.cust_name(row.attrs["data-id"]))
+
+
+# pages.md Every page: "Every text taken from the state is HTML-escaped" - item ids in the
+# overview's rows (data-id="ITEM_ID")
+@case("escape_out_of_stock_ids")
+def _(srv):
+    shop = Shop()
+    for item_id in ("a&b\"<c>'", "x>y", "kö"):
+        shop.item(item_id, "N", "product", 1, 0)
+    srv.put(shop)
+    row_ids(get_page(srv, "/").root, "out-of-stock", shop.ids(), "/")
+
+
+# pages.md GET /sell + Every page: inputs "named qty-ITEM_ID", options with "the customer ids
+# as values", item names shown; all escaped
+@case("escape_sell_form")
+def _(srv):
+    shop = special()
+    srv.put(shop)
+    resp = get_page(srv, "/sell")
+    form = one_form(resp, "/sell")
+    got = [n.attrs["name"] for n in form.all("input") if n.attrs.get("name", "").startswith("qty-")]
+    ensure(got == ["qty-" + i for i in shop.ids()], "quantity inputs are %r" % got)
+    values = [option_value(o) for o in control(form, "customer").all("option")
+              if option_value(o) != ""]
+    ensure(sorted(values) == ["C1", "C2", "C3"], "customer options are %r" % values)
+    text = " ".join(resp.root.all("main")[0].text(" ").split())
+    for item in shop.items():
+        ensure(item["name"] in text, "the name %r is not shown as written" % item["name"])
+
+
+# pages.md GET /sales + Every page: cell "customer (the customer's name)", escaped
+@case("escape_sales_customer_names")
+def _(srv):
+    shop = special()
+    srv.put(shop)
+    rows = row_ids(get_page(srv, "/sales").root, "sales", ["S3", "S2", "S1"], "/sales")
+    for row, customer in zip(rows, ("C3", "C2", "C1")):
+        cell_is(row, "customer", shop.cust_name(customer))
+
+
+# pages.md GET /sales/SALE_ID + Every page: the receipt's names and ids, escaped
+@case("escape_receipt")
+def _(srv):
+    shop = special()
+    srv.put(shop)
+    for sale in shop.sales():
+        check_receipt(get_page(srv, "/sales/" + sale["id"]), shop, sale)
+
+
+# pages.md Changes: "Each form posts application/x-www-form-urlencoded in UTF-8"; Every page:
+# "Every text taken from the state is HTML-escaped" - a name with markup, added here
+@case("escape_added_item_everywhere")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    name = "<b>Zed</b> & \"Z\" 'z'"
+    done(srv, "/catalog/add", [("id", "zed"), ("name", name), ("kind", "animal"),
+                               ("price", "1")], "/catalog")
+    ensure(srv.shop().get("zed")["name"] == name, "the name was stored as %r" % (
+        srv.shop().get("zed")["name"],))
+    done(srv, "/stock/receive", [("id", "zed"), ("quantity", "2")], "/catalog")
+    now = srv.shop()
+    done(srv, "/sell", sell_fields(now, "C1", {"zed": "1"}), "/sales/S3")
+    now = srv.shop()
+    for path in ("/", "/catalog", "/sell", "/sales", "/sales/S3"):
+        resp = get_page(srv, path)
+        ensure("<b>Zed" not in resp.text, "GET %s: the name appears unescaped" % path)
+    check_receipt(get_page(srv, "/sales/S3"), now, now.sales()[-1])
+    rows = row_ids(get_page(srv, "/catalog").root, "items", now.ids(), "/catalog")
+    cell_is(rows[now.ids().index("zed")], "name", name)
+
+
+# pages.md Every page: "Every text taken from the state is HTML-escaped" - on the page shown
+# after a change, role="status" included (the name it may quote is by then in the state)
+@case("escape_status_message")
+def _(srv):
+    srv.put(std())
+    page = done(srv, "/catalog/add", [("id", "zed"), ("name", "<b>Zed</b> & <i>co</i>"),
+                                      ("kind", "animal"), ("price", "1")], "/catalog")
+    ensure("<b>Zed" not in page.text, "the page after adding shows the name unescaped")
+    page = done(srv, "/customers/register", [("name", "<b>Yan</b> & <i>co</i>")], "/customers")
+    ensure("<b>Yan" not in page.text, "the page after registering shows the name unescaped")
+    now = srv.shop()
+    page = done(srv, "/sell", sell_fields(now, "C4", {"zed": "", "ant": "1"}), "/sales/S3")
+    ensure("<b>Yan" not in page.text, "the page after selling shows the name unescaped")
+
+
+# pages.md Changes: forms post "in UTF-8"; a registered non-ASCII name shows on the pages
+@case("utf8_registered_name")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    name = "Zoë 猫 Женя"
+    done(srv, "/customers/register", [("name", name)], "/customers")
+    ensure(srv.shop().cust_name("C4") == name, "stored as %r" % srv.shop().cust_name("C4"))
+    rows = row_ids(get_page(srv, "/customers").root, "customers", ["C1", "C2", "C3", "C4"],
+                   "/customers")
+    cell_is(rows[3], "name", name)
+    path = "/customers?" + urlencode([("q", "zoë 猫")])
+    row_ids(get_page(srv, path).root, "customers", ["C4"], path)
+
+
+# pages.md Changes: forms post "in UTF-8"; a non-ASCII item id and name, added and sold here
+@case("utf8_item_added_and_sold")
+def _(srv):
+    srv.put(std())
+    item_id, name = "ñu-1", "Ñandú 鳥"
+    done(srv, "/catalog/add", [("id", item_id), ("name", name), ("kind", "animal"),
+                               ("price", "12.5")], "/catalog")
+    done(srv, "/stock/receive", [("id", item_id), ("quantity", "2")], "/catalog")
+    now = srv.shop()
+    ensure(now.get(item_id)["name"] == name and now.on_hand(item_id) == 2, "not stored right")
+    done(srv, "/sell", sell_fields(now, "C1", {item_id: "2"}), "/sales/S3")
+    now = srv.shop()
+    sale = now.sales()[-1]
+    ensure(sale["total_cents"] == 2500, "total %r" % sale["total_cents"])
+    check_receipt(get_page(srv, "/sales/S3"), now, sale)
+    rows = row_ids(get_page(srv, "/catalog").root, "items", now.ids(), "/catalog")
+    cell_is(rows[now.ids().index(item_id)], "name", name)
+
+
+# ============================================================ catalog changes
+group("catalog changes")
+
+
+# pages.md Changes: "Done: the state is saved and the response is 303 with Location back to the
+# page the form is on ... The page then shown has exactly one element with role="status""
+@case("add_done")
+def _(srv):
+    srv.put(std())
+    page = done(srv, "/catalog/add", [("id", "dog"), ("name", "Dog"), ("kind", "animal"),
+                                      ("price", "260.50")], "/catalog")
+    now = srv.shop()
+    ensure(now.get("dog") == {"id": "dog", "name": "Dog", "kind": "animal", "price_cents": 26050},
+           "stored item is %r" % (now.get("dog"),))
+    ensure(now.ids() == ["ant", "bee", "cat", "dog", "i10", "i9"], "items are %r" % now.ids())
+    ensure(len(now.custs()) == 3 and len(now.sales()) == 2 and now.on_hand("ant") == 137,
+           "the rest of the shop changed")
+    rows = row_ids(page.root, "items", now.ids(), "/catalog")
+    cell_is(rows[3], "name", "Dog")
+    cell_number(rows[3], "price", "260.50")
+    cell_number(rows[3], "on-hand", "0")
+    row_ids(get_page(srv, "/").root, "out-of-stock", ["bee", "dog", "i9"], "/")
+
+
+# pages.md GET /catalog: "a select kind (animal, product)" - both kinds can be added
+@case("add_done_both_kinds")
+def _(srv):
+    srv.put(std())
+    done(srv, "/catalog/add", [("id", "k1"), ("name", "K1"), ("kind", "product"),
+                               ("price", "1")], "/catalog")
+    done(srv, "/catalog/add", [("id", "k2"), ("name", "K2"), ("kind", "animal"),
+                               ("price", "1")], "/catalog")
+    now = srv.shop()
+    ensure(now.get("k1")["kind"] == "product" and now.get("k2")["kind"] == "animal", "kinds")
+
+
+ENTERED = [("3", 300), ("3.5", 350), ("3.50", 350), ("0", 0), ("0.0", 0), ("0.00", 0),
+           ("0.05", 5), ("0.5", 50), ("0.29", 29), ("1.15", 115), ("4.35", 435), ("8.2", 820),
+           ("19.99", 1999), ("1000", 100000), ("999999.99", 99999999),
+           ("1234567.89", 123456789), ("90071992547409.93", 9007199254740993)]
+
+for _text, _cents in ENTERED:
+    # pages.md Every page: "Money is entered as digits with an optional point and one or two
+    # decimals (3, 3.5, 3.50)"
+    @case("money_entered_" + _text)
+    def _(srv, text=_text, cents=_cents):
+        srv.put(std())
+        page = done(srv, "/catalog/add", [("id", "new"), ("name", "New"), ("kind", "product"),
+                                          ("price", text)], "/catalog")
+        now = srv.shop()
+        got = now.price("new")
+        ensure(type(got) is int and got == cents, "%r stored as %r cents, expected %d" % (
+            text, got, cents))
+        rows = row_ids(page.root, "items", now.ids(), "/catalog")
+        cell_number(rows[now.ids().index("new")], "price", money(cents))
+
+
+# pages.md Every page: "Money is entered as digits with an optional point and one or two
+# decimals" - digits may begin with zeros
+@case("money_entered_leading_zeros")
+def _(srv):
+    srv.put(std())
+    done(srv, "/catalog/add", [("id", "new"), ("name", "New"), ("kind", "product"),
+                               ("price", "007.50")], "/catalog")
+    ensure(srv.shop().price("new") == 750, "007.50 stored as %r" % srv.shop().price("new"))
+
+
+REFUSED_MONEY = [("three_decimals", "3.505"), ("no_digit_before_point", ".5"),
+                 ("no_digit_after_point", "3."), ("negative", "-1"), ("exponent", "1e3"),
+                 ("thousands_comma", "1,000"), ("empty", ""), ("word", "abc"),
+                 ("two_points", "3.5.0"), ("plus_sign", "+3"), ("underscore", "1_000"),
+                 ("decimal_comma", "3,50"), ("hex", "0x10"), ("point_only", "."),
+                 ("negative_zero", "-0"), ("inner_space", "3 .5"), ("currency_sign", "$3"),
+                 ("nan", "nan"), ("infinity", "inf")]
+
+for _name, _text in REFUSED_MONEY:
+    # pages.md Every page: "Money is entered as digits with an optional point and one or two
+    # decimals (3, 3.5, 3.50); anything else is refused"; Changes: Refused "a number not
+    # written as above"
+    @case("money_refused_" + _name)
+    def _(srv, text=_text):
+        srv.put(std())
+        refused(srv, "/catalog/add", [("id", "new"), ("name", "New"), ("kind", "product"),
+                                      ("price", text)], "/catalog")
+        refused(srv, "/catalog/price", [("id", "cat"), ("price", text)], "/catalog")
+
+
+# pages.md Every page: money is "digits with an optional point and one or two decimals ...;
+# anything else is refused" - a space before the digits is something else
+@case("money_refused_leading_space")
+def _(srv):
+    srv.put(std())
+    refused(srv, "/catalog/add", [("id", "new"), ("name", "New"), ("kind", "product"),
+                                  ("price", " 3")], "/catalog")
+    refused(srv, "/catalog/price", [("id", "cat"), ("price", " 3")], "/catalog")
+
+
+# pages.md Changes: Refused "anything a unit refuses" (catalog.md: add refuses an id that
+# already exists)
+@case("add_refused_duplicate_id")
+def _(srv):
+    srv.put(std())
+    refused(srv, "/catalog/add", [("id", "cat"), ("name", "Other"), ("kind", "product"),
+                                  ("price", "1")], "/catalog")
+
+
+# pages.md Changes: Refused "anything a unit refuses" (catalog.md: kind not animal or product)
+@case("add_refused_unknown_kind")
+def _(srv):
+    srv.put(std())
+    refused(srv, "/catalog/add", [("id", "new"), ("name", "New"), ("kind", "bird"),
+                                  ("price", "1")], "/catalog")
+    refused(srv, "/catalog/add", [("id", "new"), ("name", "New"), ("kind", ""),
+                                  ("price", "1")], "/catalog")
+
+
+# pages.md Changes: Refused "anything a unit refuses" (catalog.md: id or name not a non-empty
+# string)
+@case("add_refused_empty_id_or_name")
+def _(srv):
+    srv.put(std())
+    refused(srv, "/catalog/add", [("id", ""), ("name", "New"), ("kind", "product"),
+                                  ("price", "1")], "/catalog")
+    refused(srv, "/catalog/add", [("id", "new"), ("name", ""), ("kind", "product"),
+                                  ("price", "1")], "/catalog")
+
+
+# pages.md Changes: Refused "a missing field"
+@case("add_refused_missing_field")
+def _(srv):
+    srv.put(std())
+    fields = [("id", "new"), ("name", "New"), ("kind", "product"), ("price", "1")]
+    for index in range(4):
+        refused(srv, "/catalog/add", fields[:index] + fields[index + 1:], "/catalog")
+    refused(srv, "/catalog/add", [], "/catalog")
+
+
+# pages.md Changes: Refused shows "the page the form is on" - the catalog, rows and all
+@case("add_refused_shows_catalog_page")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    resp = refused(srv, "/catalog/add", [("id", "cat"), ("name", "Other"), ("kind", "product"),
+                                         ("price", "1")], "/catalog")
+    rows = row_ids(resp.root, "items", shop.ids(), "refusal page")
+    cell_is(rows[2], "name", "Tabby cat")
+    for action in ("/catalog/add", "/catalog/price", "/stock/receive", "/stock/remove"):
+        one_form(resp, action)
+
+
+# pages.md Changes: Refused "... and the submitted values still in the form's fields"
+@case("add_refused_keeps_values")
+def _(srv):
+    srv.put(std())
+    values = {"id": "ne\"w<1>", "name": "<b>N</b> & \"q\" 'z' é", "kind": "product",
+              "price": "3.505"}
+    resp = refused(srv, "/catalog/add", list(values.items()), "/catalog")
+    keeps(resp, "/catalog/add", values)
+    values = {"id": "cat", "name": "Second cat", "kind": "product", "price": "12.34"}
+    resp = refused(srv, "/catalog/add", list(values.items()), "/catalog")
+    keeps(resp, "/catalog/add", values)
+
+
+# pages.md Changes: Done, for the form action="/catalog/price"
+@case("price_done")
+def _(srv):
+    srv.put(std())
+    page = done(srv, "/catalog/price", [("id", "ant"), ("price", "1234.5")], "/catalog")
+    now = srv.shop()
+    ensure(now.price("ant") == 123450, "price stored as %r" % now.price("ant"))
+    ensure(now.price("cat") == 12345 and now.on_hand("ant") == 137, "something else changed")
+    cell_number(row_ids(page.root, "items", now.ids(), "/catalog")[0], "price", "1,234.50")
+
+
+# pages.md Every page: money entry forms "3, 3.5, 3.50" (and 0: catalog.md "an int of 0 or
+# more"), on the price form
+@case("price_done_accepted_forms")
+def _(srv):
+    srv.put(std())
+    for text, cents in (("3", 300), ("3.5", 350), ("0", 0), ("3.50", 350), ("0.07", 7)):
+        done(srv, "/catalog/price", [("id", "i9"), ("price", text)], "/catalog")
+        got = srv.shop().price("i9")
+        ensure(type(got) is int and got == cents, "%r stored as %r" % (text, got))
+
+
+# pages.md Changes: Refused "an item unknown to the catalog"
+@case("price_refused_unknown_item")
+def _(srv):
+    srv.put(std())
+    refused(srv, "/catalog/price", [("id", "nope"), ("price", "1")], "/catalog")
+    refused(srv, "/catalog/price", [("id", ""), ("price", "1")], "/catalog")
+    refused(srv, "/catalog/price", [("id", "CAT"), ("price", "1")], "/catalog")
+
+
+# pages.md Changes: Refused "a missing field"
+@case("price_refused_missing_field")
+def _(srv):
+    srv.put(std())
+    refused(srv, "/catalog/price", [("id", "cat")], "/catalog")
+    refused(srv, "/catalog/price", [("price", "1")], "/catalog")
+    refused(srv, "/catalog/price", [], "/catalog")
+
+
+# pages.md Changes: Refused "... and the submitted values still in the form's fields"
+@case("price_refused_keeps_values")
+def _(srv):
+    srv.put(std())
+    resp = refused(srv, "/catalog/price", [("id", "i10"), ("price", "12.345")], "/catalog")
+    keeps(resp, "/catalog/price", {"id": "i10", "price": "12.345"})
+
+
+# ============================================================ stock changes
+group("stock changes")
+
+
+# pages.md Changes: Done, for the form action="/stock/receive"
+@case("receive_done")
+def _(srv):
+    srv.put(std())
+    page = done(srv, "/stock/receive", [("id", "i9"), ("quantity", "12")], "/catalog")
+    now = srv.shop()
+    ensure(now.on_hand("i9") == 12, "on hand %r" % now.on_hand("i9"))
+    ensure(now.on_hand("ant") == 137 and now.on_hand("cat") == 3, "other stock changed")
+    cell_number(row_ids(page.root, "items", now.ids(), "/catalog")[4], "on-hand", "12")
+    done(srv, "/stock/receive", [("id", "i9"), ("quantity", "1000")], "/catalog")
+    ensure(srv.shop().on_hand("i9") == 1012, "on hand %r" % srv.shop().on_hand("i9"))
+
+
+# pages.md Every page: "Quantities are entered as digits only" - digits may begin with a zero
+@case("receive_done_leading_zero")
+def _(srv):
+    srv.put(std())
+    done(srv, "/stock/receive", [("id", "i9"), ("quantity", "03")], "/catalog")
+    ensure(srv.shop().on_hand("i9") == 3, "on hand %r" % srv.shop().on_hand("i9"))
+
+
+# pages.md Changes: Done, for the form action="/stock/remove"
+@case("remove_done")
+def _(srv):
+    srv.put(std())
+    page = done(srv, "/stock/remove", [("id", "ant"), ("quantity", "37")], "/catalog")
+    now = srv.shop()
+    ensure(now.on_hand("ant") == 100, "on hand %r" % now.on_hand("ant"))
+    cell_number(row_ids(page.root, "items", now.ids(), "/catalog")[0], "on-hand", "100")
+    done(srv, "/stock/remove", [("id", "cat"), ("quantity", "3")], "/catalog")
+    ensure(srv.shop().on_hand("cat") == 0, "removing all on hand")
+
+
+BAD_QUANTITIES = [("zero", "0"), ("negative", "-1"), ("decimal", "1.0"), ("plus_sign", "+1"),
+                  ("empty", ""), ("word", "abc"), ("exponent", "1e2"), ("underscore", "1_0"),
+                  ("comma", "1,000"), ("double_zero", "00")]
+
+for _name, _text in BAD_QUANTITIES:
+    # pages.md Every page: "Quantities are entered as digits only"; Changes: Refused "a number
+    # not written as above" and "anything a unit refuses" (stock.md: a quantity of 1 or more)
+    @case("quantity_refused_" + _name)
+    def _(srv, text=_text):
+        srv.put(std())
+        refused(srv, "/stock/receive", [("id", "cat"), ("quantity", text)], "/catalog")
+        refused(srv, "/stock/remove", [("id", "cat"), ("quantity", text)], "/catalog")
+
+
+# pages.md Changes: Refused "anything a unit refuses" (stock.md: remove refuses a quantity that
+# exceeds what is on hand)
+@case("remove_refused_more_than_on_hand")
+def _(srv):
+    srv.put(std())
+    refused(srv, "/stock/remove", [("id", "cat"), ("quantity", "4")], "/catalog")
+    refused(srv, "/stock/remove", [("id", "bee"), ("quantity", "1")], "/catalog")
+
+
+# pages.md Changes: Refused "an item unknown to the catalog"
+@case("stock_refused_unknown_item")
+def _(srv):
+    srv.put(std())
+    for action in ("/stock/receive", "/stock/remove"):
+        refused(srv, action, [("id", "nope"), ("quantity", "1")], "/catalog")
+        refused(srv, action, [("id", ""), ("quantity", "1")], "/catalog")
+
+
+# pages.md Changes: Refused "a missing field"
+@case("stock_refused_missing_field")
+def _(srv):
+    srv.put(std())
+    for action in ("/stock/receive", "/stock/remove"):
+        refused(srv, action, [("id", "cat")], "/catalog")
+        refused(srv, action, [("quantity", "1")], "/catalog")
+        refused(srv, action, [], "/catalog")
+
+
+# pages.md Changes: Refused "... and the submitted values still in the form's fields"
+@case("stock_refused_keeps_values")
+def _(srv):
+    srv.put(std())
+    resp = refused(srv, "/stock/receive", [("id", "i10"), ("quantity", "1.0")], "/catalog")
+    keeps(resp, "/stock/receive", {"id": "i10", "quantity": "1.0"})
+    resp = refused(srv, "/stock/remove", [("id", "i10"), ("quantity", "77")], "/catalog")
+    keeps(resp, "/stock/remove", {"id": "i10", "quantity": "77"})
+
+
+# ============================================================ customers changes
+group("register")
+
+
+# pages.md Changes: Done, for the form action="/customers/register"
+@case("register_done")
+def _(srv):
+    srv.put(std())
+    page = done(srv, "/customers/register", [("name", "Dora Day")], "/customers")
+    now = srv.shop()
+    ensure([c["id"] for c in now.custs()] == ["C1", "C2", "C3", "C4"], "customers %r" % now.custs())
+    ensure(now.cust_name("C4") == "Dora Day", "name %r" % now.cust_name("C4"))
+    rows = row_ids(page.root, "customers", ["C1", "C2", "C3", "C4"], "/customers")
+    cell_is(rows[3], "name", "Dora Day")
+    shows_count(get_page(srv, "/").root, "count-customers", 4, "/")
+
+
+# customers.md: "Two customers may share a name"; "stores the name stripped of surrounding
+# whitespace" (pages.md Changes: Done)
+@case("register_done_same_name_and_stripped")
+def _(srv):
+    srv.put(std())
+    done(srv, "/customers/register", [("name", "Carl")], "/customers")
+    done(srv, "/customers/register", [("name", "  Eve  ")], "/customers")
+    now = srv.shop()
+    ensure([c["name"] for c in now.custs()] == ["Ann Lee", "bob ANNson", "Carl", "Carl", "Eve"],
+           "customers %r" % now.custs())
+
+
+# pages.md Changes: Refused "anything a unit refuses" (customers.md: a name empty once stripped)
+@case("register_refused_empty_name")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    resp = refused(srv, "/customers/register", [("name", "")], "/customers")
+    row_ids(resp.root, "customers", ["C1", "C2", "C3"], "refusal page")
+    refused(srv, "/customers/register", [("name", "   ")], "/customers")
+    refused(srv, "/customers/register", [("name", "\t \n")], "/customers")
+
+
+# pages.md Changes: Refused "a missing field"
+@case("register_refused_missing_field")
+def _(srv):
+    srv.put(std())
+    refused(srv, "/customers/register", [], "/customers")
+    refused(srv, "/customers/register", [("nom", "Ann")], "/customers")
+
+
+# pages.md Changes: Refused ... "The state file is byte-identical" - here: still missing
+@case("refused_with_no_state_file_creates_none")
+def _(srv):
+    srv.clear()
+    refused(srv, "/customers/register", [("name", "")], "/customers")
+    refused(srv, "/catalog/add", [("id", "a"), ("name", "A"), ("kind", "product"),
+                                  ("price", "x")], "/catalog")
+    refused(srv, "/sell", [("customer", "C1")], "/sell")
+    ensure(srv.raw() is None, "a refused change created the state file")
+
+
+# ============================================================ selling
+group("sell")
+
+
+# pages.md Changes: Done "(for /sell: the new sale's page). The page then shown has exactly one
+# element with role="status""; POST /sell "makes one sale"
+@case("sell_done")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    page = done(srv, "/sell", sell_fields(shop, "C3", {"ant": "7", "cat": "1"}), "/sales/S3")
+    now = srv.shop()
+    sales = now.sales()
+    ensure(len(sales) == 3, "%d sales in the file, expected 3" % len(sales))
+    sale = sales[-1]
+    ensure(sale["id"] == "S3" and sale["customer_id"] == "C3", "sale %r" % (sale,))
+    ensure(sale["lines"] == [
+        {"item_id": "ant", "quantity": 7, "unit_price_cents": 5, "line_total_cents": 35},
+        {"item_id": "cat", "quantity": 1, "unit_price_cents": 12345, "line_total_cents": 12345}],
+        "lines %r" % (sale["lines"],))
+    ensure(sale["total_cents"] == 12380, "total %r" % sale["total_cents"])
+    ensure(now.on_hand("ant") == 130 and now.on_hand("cat") == 2, "stock not taken right")
+    ensure(now.on_hand("i10") == 2, "other stock changed")
+    check_receipt(page, now, sale)
+
+
+# pages.md GET /sales/SALE_ID, GET /, GET /sales after a sale made here: receipt, counts, takings
+@case("sell_done_shows_everywhere")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    done(srv, "/sell", sell_fields(shop, "C3", {"i10": "2", "ant": "1"}), "/sales/S3")
+    now = srv.shop()
+    takings = shop.takings() + 2 * 99999999 + 5
+    root = get_page(srv, "/").root
+    shows_count(root, "count-sales", 3, "/")
+    shows_money(root, "takings", takings, "/")
+    row_ids(root, "out-of-stock", ["bee", "i10", "i9"], "/")
+    root = get_page(srv, "/sales").root
+    shows_money(root, "takings", takings, "/sales")
+    rows = row_ids(root, "sales", ["S3", "S2", "S1"], "/sales")
+    cell_is(rows[0], "customer", "Carl")
+    cell_number(rows[0], "total", "2,000,000.03")
+    check_receipt(get_page(srv, "/sales/S3"), now, now.sales()[-1])
+    rows = row_ids(get_page(srv, "/catalog").root, "items", now.ids(), "/catalog")
+    cell_number(rows[3], "on-hand", "0")
+    cell_number(rows[0], "on-hand", "136")
+
+
+# pages.md Changes: POST /sell "one line per item whose quantity is 1 or more, in id order"
+@case("sell_lines_in_id_order")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    fields = [("qty-i9", ""), ("qty-i10", "1"), ("qty-cat", "2"), ("qty-bee", ""),
+              ("qty-ant", "3"), ("customer", "C1")]
+    done(srv, "/sell", fields, "/sales/S3")
+    lines = srv.shop().sales()[-1]["lines"]
+    got = [(line["item_id"], line["quantity"]) for line in lines]
+    ensure(got == [("ant", 3), ("cat", 2), ("i10", 1)], "lines %r" % got)
+
+
+# pages.md Changes: POST /sell "empty and 0 mean none"
+@case("sell_empty_and_zero_mean_none")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    quantities = {"ant": "0", "bee": "0", "cat": "2", "i10": "", "i9": "0"}
+    done(srv, "/sell", sell_fields(shop, "C1", quantities), "/sales/S3")
+    now = srv.shop()
+    lines = now.sales()[-1]["lines"]
+    ensure([(l["item_id"], l["quantity"]) for l in lines] == [("cat", 2)], "lines %r" % lines)
+    ensure(now.on_hand("ant") == 137 and now.on_hand("cat") == 1, "stock not right")
+
+
+# pages.md Changes: POST /sell "one line per item whose quantity is 1 or more" - all on hand
+# may be sold (sales.md refuses only what exceeds `available`)
+@case("sell_all_on_hand")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    done(srv, "/sell", sell_fields(shop, "C2", {"cat": "3", "ant": "137", "i10": "2"}),
+         "/sales/S3")
+    now = srv.shop()
+    ensure(now.out() == ["ant", "bee", "cat", "i10", "i9"], "out of stock %r" % now.out())
+    ensure(now.sales()[-1]["total_cents"] == 3 * 12345 + 137 * 5 + 2 * 99999999, "total")
+
+
+# pages.md Changes: Refused "a sale with no line" (all quantities empty)
+@case("sell_refused_all_empty")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    refused(srv, "/sell", sell_fields(shop, "C1", {}), "/sell")
+
+
+# pages.md Changes: Refused "a sale with no line" ("empty and 0 mean none")
+@case("sell_refused_all_zero")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    refused(srv, "/sell", sell_fields(shop, "C1", {i: "0" for i in shop.ids()}), "/sell")
+    refused(srv, "/sell", sell_fields(shop, "C1", {"ant": "0", "cat": ""}), "/sell")
+
+
+# pages.md Changes: Refused "anything a unit refuses" (sales.md: quantities that exceed
+# `available`); "The state file is byte-identical"
+@case("sell_refused_more_than_on_hand")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    refused(srv, "/sell", sell_fields(shop, "C1", {"cat": "4"}), "/sell")
+    refused(srv, "/sell", sell_fields(shop, "C1", {"ant": "5", "cat": "4"}), "/sell")
+    refused(srv, "/sell", sell_fields(shop, "C1", {"ant": "5", "i9": "1"}), "/sell")
+    refused(srv, "/sell", sell_fields(shop, "C1", {"ant": "138"}), "/sell")
+    now = srv.shop()
+    ensure(len(now.sales()) == 2 and now.on_hand("ant") == 137, "something was sold")
+
+
+# pages.md Changes: Refused "an unknown customer"
+@case("sell_refused_unknown_customer")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    for customer in ("C4", "C0", "c1", "nobody", "", "1"):
+        refused(srv, "/sell", sell_fields(shop, customer, {"ant": "1"}), "/sell")
+
+
+# pages.md Changes: Refused "a missing field" (no customer)
+@case("sell_refused_missing_customer")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    refused(srv, "/sell", sell_fields(shop, None, {"ant": "1"}), "/sell")
+    refused(srv, "/sell", [], "/sell")
+
+
+for _name, _text in (("negative", "-1"), ("decimal", "1.0"), ("plus_sign", "+1"),
+                     ("word", "abc"), ("exponent", "1e1"), ("underscore", "1_0"),
+                     ("fraction", "0.5")):
+    # pages.md Every page: "Quantities are entered as digits only"; Changes: Refused "a number
+    # not written as above"
+    @case("sell_refused_quantity_" + _name)
+    def _(srv, text=_text):
+        shop = std()
+        srv.put(shop)
+        refused(srv, "/sell", sell_fields(shop, "C1", {"ant": "1", "cat": text}), "/sell")
+        refused(srv, "/sell", sell_fields(shop, "C1", {"cat": text}), "/sell")
+
+
+# pages.md Changes: Refused "an item unknown to the catalog" / "a sale with no line" - a
+# quantity for an item the catalog does not know, and nothing else, cannot make a sale
+@case("sell_refused_only_unknown_item")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    refused(srv, "/sell", sell_fields(shop, "C1", {}) + [("qty-nope", "1")], "/sell")
+    refused(srv, "/sell", [("customer", "C1"), ("qty-nope", "1")], "/sell")
+
+
+# pages.md Changes: Refused "... shows the page the form is on ... and the submitted values
+# still in the form's fields"
+@case("sell_refused_keeps_values")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    quantities = {"ant": "12", "cat": "999", "i10": "1"}
+    resp = refused(srv, "/sell", sell_fields(shop, "C2", quantities), "/sell")
+    form = one_form(resp, "/sell")
+    ensure(len(forms(resp, "/sell")) == 1, "more than one sell form on the refusal page")
+    ensure(holds(form, "customer", "C2"), "the customer chosen (C2) is not kept: %r" % (
+        value_of(control(form, "customer")),))
+    for item_id in shop.ids():
+        want = quantities.get(item_id, "")
+        got = value_of(control(form, "qty-" + item_id))
+        ensure(got == want, "qty-%s holds %r, submitted %r" % (item_id, got, want))
+    resp = refused(srv, "/sell", sell_fields(shop, "C3", {"ant": "1.0"}), "/sell")
+    form = one_form(resp, "/sell")
+    ensure(holds(form, "customer", "C3"), "the customer chosen (C3) is not kept")
+    ensure(holds(form, "qty-ant", "1.0"), "qty-ant does not hold the submitted 1.0")
+
+
+# pages.md GET /sell: the page the form is on, shown on refusal with its inputs "for every
+# item in id order" and the customers' options
+@case("sell_refused_shows_sell_page")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    resp = refused(srv, "/sell", sell_fields(shop, "C1", {}), "/sell")
+    form = one_form(resp, "/sell")
+    got = [n.attrs["name"] for n in form.all("input") if n.attrs.get("name", "").startswith("qty-")]
+    ensure(got == ["qty-" + i for i in shop.ids()], "quantity inputs are %r" % got)
+    values = [option_value(o) for o in control(form, "customer").all("option")
+              if option_value(o) != ""]
+    ensure(sorted(values) == ["C1", "C2", "C3"], "customer options are %r" % values)
+
+
+# pages.md GET /sell + Changes: an item id with HTML-special characters can be sold through
+# the field "qty-ITEM_ID" the page offers
+@case("sell_done_item_id_with_special_characters")
+def _(srv):
+    shop = special()
+    srv.put(shop)
+    form = one_form(get_page(srv, "/sell"), "/sell")
+    fields = [("customer", "C3")]
+    for node in form.all("input"):
+        name = node.attrs.get("name", "")
+        if name.startswith("qty-"):
+            fields.append((name, "2" if name == "qty-a&b\"<c>'" else ""))
+    done(srv, "/sell", fields, "/sales/S4")
+    now = srv.shop()
+    sale = now.sales()[-1]
+    ensure([(l["item_id"], l["quantity"]) for l in sale["lines"]] == [("a&b\"<c>'", 2)],
+           "lines %r" % (sale["lines"],))
+    check_receipt(get_page(srv, "/sales/S4"), now, sale)
+
+
+# ============================================================ the state file
+group("state file")
+
+ALL_GETS = SECTIONS + ["/sales/S1", "/sales/S9", "/customers?q=ann", "/customers?q=", "/nope",
+                       "/catalog/add", "/?done=x", "/catalog?id=new&name=N&kind=animal&price=1",
+                       "/sell?customer=C1&qty-ant=1", "/customers/register?name=Zed"]
+
+
+# pages.md Running: "A GET never changes it"
+@case("get_never_changes_state")
+def _(srv):
+    data = std().dump()
+    srv.put(data)
+    for path in ALL_GETS:
+        srv.get(path)
+        ensure(srv.raw() == data, "GET %s changed the state file" % path)
+
+
+# pages.md Running: "A GET never changes it" / "created on the first successful change"
+@case("get_never_creates_state")
+def _(srv):
+    srv.clear()
+    for path in ALL_GETS:
+        srv.get(path)
+        ensure(srv.raw() is None, "GET %s created the state file" % path)
+
+
+# pages.md Running: "one JSON object holding the four units' states under catalog, stock,
+# customers, sales" (web.md: "the same state file as shop.py") - a file written through the
+# modules shows on every page
+@case("state_written_by_the_shop_shows")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    root = get_page(srv, "/").root
+    shows_count(root, "count-items", 5, "/")
+    shows_money(root, "takings", shop.takings(), "/")
+    row_ids(get_page(srv, "/catalog").root, "items", shop.ids(), "/catalog")
+    row_ids(get_page(srv, "/customers").root, "customers", ["C1", "C2", "C3"], "/customers")
+    row_ids(get_page(srv, "/sales").root, "sales", ["S2", "S1"], "/sales")
+    check_receipt(get_page(srv, "/sales/S2"), shop, shop.sales()[1])
+
+
+# pages.md Running: "It is read at every request, so a change made by shop.py shows on the
+# next page"
+@case("state_read_at_every_request")
+def _(srv):
+    shop = std()
+    srv.put(shop)
+    shows_count(get_page(srv, "/").root, "count-items", 5, "/")
+    ensure(srv.get("/sales/S3").status == 404, "S3 exists before it is made")
+    shop.item("dog", "Dog", "animal", 700, 2)
+    shop.cust("Dora")
+    sale = shop.sell("C4", [("dog", 2)])
+    MODS["stock"].receive(shop.s["stock"], "bee", 8)
+    MODS["catalog"].set_price(shop.s["catalog"], "ant", 77)
+    srv.put(shop)
+    root = get_page(srv, "/").root
+    shows_count(root, "count-items", 6, "/")
+    shows_count(root, "count-customers", 4, "/")
+    shows_count(root, "count-sales", 3, "/")
+    shows_money(root, "takings", shop.takings(), "/")
+    row_ids(root, "out-of-stock", ["dog", "i9"], "/")
+    rows = row_ids(get_page(srv, "/catalog").root, "items", shop.ids(), "/catalog")
+    cell_number(rows[0], "price", "0.77")
+    cell_number(rows[1], "on-hand", "8")
+    row_ids(get_page(srv, "/customers").root, "customers", ["C1", "C2", "C3", "C4"], "/customers")
+    row_ids(get_page(srv, "/sales").root, "sales", ["S3", "S2", "S1"], "/sales")
+    check_receipt(get_page(srv, "/sales/S3"), shop, sale)
+    form = one_form(get_page(srv, "/sell"), "/sell")
+    got = [n.attrs["name"] for n in form.all("input") if n.attrs.get("name", "").startswith("qty-")]
+    ensure(got == ["qty-" + i for i in shop.ids()], "sell form does not show the new item")
+    srv.put(Shop())
+    shows_count(get_page(srv, "/").root, "count-items", 0, "/")
+    ensure(srv.get("/sales/S1").status == 404, "a sale no longer in the file is still shown")
+
+
+# pages.md Running: "read at every request" - a change posted here builds on the file as it is
+# now, not on what the program read before
+@case("state_change_builds_on_current_file")
+def _(srv):
+    srv.put(std())
+    get_page(srv, "/catalog")
+    other = Shop()
+    other.item("owl", "Owl", "animal", 900, 1)
+    other.cust("Olga")
+    srv.put(other)
+    done(srv, "/customers/register", [("name", "Piet")], "/customers")
+    now = srv.shop()
+    ensure([c["name"] for c in now.custs()] == ["Olga", "Piet"], "customers %r" % now.custs())
+    ensure(now.ids() == ["owl"] and now.sales() == [], "the file was not the base of the change")
+    done(srv, "/sell", sell_fields(now, "C2", {"owl": "1"}), "/sales/S1")
+    ensure(srv.shop().on_hand("owl") == 0, "stock not taken")
+
+
+# pages.md Running: the state file "is ... one JSON object holding the four units' states" -
+# after changes made here the modules (and so shop.py) read all of it back
+@case("state_written_here_reads_through_modules")
+def _(srv):
+    srv.clear()
+    done(srv, "/catalog/add", [("id", "cat"), ("name", "Cat"), ("kind", "animal"),
+                               ("price", "123.45")], "/catalog")
+    done(srv, "/catalog/add", [("id", "ant"), ("name", "Ant"), ("kind", "product"),
+                               ("price", "0.05")], "/catalog")
+    done(srv, "/stock/receive", [("id", "cat"), ("quantity", "5")], "/catalog")
+    done(srv, "/stock/receive", [("id", "ant"), ("quantity", "9")], "/catalog")
+    done(srv, "/stock/remove", [("id", "ant"), ("quantity", "2")], "/catalog")
+    done(srv, "/customers/register", [("name", "Ann")], "/customers")
+    done(srv, "/catalog/price", [("id", "ant"), ("price", "0.1")], "/catalog")
+    done(srv, "/sell", [("customer", "C1"), ("qty-ant", "3"), ("qty-cat", "2")], "/sales/S1")
+    now = srv.shop()
+    ensure(now.items() == [
+        {"id": "ant", "name": "Ant", "kind": "product", "price_cents": 10},
+        {"id": "cat", "name": "Cat", "kind": "animal", "price_cents": 12345}], "items")
+    ensure(now.on_hand("ant") == 4 and now.on_hand("cat") == 3, "stock")
+    ensure(now.custs() == [{"id": "C1", "name": "Ann"}], "customers")
+    ensure(now.takings() == 30 + 24690, "takings %r" % now.takings())
+    # the shop goes on from here through the modules
+    now.cust("Ben")
+    sale = now.sell("C2", [("cat", 3)])
+    ensure(sale["id"] == "S2" and sale["total_cents"] == 37035, "the modules cannot go on")
+
+
+# pages.md Running: "always replaced whole (written beside itself, then renamed)"
+@case("state_replaced_whole_not_rewritten_in_place")
+def _(srv):
+    data = std().dump()
+    srv.put(data)
+    link = os.path.join(srv.dir, "audit-link")
+    linked = True
+    try:
+        os.link(srv.state, link)
+    except OSError:
+        linked = False
+    inode = os.stat(srv.state).st_ino
+    try:
+        done(srv, "/customers/register", [("name", "Dora")], "/customers")
+        ensure(srv.raw() != data, "the state file did not change")
+        if linked:
+            with open(link, "rb") as handle:
+                ensure(handle.read() == data, "the old file was written over in place")
+        else:
+            ensure(os.stat(srv.state).st_ino != inode, "the state file was not replaced")
+    finally:
+        if linked:
+            os.remove(link)
+
+
+# ============================================================ unknown paths and methods
+group("404 and 405")
+
+for _path in ("/nope", "/catalog/nope", "/stock", "/customers/C1", "/sell/S1"):
+    # pages.md Changes: "An unknown path: 404, a page with the <nav>"
+    @case("unknown_path_404_" + _path.strip("/").replace("/", "_"))
+    def _(srv, path=_path):
+        data = std().dump()
+        srv.put(data)
+        resp = srv.get(path)
+        ensure(resp.status == 404, "GET %s: status %d, expected 404" % (path, resp.status))
+        check_page(resp, nav_only=True)
+        ensure(srv.raw() == data, "the state file changed")
+
+
+# pages.md Changes: "An unknown path: 404, a page with the <nav>" - whatever the method
+@case("unknown_path_404_post")
+def _(srv):
+    data = std().dump()
+    srv.put(data)
+    resp = srv.post("/nope", [("name", "x")])
+    ensure(resp.status == 404, "POST /nope: status %d, expected 404" % resp.status)
+    check_page(resp, nav_only=True)
+    ensure(srv.raw() == data, "the state file changed")
+
+
+for _path in ("/catalog/add", "/catalog/price", "/stock/receive", "/stock/remove",
+              "/customers/register"):
+    # pages.md Changes: "A known path with another method: 405"
+    @case("method_405_get" + _path.replace("/", "_"))
+    def _(srv, path=_path):
+        data = std().dump()
+        srv.put(data)
+        for target in (path, path + "?id=cat&quantity=1&price=1&name=N&kind=animal"):
+            resp = srv.get(target)
+            ensure(resp.status == 405, "GET %s: status %d, expected 405" % (target, resp.status))
+        ensure(srv.raw() == data, "the state file changed")
+
+
+for _name, _path in (("overview", "/"), ("catalog", "/catalog"), ("customers", "/customers"),
+                     ("sales", "/sales"), ("sale", "/sales/S1")):
+    # pages.md Changes: "A known path with another method: 405"
+    @case("method_405_post_" + _name)
+    def _(srv, path=_path):
+        data = std().dump()
+        srv.put(data)
+        fields = [("name", "Zed"), ("id", "cat"), ("quantity", "1"), ("price", "1")]
+        resp = srv.post(path, fields)
+        ensure(resp.status == 405, "POST %s: status %d, expected 405" % (path, resp.status))
+        ensure(srv.raw() == data, "the state file changed")
+
+
+# ----------------------------------------------------------------------------- main
+
+def main():
+    global WORK, APP
+    if len(sys.argv) != 2 or not os.path.isdir(sys.argv[1]):
+        print("usage: check <build-dir>", file=sys.stderr)
+        return 2
+    WORK = tempfile.mkdtemp(prefix="audit-web-")
+    atexit.register(stop_all)
+    APP = os.path.join(WORK, "app")
+    shutil.copytree(sys.argv[1], APP, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    setup_error = None
+    if not os.path.isfile(os.path.join(APP, "web.py")):
+        setup_error = "the build has no web.py"
+    else:
+        try:
+            sys.path.insert(0, APP)
+            for key in KEYS:
+                MODS[key] = importlib.import_module(key)
+        except Exception as error:
+            setup_error = "cannot import the build's modules: %r" % (error,)
+    passed = total = failed_starts = 0
+    for _group_name, cases in GROUPS:
+        srv = None
+        error = setup_error
+        if error is None and failed_starts >= 2:
+            error = start_error
+        if error is None:
+            try:
+                srv = Server()
+                failed_starts = 0
+            except Fail as failure:
+                error = "the server did not start: %s" % failure
+            except Exception as failure:
+                error = "the server did not start: %r" % (failure,)
+            if srv is None:
+                failed_starts += 1
+                start_error = error
+        for name, function in cases:
+            total += 1
+            reason = error
+            if reason is None:
+                try:
+                    function(srv)
+                except Fail as failure:
+                    reason = str(failure)
+                except Exception as failure:
+                    reason = "%s: %s" % (type(failure).__name__, failure)
+            if reason is None:
+                passed += 1
+                print("PASS %s" % name)
+            else:
+                print("FAIL %s: %s" % (name, " ".join(str(reason).split())[:300]))
+            sys.stdout.flush()
+        if srv is not None:
+            srv.stop()
+    print("%d/%d" % (passed, total))
+    return 0 if passed == total else 1
+
+
+def terminated(*_args):
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, terminated)
+    try:
+        code = main()
+    finally:
+        stop_all()
+    sys.exit(code)
