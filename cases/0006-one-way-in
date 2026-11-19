@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Case of lesson L0006 (lessons/0006-one-way-in.md).
+Origin: the person's answers 3, 4 and 7 in run 001, 2026-11-19.
+The shop is started with no site-packages (caselib.FLAGS) and with Python's own
+record of every module it imports, which is read after the shop has been used.
+Run from the repository root."""
+import os
+import socket
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import Failure, Shop, run
+
+caselib.FLAGS += ["-X", "importtime"]
+
+
+def other_address():
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("10.255.255.255", 1))
+            found = probe.getsockname()[0]
+        return None if found.startswith("127.") else found
+    except OSError:
+        return None
+
+
+def checks(shop):
+    address = other_address()
+    shop.expect(address is not None, "this machine has no address besides loopback to try")
+    try:
+        socket.create_connection((address, shop.port), timeout=2).close()
+        reached = True
+    except OSError:
+        reached = False
+    shop.expect(not reached, "the shop answers on %s, not only on localhost" % address)
+
+    # One SQLite file holds the state, and a second start on it sees the same state.
+    made = shop.add("customers", name="Ana Lima", phone="555-0101")
+    with open(shop.db, "rb") as handle:
+        shop.expect(handle.read(15) == b"SQLite format 3", "the database file is not SQLite")
+    again = Shop(db=shop.db).start()
+    try:
+        names = [row["name"] for row in again.export()["customers"] if row["id"] == made]
+    finally:
+        again.stop()
+    shop.expect(names == ["Ana Lima"], "a second start on the same file does not see the customer")
+
+    # Every module the shop has imported by now is Python's own, or a file beside the program.
+    beside = os.path.dirname(caselib.MAIN)
+    imported = {line.rsplit("|", 1)[1].strip().split(".")[0] for line in shop.said().splitlines()
+                if line.startswith("import time:") and "|" in line} - {"imported package"}
+    shop.expect(len(imported) >= 5, "only %d imports were recorded" % len(imported))
+    for module in sorted(imported):
+        local = any(os.path.exists(os.path.join(beside, module + end)) for end in ("", ".py", ".pyc"))
+        shop.expect(module in sys.stdlib_module_names or local,
+                    "the shop imports %s, which is not in the standard library" % module)
+
+
+def open_on_another_address(shop):
+    """The shop's port also takes connections on the machine's other address."""
+    address = other_address()
+    if address is None:
+        raise caselib.Broken("this machine has no address besides loopback to listen on")
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((address, shop.port))
+    listener.listen()
+    shop.closing.append(listener.close)
+    shop.acted += 1
+
+
+def imports_from_outside(shop):
+    """A program that imports a module of its own making from elsewhere, then runs the shop."""
+    with open(os.path.join(shop.dir, "outside_the_library.py"), "w") as handle:
+        handle.write("")
+    shop.wrapper = ("import os, runpy, sys\n"
+                    "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n"
+                    "import outside_the_library\n"
+                    "del sys.argv[0]\n"
+                    "sys.path[0] = os.path.dirname(os.path.abspath(sys.argv[0]))\n"
+                    "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+    shop.acted += 1
+
+
+run(checks, wrong=[
+    ("the port is open on another address", open_on_another_address),
+    ("a module from outside the standard library is imported", imports_from_outside),
+])

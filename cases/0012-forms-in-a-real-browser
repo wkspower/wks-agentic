@@ -1,0 +1,114 @@
+#!/usr/bin/env node
+// Case of lesson L0012 (lessons/0012-forms-in-a-real-browser.md).
+// Origin: a customer preselected on the sale form in the wizardly-cerf run of
+// 2026-11-18, which no check over HTTP could see; the person's answer 14 in
+// run 001, 2026-11-19. A missing browser fails this case; it never skips.
+// Run from the repository root.
+const { run } = require('../caselib.js');
+
+run(async (page, base, expect) => {
+  const submit = (form) => Promise.all([page.waitForNavigation(), page.click(form + ' button[type=submit]')]);
+  // Every page is reachable from the first one by its links.
+  for (const link of ['Products', 'Customers', 'Sales', 'Appointments']) {
+    await Promise.all([page.waitForNavigation(), page.click('nav >> text=' + link)]);
+    expect((await page.title()).includes(link), 'the link ' + link + ' leads to "' + (await page.title()) + '"');
+  }
+
+  await page.goto(base + '/customers');
+  await page.fill('form[action="/customers"] input[name=name]', 'Ana <Lima>');
+  await page.fill('form[action="/customers"] input[name=phone]', '555-0101');
+  await submit('form[action="/customers"]');
+  expect((await page.textContent('main')).includes('Ana <Lima>'), 'the new customer is not shown, or her name was not escaped');
+  await page.fill('form[action="/customers"] input[name=name]', 'Bruno Sá');
+  await submit('form[action="/customers"]');
+
+  await page.selectOption('form[action="/pets"] select[name=customer_id]', { label: 'Ana <Lima>' });
+  await page.fill('form[action="/pets"] input[name=name]', 'Rex');
+  await page.fill('form[action="/pets"] input[name=species]', 'dog');
+  await submit('form[action="/pets"]');
+  expect((await page.textContent('main')).includes('Rex'), 'the new pet is not shown');
+
+  await page.goto(base + '/products');
+  await page.fill('form[action="/products"] input[name=name]', 'Kibble 2 kg');
+  await page.fill('form[action="/products"] input[name=price]', '12.50');
+  await page.fill('form[action="/products"] input[name=stock]', '4');
+  await page.fill('form[action="/products"] input[name=low_at]', '1');
+  await submit('form[action="/products"]');
+  expect((await page.textContent('main')).includes('12.50'), 'the new product and its price are not shown');
+
+  // The sale form: nothing chosen for the person in advance.
+  await page.goto(base + '/sales/new');
+  const sale = 'form[action="/sales"]';
+  expect(await page.$eval(sale + ' select[name=customer_id]', (el) => el.value) === '',
+    'a customer is preselected on the sale form');
+  expect(await page.$$eval(sale + ' input[name=method]', (els) => els.length === 3 && els.every((el) => !el.checked)),
+    'a payment method is preselected on the sale form, or there are not three');
+  expect(await page.$$eval(sale + ' select[name=product_id]', (els) => els.length >= 3 && els.every((el) => el.value === '')),
+    'a product is preselected on the sale form');
+  await page.selectOption(sale + ' select[name=product_id] >> nth=0', { label: 'Kibble 2 kg (12.50, 4 in stock)' });
+  await page.fill(sale + ' input[name=qty] >> nth=0', '3');
+  await page.check(sale + ' input[name=method][value=card]');
+  await submit(sale);
+  const sold = await page.textContent('main');
+  expect(sold.includes('37.50') && sold.includes('card'), 'the sale of 3 x 12.50 by card is not shown as 37.50');
+
+  // A refusal says why, in words, and keeps nothing.
+  await page.goto(base + '/sales/new');
+  await page.selectOption(sale + ' select[name=product_id] >> nth=0', { index: 1 });
+  await page.fill(sale + ' input[name=qty] >> nth=0', '2');
+  await page.check(sale + ' input[name=method][value=cash]');
+  await submit(sale);
+  expect((await page.textContent('main')).includes('only 1 in stock'), 'selling 2 with 1 in stock does not say why it was refused');
+
+  // Void asks first (L0016, the person in run 002): the link opens the question, the button there voids.
+  const stock = async () => { await page.goto(base + '/products'); return page.$eval('td.stock', (el) => el.textContent.trim()); };
+  await page.goto(base + '/sales');
+  expect(await page.$$eval('form[action$="/void"]', (els) => els.length) === 0, 'the list of sales voids on one click');
+  await Promise.all([page.waitForNavigation(), page.click('main a[href$="/void"]')]);
+  expect((await page.textContent('main')).includes('37.50'), 'the question before a void does not show the sale');
+  expect(await stock() === '1', 'opening the question already returned the stock');
+  await page.goto(base + '/sales');
+  await Promise.all([page.waitForNavigation(), page.click('main a[href$="/void"]')]);
+  await submit('form[action$="/void"]');
+  expect((await page.textContent('main')).includes('voided'), 'the voided sale is not shown as voided');
+  expect(await stock() === '4', 'the void did not bring the stock back to 4 on the page');
+
+  // A customer and a pet can be corrected from the list (L0017, the person in run 002).
+  await page.goto(base + '/customers');
+  await Promise.all([page.waitForNavigation(), page.click('main a[href^="/customers/"][href$="/edit"] >> nth=1')]);
+  const fix = 'form[action^="/customers/"][action$="/edit"]';
+  expect(await page.inputValue(fix + ' input[name=name]') === 'Bruno Sá', 'the form to correct a customer does not hold his name');
+  await page.fill(fix + ' input[name=name]', 'Bruno Sá Neto');
+  await page.fill(fix + ' input[name=phone]', '555-0102');
+  await submit(fix);
+  const people = await page.textContent('main');
+  expect(people.includes('Bruno Sá Neto') && people.includes('555-0102'), 'the corrected customer is not shown');
+  await Promise.all([page.waitForNavigation(), page.click('main a[href^="/pets/"][href$="/edit"]')]);
+  await page.fill('form[action^="/pets/"] input[name=species]', 'poodle');
+  await submit('form[action^="/pets/"]');
+  expect((await page.textContent('main')).includes('poodle'), 'the corrected pet is not shown');
+
+  await page.goto(base + '/appointments');
+  const book = 'form[action="/appointments"]';
+  expect(await page.$eval(book + ' select[name=pet_id]', (el) => el.value) === '', 'a pet is preselected on the appointment form');
+  for (const outcome of ['Rex', 'already taken']) {
+    await page.goto(base + '/appointments');
+    await page.selectOption(book + ' select[name=pet_id]', { index: 1 });
+    await page.fill(book + ' input[name=date]', '2099-06-01');
+    await page.selectOption(book + ' select[name=time]', '10:00');
+    await submit(book);
+    expect((await page.textContent('main')).includes(outcome), 'booking 2099-06-01 10:00 does not show "' + outcome + '"');
+  }
+}, [
+  ['the first customer is preselected on the sale form', () => {
+    const select = document.querySelector('form[action="/sales"] select[name=customer_id]');
+    const empty = select ? [...select.options].filter((option) => option.value === '') : [];
+    empty.forEach((option) => option.remove());
+    return empty.length > 0 && select.options.length > 0;
+  }],
+  ['a payment method is preselected on the sale form', () => {
+    const radio = document.querySelector('form[action="/sales"] input[name=method]');
+    if (radio) radio.checked = true;
+    return Boolean(radio);
+  }],
+]);

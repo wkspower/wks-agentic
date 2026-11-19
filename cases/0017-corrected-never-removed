@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Case of lesson L0017 (lessons/0017-corrected-never-removed.md).
+Origin: the person's answer 4 in run 002, 2026-11-19: edit customers and pets, no removal.
+Run from the repository root."""
+import sys
+
+sys.path.insert(0, ".")
+from caselib import fault, run
+
+
+def checks(shop):
+    food = shop.add("products", name="Kibble", price="2.50", stock="10", low_at="0")
+    ana = shop.add("customers", name="Ana Lmia", phone="555-0100")
+    bo = shop.add("customers", name="Bo", phone="1")
+    rex = shop.add("pets", customer_id=ana, name="Rx", species="dgo")
+    mia = shop.add("pets", customer_id=ana, name="Mia", species="cat")
+    sale = shop.add("sales", method="cash", customer_id=ana, product_id=food, qty="1")
+    shop.post(303, "/appointments", pet_id=rex, date="2099-06-01", time="10:00")
+    before = shop.export()
+
+    def page(path, status=200):
+        got, body = shop.request("GET", path)
+        shop.expect(got == status, "GET %s answered %d, expected %d" % (path, got, status))
+        return body
+
+    # The list leads to the forms, and each form arrives holding what is stored.
+    listing = page("/customers")
+    for path in ["/customers/%d/edit" % ana, "/pets/%d/edit" % rex]:
+        shop.expect('href="%s"' % path in listing, "/customers has no link to %s" % path)
+    form = page("/customers/%d/edit" % ana)
+    shop.expect('value="Ana Lmia"' in form and 'value="555-0100"' in form,
+                "the customer's form does not hold the stored name and phone")
+    form = page("/pets/%d/edit" % rex)
+    shop.expect('value="Rx"' in form and 'value="dgo"' in form,
+                "the pet's form does not hold the stored name and species")
+
+    # A correction is stored on that row and on no other.
+    shop.post(303, "/customers/%d/edit" % ana, name="  Ana Lima ", phone="555-0101")
+    shop.expect(shop.row("customers", ana) == {"id": ana, "name": "Ana Lima", "phone": "555-0101"},
+                "the corrected customer is %s" % shop.row("customers", ana))
+    shop.expect(shop.row("customers", bo) == {"id": bo, "name": "Bo", "phone": "1"},
+                "correcting one customer changed another: %s" % shop.row("customers", bo))
+    shop.post(303, "/pets/%d/edit" % rex, name="Rex", species="dog", customer_id=bo)
+    shop.expect(shop.row("pets", rex) == {"id": rex, "customer_id": ana, "name": "Rex", "species": "dog"},
+                "the corrected pet is %s" % shop.row("pets", rex))
+    shop.expect(shop.row("pets", mia) == {"id": mia, "customer_id": ana, "name": "Mia", "species": "cat"},
+                "correcting one pet changed another: %s" % shop.row("pets", mia))
+
+    # The same bounds as when they were entered (L0008).
+    for name, phone in [("", "1"), ("   ", "1"), ("y" * 81, "1"), ("Ana", "5" * 31)]:
+        shop.post(400, "/customers/%d/edit" % ana, name=name, phone=phone)
+    for name, species in [("", "dog"), ("p" * 81, "dog"), ("Rex", ""), ("Rex", "d" * 41)]:
+        shop.post(400, "/pets/%d/edit" % rex, name=name, species=species)
+    shop.post(303, "/customers/%d/edit" % bo, name="y" * 80, phone="")
+    shop.expect(shop.row("customers", ana)["name"] == "Ana Lima" and shop.row("pets", rex)["name"] == "Rex",
+                "a refused correction was stored")
+    for path in ["/customers/999/edit", "/pets/999/edit"]:
+        page(path, 404)
+        shop.post(404, path, name="Ghost", phone="", species="dog")
+
+    # What pointed at them still does.
+    after = shop.export()
+    shop.expect(after["sales"] == before["sales"] and after["appointments"] == before["appointments"],
+                "a correction changed a sale or an appointment")
+
+    # Nothing is removed.
+    tried = 0
+    for table, ident in [("customers", ana), ("pets", rex), ("products", food)]:
+        for method, path in [("DELETE", "/%s/%d" % (table, ident)), ("POST", "/%s/%d/delete" % (table, ident)),
+                             ("POST", "/%s/%d/remove" % (table, ident)), ("POST", "/%s/%d" % (table, ident)),
+                             ("GET", "/%s/%d/delete" % (table, ident))]:
+            got, _ = shop.request(method, path)
+            shop.expect(got >= 400, "%s %s answered %d" % (method, path, got))
+            shop.expect(shop.row(table, ident)["id"] == ident, "%s %s removed the row" % (method, path))
+            tried += 1
+    shop.expect(tried == 15, "only %d removals were tried" % tried)
+
+
+@fault("POST", r"/customers/(\d+)/edit")
+def correction_not_stored(shop, ask, ident):
+    """A customer's correction is accepted, and the row is left as it was."""
+    before = [row for row in shop.state()["customers"] if row["id"] == int(ident)]
+    status, body = ask.send()
+    if status == 303 and before:
+        shop.real("POST", ask.path, [("name", before[0]["name"]), ("phone", before[0]["phone"])])
+        shop.acted += 1
+    return status, body
+
+
+@fault("POST", r"/pets/(\d+)/edit")
+def correction_spreads(shop, ask, ident):
+    """A pet's correction is written to every later pet too."""
+    status, body = ask.send()
+    for row in shop.state()["pets"] if status == 303 else []:
+        if row["id"] > int(ident):
+            shop.real("POST", "/pets/%d/edit" % row["id"], ask.pairs)
+            shop.acted += 1
+    return status, body
+
+
+run(checks, wrong=[
+    ("a customer's correction is not stored", correction_not_stored),
+    ("a pet's correction changes later pets too", correction_spreads),
+])
