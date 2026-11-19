@@ -4,7 +4,7 @@
 // one word per line while every case passed.
 // Fills the shop with names of several words, then measures every table cell at two widths.
 // Run from the repository root.
-const { run } = require('../caselib.js');
+const { run, style } = require('../caselib.js');
 
 run(async (page, base, expect) => {
   const post = async (path, fields) => {
@@ -50,5 +50,5 @@ run(async (page, base, expect) => {
   }
   expect(cells >= 100, 'only ' + cells + ' cells were measured');
 }, [
-  ['a column of words may be squeezed to nothing', 'min-width: 11rem', 'min-width: 0'],
+  ['a column of words may be squeezed to nothing', style('td { min-width: 0 !important; }')],
 ]);

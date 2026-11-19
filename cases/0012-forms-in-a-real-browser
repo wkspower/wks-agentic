@@ -100,8 +100,15 @@ run(async (page, base, expect) => {
     expect((await page.textContent('main')).includes(outcome), 'booking 2099-06-01 10:00 does not show "' + outcome + '"');
   }
 }, [
-  ['the first customer is preselected on the sale form',
-    '<option value="">no customer</option>', ''],
-  ['a payment method is preselected on the sale form',
-    'name="method" value="%s" required', 'name="method" value="%s" checked'],
+  ['the first customer is preselected on the sale form', () => {
+    const select = document.querySelector('form[action="/sales"] select[name=customer_id]');
+    const empty = select ? [...select.options].filter((option) => option.value === '') : [];
+    empty.forEach((option) => option.remove());
+    return empty.length > 0 && select.options.length > 0;
+  }],
+  ['a payment method is preselected on the sale form', () => {
+    const radio = document.querySelector('form[action="/sales"] input[name=method]');
+    if (radio) radio.checked = true;
+    return Boolean(radio);
+  }],
 ]);

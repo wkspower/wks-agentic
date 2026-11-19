@@ -8,7 +8,7 @@ import sys
 from html.parser import HTMLParser
 
 sys.path.insert(0, ".")
-from caselib import run
+from caselib import fault, run
 
 FILLER = {"name": "Thing", "price": "1.00", "stock": "50", "low_at": "0", "delta": "1", "phone": "",
           "species": "cat", "qty": "1", "method": "cash", "date": "2099-06-01", "time": "09:00"}
@@ -53,6 +53,15 @@ def checks(shop):
     shop.expect(examples >= 3, "only %d examples were found on the pages" % examples)
 
 
+@fault("POST", r"/products/\d+/stock")
+def plus_refused(shop, ask):
+    """An adjustment written with a plus sign is refused."""
+    if ask.get("delta").startswith("+"):
+        shop.acted += 1
+        return 400, ""
+    return ask.send()
+
+
 run(checks, wrong=[
-    ("a plus sign is refused", 'r"[+-]?[0-9]{1,40}"', 'r"-?[0-9]{1,40}"'),
+    ("a plus sign is refused", plus_refused),
 ])

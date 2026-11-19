@@ -6,7 +6,7 @@
 // were broken in two ("129.9 / 0", "Adjus / t") at every width. The case had passed.
 // Fills the shop with the longest names allowed, then measures every page at three widths.
 // Run from the repository root.
-const { run } = require('../caselib.js');
+const { run, style } = require('../caselib.js');
 
 run(async (page, base, expect) => {
   const post = async (path, fields) => {
@@ -43,7 +43,7 @@ run(async (page, base, expect) => {
     }
   }
 }, [
-  ['a wide table pushes the page sideways', 'overflow-x: auto', 'overflow-x: visible'],
-  ['a long name cannot break', 'overflow-wrap: break-word', 'overflow-wrap: normal'],
-  ['any word may break anywhere, the first fix of this run', 'overflow-wrap: break-word', 'overflow-wrap: anywhere'],
+  ['a wide table pushes the page sideways', style('* { overflow: visible !important; }')],
+  ['a long name cannot break', style('* { overflow-wrap: normal !important; word-break: normal !important; }')],
+  ['any word may break anywhere, the first fix of run 001', style('* { overflow-wrap: anywhere !important; white-space: normal !important; }')],
 ]);

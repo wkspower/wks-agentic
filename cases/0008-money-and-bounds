@@ -6,7 +6,7 @@ Run from the repository root."""
 import sys
 
 sys.path.insert(0, ".")
-from caselib import run
+from caselib import fault, run
 
 
 def checks(shop):
@@ -54,8 +54,40 @@ def checks(shop):
     shop.expect(status == 413, "a form of 70,000 bytes answered %d, expected 413" % status)
 
 
+@fault("POST", r"/products(/\d+/edit)?")
+def any_price(shop, ask, _):
+    """A price above the bound is taken, and stored as the highest price there is."""
+    try:
+        over = float(ask.get("price")) > 99999.99
+    except ValueError:
+        over = False
+    if over:
+        ask.put("price", "99999.99")
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/sales")
+def any_quantity(shop, ask):
+    """A line of more than 1000 is sold, as 1000."""
+    qtys = ask.all("qty")
+    if len(qtys) == 1 and qtys[0].isdigit() and int(qtys[0]) > 1000:
+        ask.put("qty", "1000")
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", ".*")
+def any_name(shop, ask):
+    """A name of more than 80 characters is taken, and cut."""
+    if len(ask.get("name")) > 80:
+        ask.put("name", ask.get("name")[:80])
+        shop.acted += 1
+    return ask.send()
+
+
 run(checks, wrong=[
-    ("no upper bound on prices", "MAX_PRICE_CENTS = 9_999_999", "MAX_PRICE_CENTS = 10 ** 30"),
-    ("no upper bound on a sale's quantity", "MAX_QTY = 1000", "MAX_QTY = 10 ** 30"),
-    ("names of any length", "MAX_NAME = 80", "MAX_NAME = 10 ** 6"),
+    ("no upper bound on prices", any_price),
+    ("no upper bound on a sale's quantity", any_quantity),
+    ("names of any length", any_name),
 ])

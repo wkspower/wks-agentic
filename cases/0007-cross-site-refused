@@ -6,7 +6,7 @@ Run from the repository root."""
 import sys
 
 sys.path.insert(0, ".")
-from caselib import run
+from caselib import fault, run
 
 
 def checks(shop):
@@ -47,8 +47,39 @@ def checks(shop):
         shop.expect(customers() == before + 1, "a post with %s created no customer" % what)
 
 
+def own(shop):
+    return "127.0.0.1:%d" % shop.port
+
+
+@fault(None, ".*")
+def any_origin(shop, ask):
+    """Whatever Origin the browser sent, the shop takes it for its own."""
+    mine = "http://" + ask.headers.get("Host", own(shop))
+    if ask.headers.get("Origin", mine) != mine:
+        ask.headers["Origin"] = mine
+        shop.acted += 1
+    return ask.send()
+
+
+@fault(None, ".*")
+def any_host(shop, ask):
+    """Whatever Host the request names, the shop takes it for its own."""
+    if ask.headers.get("Host", own(shop)) not in (own(shop), "localhost:%d" % shop.port):
+        ask.headers["Host"] = own(shop)
+        shop.acted += 1
+    return ask.send()
+
+
+@fault(None, ".*")
+def no_fetch_site(shop, ask):
+    """The shop does not look at Sec-Fetch-Site."""
+    if ask.headers.pop("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
+        shop.acted += 1
+    return ask.send()
+
+
 run(checks, wrong=[
-    ("any Origin accepted", "if origin is not None and origin not in allowed:", "if False:"),
-    ("any Host accepted", "if host not in self.server.hosts:", "if False:"),
-    ("Sec-Fetch-Site ignored", 'if site not in (None, "same-origin", "none"):', "if False:"),
+    ("any Origin accepted", any_origin),
+    ("any Host accepted", any_host),
+    ("Sec-Fetch-Site ignored", no_fetch_site),
 ])

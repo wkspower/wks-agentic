@@ -15,3 +15,9 @@ the four problems found by hand in the wizardly-cerf run, 2026-11-18.
 A second program that changes the database, an import from outside the
 standard library, the shop answering on an address other than loopback, or
 state kept anywhere but the one SQLite file.
+
+Since L0019 (the person, 2026-11-19) the case no longer reads the source. An
+import from outside the standard library is seen by starting the shop
+without site-packages and reading Python's own record of what it imported.
+"A second program that changes the database" was counted in the source
+before and is now checked by no machine: it needs a reader.

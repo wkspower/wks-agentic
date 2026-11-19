@@ -2,10 +2,11 @@
 """Case of lesson L0009 (lessons/0009-stock-never-negative.md).
 Origin: the person's answer 10 in run 001, 2026-11-19.
 Run from the repository root."""
+import json
 import sys
 
 sys.path.insert(0, ".")
-from caselib import run
+from caselib import fault, run
 
 
 def checks(shop):
@@ -51,8 +52,47 @@ def checks(shop):
     shop.expect(shop.export()["low_stock"] == [], "the ball at 3 with threshold 2 is still listed")
 
 
+@fault("POST", "/sales")
+def sale_beyond_stock(shop, ask):
+    """A sale of more than there is goes through: the shop finds the missing stock first."""
+    wanted = {}
+    for ident, qty in zip(ask.all("product_id"), ask.all("qty")):
+        if ident.isdigit() and qty.isdigit():
+            wanted[int(ident)] = wanted.get(int(ident), 0) + int(qty)
+    for row in shop.state()["products"]:
+        short = wanted.get(row["id"], 0) - row["stock"]
+        if short > 0:
+            shop.real("POST", "/products/%d/stock" % row["id"], [("delta", short)])
+            shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", r"/products/(\d+)/stock")
+def adjustment_below_zero(shop, ask, ident):
+    """An adjustment that would leave less than nothing is accepted; the shop itself can hold no less than 0."""
+    stock = [row["stock"] for row in shop.state()["products"] if row["id"] == int(ident)]
+    delta = ask.get("delta")
+    if stock and delta[:1] == "-" and delta[1:].isdigit() and stock[0] + int(delta) < 0:
+        if stock[0]:
+            shop.real("POST", ask.path, [("delta", -stock[0])])
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+@fault("GET", "/export.json")
+def low_means_below(shop, ask):
+    """A product at its threshold, not below it, is not listed as low."""
+    data = shop.state()
+    at = {row["id"] for row in data["products"] if row["stock"] == row["low_at"]}
+    if at & set(data["low_stock"]):
+        data["low_stock"] = [ident for ident in data["low_stock"] if ident not in at]
+        shop.acted += 1
+    return 200, json.dumps(data)
+
+
 run(checks, wrong=[
-    ("a sale may exceed stock", "if qty > product[\"stock\"]:", "if False:"),
-    ("an adjustment may go below zero", "if not 0 <= after <= MAX_STOCK:", "if after > MAX_STOCK:"),
-    ("low stock means below, not at, the threshold", "stock <= low_at", "stock < low_at"),
+    ("a sale may exceed stock", sale_beyond_stock),
+    ("an adjustment below zero is accepted", adjustment_below_zero),
+    ("low stock means below, not at, the threshold", low_means_below),
 ])

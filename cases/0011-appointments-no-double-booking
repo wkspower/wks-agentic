@@ -5,7 +5,7 @@ Run from the repository root."""
 import sys
 
 sys.path.insert(0, ".")
-from caselib import run
+from caselib import fault, run
 
 DAY = "2099-06-01"
 
@@ -55,9 +55,59 @@ def checks(shop):
     shop.expect(len(shop.export()["appointments"]) == 5, "a cancelled appointment left the record")
 
 
+SLOTS = ["%02d:00" % hour for hour in range(9, 18)]
+
+
+def at(shop, ask):
+    """The appointments, live and cancelled, stored for the slot this request asks for."""
+    rows = [row for row in shop.state()["appointments"]
+            if (row["date"], row["time"]) == (ask.get("date"), ask.get("time"))]
+    return [row for row in rows if not row["cancelled"]], [row for row in rows if row["cancelled"]]
+
+
+@fault("POST", "/appointments")
+def taken_slot_booked(shop, ask):
+    """A taken slot goes to whoever asks last: the booking that held it is dropped."""
+    for row in at(shop, ask)[0]:
+        shop.real("POST", "/appointments/%d/cancel" % row["id"])
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/appointments")
+def cancelled_still_blocks(shop, ask):
+    """A slot whose appointment was cancelled is still refused as taken."""
+    live, cancelled = at(shop, ask)
+    if cancelled and not live:
+        shop.acted += 1
+        return 400, ""
+    return ask.send()
+
+
+@fault("POST", "/appointments")
+def any_time(shop, ask):
+    """A time that is no slot is taken, and booked in the first free slot of that day."""
+    if ask.get("time") not in SLOTS:
+        busy = {row["time"] for row in shop.state()["appointments"]
+                if row["date"] == ask.get("date") and not row["cancelled"]}
+        ask.put("time", [slot for slot in SLOTS if slot not in busy][0])
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/appointments")
+def any_pet(shop, ask):
+    """An appointment for no pet the shop knows is booked, for the first pet it has."""
+    pets = [str(row["id"]) for row in shop.state()["pets"]]
+    if pets and ask.get("pet_id") not in pets:
+        ask.put("pet_id", pets[0])
+        shop.acted += 1
+    return ask.send()
+
+
 run(checks, wrong=[
-    ("a taken slot can be booked", "if taken:", "if False:"),
-    ("a cancelled appointment still blocks its slot", "WHERE date = ? AND time = ? AND cancelled = 0", "WHERE date = ? AND time = ?"),
-    ("any time of day accepted", "if time not in SLOTS:", "if False:"),
-    ("an appointment for no known pet", 'if pet is None:', "if False:"),
+    ("a taken slot can be booked", taken_slot_booked),
+    ("a cancelled appointment still blocks its slot", cancelled_still_blocks),
+    ("any time of day accepted", any_time),
+    ("an appointment for no known pet", any_pet),
 ])

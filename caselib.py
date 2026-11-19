@@ -3,14 +3,19 @@
 A case starts the shop on a scratch database and talks to it over HTTP, which
 is the only way in (L0006). That makes the cases the contract a rebuilt
 product has to meet: the command line below, the form fields, /export.json.
+No case reads the product's source, and nothing here does either (L0019).
 
-A wrong variant (L0002) is one piece of text in product/petshop.py replaced in
-a scratch copy when the case runs. The case must fail on it, or the case is
-not testing its lesson.
+A wrong variant (L0002, L0019) is the same shop with one fault in front of
+it: a function that stands in for the shop on the requests it names, and may
+change the request, change the answer, or send requests of its own. It adds
+to shop.acted each time it does something a right shop would not. The case
+must fail on it, or the case is not testing its lesson; and a fault that
+never acted has shown the case nothing (L0001).
 """
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -19,47 +24,106 @@ import tempfile
 import time
 import urllib.parse
 
-MAIN = "petshop.py"
+# The command line. SHOP lets the same cases be put to another build of the product.
+MAIN = os.environ.get("SHOP") or os.path.join("product", "petshop.py")
+# No site-packages and no environment: an import from outside the standard library stops the shop (L0006).
+FLAGS = ["-S", "-E", "-s"]
 
 
 class Failure(Exception):
-    pass
+    """The shop, or the wrong shop, did not do what the lesson says."""
+
+
+class Broken(Exception):
+    """A fault could not do its wrong thing. That is a defect of the case, not a refusal."""
+
+
+class Ask:
+    """One request on its way to the shop, for a fault to look at, change and send on."""
+
+    def __init__(self, shop, method, path, pairs, headers):
+        self.shop, self.method, self.path = shop, method, path
+        self.pairs = [(name, str(value)) for name, value in pairs]
+        self.headers = dict(headers or {})
+
+    def all(self, name):
+        return [value.strip() for other, value in self.pairs if other == name]
+
+    def get(self, name):
+        return (self.all(name) or [""])[0]
+
+    def put(self, name, value):
+        self.pairs = [pair for pair in self.pairs if pair[0] != name] + [(name, str(value))]
+
+    def send(self):
+        return self.shop.real(self.method, self.path, self.pairs, self.headers)
+
+
+def fault(method, pattern):
+    """Make a wrong variant of a function that answers in the shop's place.
+
+    The function gets the shop, the request as an Ask, and the groups of the
+    path's pattern, and returns (status, body). Requests that do not match go
+    to the shop untouched."""
+    def make(act):
+        def install(shop):
+            def front(ask):
+                found = re.fullmatch(pattern, ask.path) if method in (None, ask.method) else None
+                return act(shop, ask, *found.groups()) if found else ask.send()
+            return front
+        return install
+    return make
 
 
 class Shop:
-    def __init__(self, product="product", db=None):
-        self.checks = 0
+    def __init__(self, db=None):
+        self.checks = self.acted = 0
+        self.front = self.wrapper = self.proc = None
+        self.closing = []
         self.dir = tempfile.mkdtemp()
         self.db = db or os.path.join(self.dir, "shop.db")
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             self.port = probe.getsockname()[1]
         self.log = open(os.path.join(self.dir, "log"), "w+")
-        self.proc = subprocess.Popen(
-            [sys.executable, os.path.join(product, MAIN), "--db", self.db, "--port", str(self.port)],
-            stdout=self.log, stderr=self.log)
+
+    def start(self):
+        command = [sys.executable] + FLAGS
+        if self.wrapper:  # a program that does one wrong thing and then runs the shop as it is
+            path = os.path.join(self.dir, "wrong.py")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(self.wrapper)
+            command.append(path)
+        self.proc = subprocess.Popen(command + [MAIN, "--db", self.db, "--port", str(self.port)],
+                                     stdout=self.log, stderr=self.log)
         for _ in range(100):
             if self.proc.poll() is not None:
                 break
             try:
                 socket.create_connection(("127.0.0.1", self.port), timeout=1).close()
-                return
+                return self
             except OSError:
                 time.sleep(0.05)
-        self.log.seek(0)
-        said = self.log.read().strip().splitlines()
+        said = self.said().strip().splitlines()
         self.stop()
         raise Failure("the shop did not start: %s" % (said[-1] if said else "no output"))
 
+    def said(self):
+        """What the shop has printed so far."""
+        with open(self.log.name, encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+
     def stop(self):
-        if self.proc.poll() is None:
+        if self.proc is not None and self.proc.poll() is None:
             self.proc.terminate()
             self.proc.wait(timeout=5)
+        for close in self.closing:
+            close()
         self.log.close()
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def request(self, method, path, pairs=(), headers=None):
-        """One request, redirects not followed. Returns (status, body text)."""
+    def real(self, method, path, pairs=(), headers=None):
+        """One request to the shop itself, redirects not followed. Returns (status, body text)."""
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         send = dict(headers or {})
         body = None
@@ -74,6 +138,24 @@ class Shop:
             raise Failure("%s %s got no answer: %s" % (method, path, error))
         finally:
             conn.close()
+
+    def state(self):
+        """/export.json from the shop itself, for a fault that needs to know what is stored."""
+        status, body = self.real("GET", "/export.json")
+        if status != 200:
+            raise Broken("/export.json answered %d to a fault" % status)
+        return json.loads(body)
+
+    def request(self, method, path, pairs=(), headers=None):
+        """One request as the case sees it: through the fault, when there is one."""
+        if self.front is None:
+            return self.real(method, path, pairs, headers)
+        try:
+            return self.front(Ask(self, method, path, pairs, headers))
+        except (Failure, Broken):
+            raise
+        except Exception as error:
+            raise Broken("%s: %s" % (type(error).__name__, error))
 
     def export(self):
         status, body = self.request("GET", "/export.json")
@@ -105,15 +187,24 @@ class Shop:
         raise Failure("no row %s in %s" % (ident, table))
 
 
-def attempt(checks, product):
-    shop = Shop(product)
+def attempt(checks, wrong=None):
+    """Run the checks on the shop, or on the shop behind a fault. Returns (checks passed, times the fault acted)."""
+    shop = Shop()
     try:
+        if wrong:
+            shop.front = wrong(shop)
+        shop.start()
         checks(shop)
-        return shop.checks
-    except Failure:
+        return shop.checks, shop.acted
+    except Failure as failure:
+        failure.acted = shop.acted
+        raise
+    except Broken:
         raise
     except Exception as error:  # a broken product is a failed case, not a crashed one
-        raise Failure("%s: %s" % (type(error).__name__, error))
+        failure = Failure("%s: %s" % (type(error).__name__, error))
+        failure.acted = shop.acted
+        raise failure
     finally:
         shop.stop()
 
@@ -121,33 +212,28 @@ def attempt(checks, product):
 def run(checks, wrong):
     """Run the checks on the product, then on each wrong variant, and say what was measured."""
     try:
-        passed = attempt(checks, "product")
+        passed, _ = attempt(checks)
     except Failure as failure:
         print(failure)
         sys.exit(1)
     if not passed or not wrong:
         print("%d checks and %d wrong variants: nothing was measured" % (passed, len(wrong)))
         sys.exit(1)
-    for name, old, new in wrong:
-        work = tempfile.mkdtemp()
+    acted = 0
+    for name, install in wrong:
         try:
-            copy = os.path.join(work, "product")
-            shutil.copytree("product", copy, ignore=shutil.ignore_patterns("__pycache__", "*.db*"))
-            path = os.path.join(copy, MAIN)
-            with open(path, encoding="utf-8") as handle:
-                source = handle.read()
-            if source.count(old) != 1:
-                print("wrong variant '%s' cannot be applied: its text occurs %d times in product/%s"
-                      % (name, source.count(old), MAIN))
-                sys.exit(1)
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write(source.replace(old, new))
-            try:
-                attempt(checks, copy)
-            except Failure:
-                continue
-            print("the case passes on a wrong variant: %s" % name)
+            attempt(checks, install)
+        except Broken as broken:
+            print("the fault of wrong variant '%s' broke: %s" % (name, broken))
             sys.exit(1)
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
-    print("%d checks passed; %d of %d wrong variants refused" % (passed, len(wrong), len(wrong)))
+        except Failure as failure:
+            if not failure.acted:
+                print("wrong variant '%s' never acted, and the case failed on it anyway: %s" % (name, failure))
+                sys.exit(1)
+            acted += failure.acted
+            print("refused '%s': %s" % (name, failure))
+            continue
+        print("the case passes on a wrong variant: %s" % name)
+        sys.exit(1)
+    print("%d checks passed; %d of %d wrong variants refused, each after its fault acted (%d acts)"
+          % (passed, len(wrong), len(wrong), acted))

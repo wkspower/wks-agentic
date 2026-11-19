@@ -5,7 +5,7 @@ Run from the repository root."""
 import sys
 
 sys.path.insert(0, ".")
-from caselib import run
+from caselib import fault, run
 
 
 def checks(shop):
@@ -55,8 +55,47 @@ def checks(shop):
     shop.expect(len(shop.export()["sales"]) == 2, "voiding removed the sale from the record")
 
 
+def lines_of(shop, ident):
+    return [line for sale in shop.state()["sales"] if sale["id"] == int(ident) for line in sale["lines"]]
+
+
+def move_stock(shop, lines, sign):
+    for line in lines:
+        shop.real("POST", "/products/%d/stock" % line["product_id"], [("delta", sign * line["qty"])])
+
+
+@fault("POST", r"/sales/(\d+)/void")
+def voided_twice(shop, ask, ident):
+    """A sale already voided is voided again, and its stock comes back again."""
+    if any(sale["voided"] for sale in shop.state()["sales"] if sale["id"] == int(ident)):
+        move_stock(shop, lines_of(shop, ident), +1)
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+@fault("POST", r"/sales/(\d+)/void")
+def void_keeps_stock(shop, ask, ident):
+    """A void marks the sale and returns nothing to the shelf."""
+    lines = lines_of(shop, ident)
+    status, body = ask.send()
+    if status == 303:
+        move_stock(shop, lines, -1)
+        shop.acted += 1
+    return status, body
+
+
+@fault("POST", "/sales")
+def any_method(shop, ask):
+    """A payment method the shop does not know is taken, and recorded as "other"."""
+    if ask.get("method") not in ("", "cash", "card", "other"):
+        ask.put("method", "other")
+        shop.acted += 1
+    return ask.send()
+
+
 run(checks, wrong=[
-    ("a sale can be voided twice", 'if sale["voided"]:', "if False:"),
-    ("a void returns no stock", "stock = stock + ? WHERE", "stock = stock + 0 * ? WHERE"),
-    ("any payment method accepted", "if method not in METHODS:", "if not method:"),
+    ("a sale can be voided twice", voided_twice),
+    ("a void returns no stock", void_keeps_stock),
+    ("any payment method accepted", any_method),
 ])

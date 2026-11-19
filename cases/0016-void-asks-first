@@ -6,7 +6,7 @@ import sys
 from html.parser import HTMLParser
 
 sys.path.insert(0, ".")
-from caselib import run
+from caselib import fault, run
 
 
 class Reader(HTMLParser):
@@ -67,8 +67,33 @@ def checks(shop):
     shop.expect(ask not in reader.links, "the list still links to the void of a voided sale")
 
 
+BUTTON = '<form method="post" action="%s"><button type="submit">Void</button></form>'
+
+
+@fault("GET", "/sales")
+def list_voids_at_once(shop, ask):
+    """Beside every link to the question, the list carries a button that voids at once."""
+    status, body = ask.send()
+    reader = Reader()
+    reader.feed(body)
+    for link in reader.links:
+        if link.endswith("/void"):
+            body += BUTTON % link
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", r"/sales/(\d+)/void")
+def voided_offered_again(shop, ask, ident):
+    """The page of a sale already voided still has the button."""
+    status, body = ask.send()
+    if any(sale["voided"] for sale in shop.state()["sales"] if sale["id"] == int(ident)):
+        body += BUTTON % ask.path
+        shop.acted += 1
+    return status, body
+
+
 run(checks, wrong=[
-    ("the list voids on one click", '<a href="/sales/%d/void">Void</a>',
-     '<form method="post" action="/sales/%d/void"><button type="submit">Void</button></form>'),
-    ("a voided sale is offered for voiding again", 'if not found["voided"]', "if True"),
+    ("the list voids on one click", list_voids_at_once),
+    ("a voided sale is offered for voiding again", voided_offered_again),
 ])

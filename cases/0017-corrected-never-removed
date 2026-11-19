@@ -5,7 +5,7 @@ Run from the repository root."""
 import sys
 
 sys.path.insert(0, ".")
-from caselib import run
+from caselib import fault, run
 
 
 def checks(shop):
@@ -76,9 +76,29 @@ def checks(shop):
     shop.expect(tried == 15, "only %d removals were tried" % tried)
 
 
+@fault("POST", r"/customers/(\d+)/edit")
+def correction_not_stored(shop, ask, ident):
+    """A customer's correction is accepted, and the row is left as it was."""
+    before = [row for row in shop.state()["customers"] if row["id"] == int(ident)]
+    status, body = ask.send()
+    if status == 303 and before:
+        shop.real("POST", ask.path, [("name", before[0]["name"]), ("phone", before[0]["phone"])])
+        shop.acted += 1
+    return status, body
+
+
+@fault("POST", r"/pets/(\d+)/edit")
+def correction_spreads(shop, ask, ident):
+    """A pet's correction is written to every later pet too."""
+    status, body = ask.send()
+    for row in shop.state()["pets"] if status == 303 else []:
+        if row["id"] > int(ident):
+            shop.real("POST", "/pets/%d/edit" % row["id"], ask.pairs)
+            shop.acted += 1
+    return status, body
+
+
 run(checks, wrong=[
-    ("a customer's correction is not stored", "UPDATE customers SET name = ?, phone = ? WHERE id = ?",
-     "SELECT ?, ?, ?"),
-    ("a pet's correction changes later pets too", "UPDATE pets SET name = ?, species = ? WHERE id = ?",
-     "UPDATE pets SET name = ?, species = ? WHERE id >= ?"),
+    ("a customer's correction is not stored", correction_not_stored),
+    ("a pet's correction changes later pets too", correction_spreads),
 ])
