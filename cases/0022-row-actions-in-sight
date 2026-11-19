@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Case of lesson L0022 (lessons/0022-row-actions-in-sight.md).
+// A check under lesson L0026 (lessons/0026-narrow-lists-are-cards.md); until run 005 the case of L0022.
 // Origin: run 004, 2026-11-19. Used by hand at 390 px, the list of sales scrolled its Void
 // links out of sight and the list of products its Adjust and Edit, while every case passed.
 // Fills the shop, then looks in every table row that has a link or a button for one that

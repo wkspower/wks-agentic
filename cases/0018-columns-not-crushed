@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Case of lesson L0018 (lessons/0018-columns-not-crushed.md).
+// A check under lesson L0026 (lessons/0026-narrow-lists-are-cards.md); until run 005 the case of L0018.
 // Origin: run 002, 2026-11-19. Used by hand at 390 px, the items of a sale were squeezed to
 // one word per line while every case passed.
 // Fills the shop with names of several words, then measures every table cell at two widths.

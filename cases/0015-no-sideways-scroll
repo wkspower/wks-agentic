@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Case of lesson L0015 (lessons/0015-no-sideways-scroll.md).
+// A check under lesson L0026 (lessons/0026-narrow-lists-are-cards.md); until run 005 the case of L0015.
 // Origin: run 001, 2026-11-19. Used by hand at 390 px wide, the sale form ran out of its
 // box and the sales list pushed the page sideways.
 // Looked at again after the first fix: the page no longer scrolled, and prices and button labels
