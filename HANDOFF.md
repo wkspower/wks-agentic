@@ -1,20 +1,28 @@
 # Handoff
 
-## State (2026-11-19)
+## State (2026-11-19, after run 001)
 
-The scaffold exists and nothing has been built with it yet. `./check` passes:
-4 lessons, 2 with a case, 2 prose only. `./check --selftest` refuses 11 of 11
-wrong trees. No prompt has been run on this branch.
+Run 001 built the pet shop in `product/` from the one-line prompt. `./check`
+passes: 15 lessons, 11 with a case, 4 prose only. `./check --selftest`
+refuses 11 of 11 wrong trees.
 
-The four seed lessons come from the pet shop runs of 2026-11-18 on the other
-branches of this repository. They are here so the first run starts with
-something to follow and so the check has real input.
+L0001 to L0004 are the seed lessons from the runs of 2026-11-18. L0005 to
+L0013 are the person's answers to one round of 14 questions. L0014 and L0015
+are defects found using the app by hand. None of L0005 to L0015 has been
+read by the person yet; merging them into `lessons-and-cases` is theirs to do.
+
+The cases of L0006 to L0015 talk to the product only through its command
+line, its forms and `/export.json`, so they are the contract for a rebuild.
+Their wrong variants name text in `product/petshop.py`; a rebuild has to
+rewrite those lines of each case, and the case says so when the text is gone.
 
 ## How to resume
 
 1. Read `CLAUDE.md`, then this file.
 2. Run `./check`. If it fails, that is the first thing to fix.
 3. To test a prompt, follow `prompts/README.md`.
+4. To use the shop: `python3 product/petshop.py --sample`, then open
+   http://127.0.0.1:8000/. The cases need Python 3 and Node with Playwright.
 
 ## What the thesis predicts, and what would count against it
 
@@ -31,10 +39,16 @@ something to follow and so the check has real input.
 
 ## Not yet decided
 
+- The bounds in L0008 and the grooming hours in L0011 (09:00 to 17:00, every
+  day) are the builder's numbers. The person has not seen them.
+- Whether voiding a sale should ask first, and whether customers, pets and
+  products need editing or removing. See `runs/001-pet-shop.md`.
 - Whether `product/` should be deleted between runs of the same prompt (the
   rebuild test) or kept.
 - A size limit for `CLAUDE.md`. The check prints its size and enforces none.
 
 ## Runs
 
-None yet. Each run adds a file under `runs/` and a line here.
+Each run adds a file under `runs/` and a line here.
+
+- [001 pet shop](runs/001-pet-shop.md), 2026-11-19: 1 round of 14 questions, 11 lessons added (9 with a case), 2 defects found by hand.

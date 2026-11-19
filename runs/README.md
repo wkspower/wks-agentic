@@ -1,3 +1,3 @@
 # Runs
 
-One file per run, written as `prompts/README.md` describes. None yet.
+One file per run, written as `prompts/README.md` describes. See `HANDOFF.md` for the list.

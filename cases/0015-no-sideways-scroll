@@ -44,5 +44,5 @@ run(async (page, base, expect) => {
 }, [
   ['a wide table pushes the page sideways', 'overflow-x: auto', 'overflow-x: visible'],
   ['a long name cannot break', 'overflow-wrap: break-word', 'overflow-wrap: normal'],
-  ['numbers and labels may break', 'white-space: nowrap; }', 'white-space: normal; }'],
+  ['any word may break anywhere, the first fix of this run', 'overflow-wrap: break-word', 'overflow-wrap: anywhere'],
 ]);

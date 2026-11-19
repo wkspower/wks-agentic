@@ -293,11 +293,10 @@ body { font: 16px/1.45 system-ui, sans-serif; margin: 0; }
 nav { display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
 nav a { text-decoration: none; color: inherit; padding: 2px 0; }
 nav a.here { border-bottom: 3px solid var(--mark); font-weight: 600; }
-main { max-width: 980px; margin: 0 auto; padding: 8px 20px 60px; overflow-wrap: anywhere; }
+main { max-width: 980px; margin: 0 auto; padding: 8px 20px 60px; overflow-wrap: break-word; }
 .scroll { overflow-x: auto; }
 h1 { font-size: 1.5rem; margin: 20px 0 12px; } h2 { font-size: 1.1rem; margin: 28px 0 8px; }
 table { border-collapse: collapse; width: 100%; }
-th { overflow-wrap: normal; white-space: nowrap; }
 th, td { text-align: left; padding: 7px 10px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 td.num, th.num, td.stock { text-align: right; font-variant-numeric: tabular-nums; }
 form.card { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: end; padding: 14px; background: var(--soft);
