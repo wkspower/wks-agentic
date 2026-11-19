@@ -15,8 +15,8 @@ enforcer's full run over the tree, web included, reports no breach.
 | petshop/web | passes, 0.028550 | judge, over 1 alternative |
 
 **The number** (`./verdict`): 22 items ÷ 8 correct results = 2.75. Pages
-the person asks for are not items (Q18). The verdict fails, and answering
-Q23 and Q24 will not make it pass: the number was 1.86 at the previous
+the person asks for are not items (Q18). Q23 and Q24 are answered and
+nothing waits, but the verdict fails: the number was 1.86 at the previous
 result, and the new goal took 7 items (5 decisions, 2 notices) for one
 result. Attention per result rose. The next result is compared with
 2.75, so it passes if it costs fewer than 3 items.
@@ -56,7 +56,6 @@ the verdict fail (Q18). Each became a case in a measure before the fix.
 **Tried and rejected.** Nothing at this level.
 
 **Due next**, in order:
-1. Q23 and Q24 answered.
-2. Builders' open decisions become rules with cases (about 5 runs).
-3. A browser audit for web; audits of the planted enforcers and of the
+1. Builders' open decisions become rules with cases (about 5 runs).
+2. A browser audit for web; audits of the planted enforcers and of the
    judge's own stand (about 3 runs). 6 runs remain.
