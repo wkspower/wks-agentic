@@ -55,3 +55,4 @@ the lessons and the cases are what lasts.
 - **L0015** No page scrolls sideways, no control leaves its form and no number or label breaks in two, from 320 px wide up, with the longest names allowed. [why](lessons/0015-no-sideways-scroll.md) · case: [`cases/0015-no-sideways-scroll`](cases/0015-no-sideways-scroll)
 - **L0016** Voiding a sale asks first, on a second page that shows the sale; no page voids on one click. [why](lessons/0016-void-asks-first.md) · case: [`cases/0016-void-asks-first`](cases/0016-void-asks-first)
 - **L0017** Customers and pets can be corrected, and nothing is removed. [why](lessons/0017-corrected-never-removed.md) · case: [`cases/0017-corrected-never-removed`](cases/0017-corrected-never-removed)
+- **L0018** A table scrolls inside its box before it crushes a column of words to one word per line. [why](lessons/0018-columns-not-crushed.md) · case: [`cases/0018-columns-not-crushed`](cases/0018-columns-not-crushed)

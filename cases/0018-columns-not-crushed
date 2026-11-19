@@ -1,0 +1,54 @@
+#!/usr/bin/env node
+// Case of lesson L0018 (lessons/0018-columns-not-crushed.md).
+// Origin: run 002, 2026-11-19. Used by hand at 390 px, the items of a sale were squeezed to
+// one word per line while every case passed.
+// Fills the shop with names of several words, then measures every table cell at two widths.
+// Run from the repository root.
+const { run } = require('../caselib.js');
+
+run(async (page, base, expect) => {
+  const post = async (path, fields) => {
+    const answer = await fetch(base + path, { method: 'POST', body: new URLSearchParams(fields), redirect: 'manual' });
+    if (answer.status !== 303) throw new Error('wrong: POST ' + path + ' answered ' + answer.status);
+  };
+  await post('/products', { name: 'Cat litter 10 L', price: '8.90', stock: '3', low_at: '5' });
+  await post('/products', { name: 'Flea collar, small', price: '19.99', stock: '6', low_at: '2' });
+  await post('/products', { name: 'Hypoallergenic grain-free salmon and sweet potato dry food 12 kg', price: '18.90', stock: '12', low_at: '20' });
+  await post('/customers', { name: 'Maria Aparecida de Souza Albuquerque', phone: '+55 11 5550 0101' });
+  await post('/customers', { name: 'Bo Li', phone: '' });
+  await post('/pets', { customer_id: '1', name: 'Sir Barks a Lot', species: 'golden retriever' });
+  await post('/pets', { customer_id: '2', name: 'Mia', species: 'cat' });
+  await post('/sales', [['method', 'card'], ['customer_id', '1'], ['product_id', '1'], ['qty', '2'], ['product_id', '2'], ['qty', '1'], ['product_id', '3'], ['qty', '1']]);
+  await post('/sales', [['method', 'cash'], ['product_id', '1'], ['qty', '1']]);
+  await post('/sales/2/void', {});
+  const today = new Date().toLocaleDateString('en-CA');
+  await post('/appointments', { pet_id: '1', date: today, time: '17:00' });
+  await post('/appointments', { pet_id: '2', date: today, time: '16:00' });
+  let cells = 0;
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 800 });
+    for (const path of ['/', '/products', '/customers', '/sales', '/appointments']) {
+      await page.goto(base + path);
+      const [seen, crushed] = await page.$$eval('td', (els) => {
+        const bad = [];
+        for (const el of els) {
+          const tops = new Set();
+          for (const node of el.childNodes) {
+            if (node.nodeType !== 3 || !node.textContent.trim()) continue;
+            const range = document.createRange(); range.selectNodeContents(node);
+            for (const box of range.getClientRects()) tops.add(Math.round(box.top));
+          }
+          const wide = el.getBoundingClientRect().width;
+          if (tops.size > 1 && wide < 150) bad.push(el.textContent.trim().slice(0, 30) + ' (' + tops.size + ' lines in ' + Math.round(wide) + ' px)');
+        }
+        return [els.length, bad];
+      });
+      expect(seen > 0, path + ' has no table cell to measure');
+      expect(crushed.length === 0, path + ' at ' + width + ' px crushes: ' + crushed.slice(0, 3).join('; '));
+      cells += seen;
+    }
+  }
+  expect(cells >= 100, 'only ' + cells + ' cells were measured');
+}, [
+  ['a column of words may be squeezed to nothing', 'min-width: 11rem', 'min-width: 0'],
+]);
