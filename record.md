@@ -1,6 +1,7 @@
 # Record of the root
 
-**State.** Every unit is built and standing. Correct results: 8.
+**State.** Every unit is built and standing. Correct results: 8. The
+enforcer's full run over the tree, web included, reports no breach.
 
 | Unit | Verdict | Stands by |
 |---|---|---|
