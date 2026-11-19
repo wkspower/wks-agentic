@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Case of lesson L0006 (lessons/0006-one-way-in.md).
+Origin: the person's answers 3, 4 and 7 in run 001, 2026-11-19.
+Run from the repository root."""
+import ast
+import os
+import socket
+import sys
+
+sys.path.insert(0, ".")
+from caselib import Failure, Shop, run
+
+
+def other_address():
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("10.255.255.255", 1))
+            found = probe.getsockname()[0]
+        return None if found.startswith("127.") else found
+    except OSError:
+        return None
+
+
+def checks(shop):
+    product = os.path.dirname(shop.proc.args[1])
+    mains = 0
+    for name in sorted(os.listdir(product)):
+        if not name.endswith(".py"):
+            continue
+        with open(os.path.join(product, name), encoding="utf-8") as handle:
+            source = handle.read()
+        mains += "__main__" in source
+        for node in ast.walk(ast.parse(source)):
+            names = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                     else [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
+            for module in names:
+                top = module.split(".")[0]
+                local = os.path.exists(os.path.join(product, top + ".py"))
+                shop.expect(top in sys.stdlib_module_names or local,
+                            "%s imports %s, which is not in the standard library" % (name, module))
+    shop.expect(mains == 1, "%d programs can be started in product/, expected 1" % mains)
+
+    address = other_address()
+    shop.expect(address is not None, "this machine has no address besides loopback to try")
+    try:
+        socket.create_connection((address, shop.port), timeout=2).close()
+        reached = True
+    except OSError:
+        reached = False
+    shop.expect(not reached, "the shop answers on %s, not only on localhost" % address)
+
+    # One SQLite file holds the state, and a second start on it sees the same state.
+    made = shop.add("customers", name="Ana Lima", phone="555-0101")
+    with open(shop.db, "rb") as handle:
+        shop.expect(handle.read(15) == b"SQLite format 3", "the database file is not SQLite")
+    again = Shop(product, db=shop.db)
+    try:
+        names = [row["name"] for row in again.export()["customers"] if row["id"] == made]
+    finally:
+        again.stop()
+    shop.expect(names == ["Ana Lima"], "a second start on the same file does not see the customer")
+
+
+run(checks, wrong=[
+    ("listens on every address", 'HOST = "127.0.0.1"', 'HOST = "0.0.0.0"'),
+])

@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Case of lesson L0009 (lessons/0009-stock-never-negative.md).
+Origin: the person's answer 10 in run 001, 2026-11-19.
+Run from the repository root."""
+import sys
+
+sys.path.insert(0, ".")
+from caselib import run
+
+
+def checks(shop):
+    food = shop.add("products", name="Kibble", price="10.00", stock="3", low_at="1")
+    toy = shop.add("products", name="Ball", price="2.00", stock="5", low_at="2")
+
+    def stock(ident):
+        return shop.row("products", ident)["stock"]
+
+    def untouched(what):
+        shop.expect((stock(food), stock(toy)) == (3, 5), "%s changed the stock" % what)
+        shop.expect(shop.export()["sales"] == [], "%s was recorded as a sale" % what)
+
+    shop.post(400, "/sales", method="cash", product_id=food, qty="4")
+    untouched("a sale of 4 with 3 in stock")
+    shop.post(400, "/sales", ("product_id", toy), ("qty", "1"), ("product_id", food), ("qty", "4"),
+              method="cash")
+    untouched("a sale whose second line exceeds stock")
+    shop.post(400, "/sales", ("product_id", food), ("qty", "2"), ("product_id", food), ("qty", "2"),
+              method="cash")
+    untouched("a sale with two lines of one product that together exceed stock")
+    shop.post(400, "/sales", method="cash", product_id="999", qty="1")
+    untouched("a sale of a product that does not exist")
+
+    shop.post(303, "/sales", method="cash", product_id=food, qty="3")
+    shop.expect(stock(food) == 0, "selling 3 of 3 left %d" % stock(food))
+    shop.post(400, "/sales", method="cash", product_id=food, qty="1")
+    shop.post(400, "/products/%d/stock" % food, delta="-1")
+    shop.expect(stock(food) == 0, "stock moved below or away from 0")
+    shop.post(303, "/products/%d/stock" % food, delta="5")
+    shop.post(303, "/products/%d/stock" % food, delta="-2")
+    shop.expect(stock(food) == 3, "receiving 5 and removing 2 from 0 gave %d" % stock(food))
+    shop.post(404, "/products/999/stock", delta="1")
+
+    # Low stock: listed when stock is at or below the product's own threshold.
+    shop.expect(shop.export()["low_stock"] == [], "low stock listed with 3 (at 1) and 5 (at 2)")
+    shop.post(303, "/sales", method="card", product_id=toy, qty="3")
+    shop.expect(shop.export()["low_stock"] == [toy], "the ball at 2 with threshold 2 is not listed")
+    status, page = shop.request("GET", "/")
+    shop.expect(status == 200 and "Ball" in page and "Low stock" in page,
+                "the first page does not show the low-stock product")
+    shop.post(303, "/products/%d/stock" % toy, delta="1")
+    shop.expect(shop.export()["low_stock"] == [], "the ball at 3 with threshold 2 is still listed")
+
+
+run(checks, wrong=[
+    ("a sale may exceed stock", "if qty > product[\"stock\"]:", "if False:"),
+    ("an adjustment may go below zero", "if not 0 <= after <= MAX_STOCK:", "if after > MAX_STOCK:"),
+    ("low stock means below, not at, the threshold", "stock <= low_at", "stock < low_at"),
+])

@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Case of lesson L0007 (lessons/0007-cross-site-refused.md).
+Origin: cross-site posts were accepted in the wizardly-cerf run of 2026-11-18;
+the person's answer 7 in run 001, 2026-11-19.
+Run from the repository root."""
+import sys
+
+sys.path.insert(0, ".")
+from caselib import run
+
+
+def checks(shop):
+    here = "127.0.0.1:%d" % shop.port
+    form = [("name", "Mallory"), ("phone", "")]
+
+    def post(headers):
+        return shop.request("POST", "/customers", form, headers)[0]
+
+    def customers():
+        return len(shop.export()["customers"])
+
+    for what, headers in [
+        ("another site's Origin", {"Origin": "http://evil.example"}),
+        ("the same host on another port", {"Origin": "http://127.0.0.1:1"}),
+        ("an opaque Origin", {"Origin": "null"}),
+        ("Sec-Fetch-Site: cross-site", {"Sec-Fetch-Site": "cross-site"}),
+        ("Sec-Fetch-Site: same-site", {"Sec-Fetch-Site": "same-site"}),
+        ("a Host that is not this machine", {"Host": "evil.example:%d" % shop.port}),
+    ]:
+        status = post(headers)
+        shop.expect(status == 403, "a post with %s answered %d, expected 403" % (what, status))
+        shop.expect(customers() == 0, "a post with %s created a customer" % what)
+
+    # A page on another site must not be able to read the data either (DNS rebinding).
+    status, body = shop.request("GET", "/export.json", headers={"Host": "evil.example"})
+    shop.expect(status == 403, "a GET with a foreign Host answered %d, expected 403" % status)
+
+    for what, headers in [
+        ("this shop's own Origin", {"Origin": "http://" + here, "Sec-Fetch-Site": "same-origin"}),
+        ("localhost as Host and Origin", {"Host": "localhost:%d" % shop.port,
+                                          "Origin": "http://localhost:%d" % shop.port}),
+        ("no Origin at all", {}),
+    ]:
+        before = customers()
+        status = post(headers)
+        shop.expect(status == 303, "a post with %s answered %d, expected 303" % (what, status))
+        shop.expect(customers() == before + 1, "a post with %s created no customer" % what)
+
+
+run(checks, wrong=[
+    ("any Origin accepted", "if origin is not None and origin not in allowed:", "if False:"),
+    ("any Host accepted", "if host not in self.server.hosts:", "if False:"),
+    ("Sec-Fetch-Site ignored", 'if site not in (None, "same-origin", "none"):', "if False:"),
+])

@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Case of lesson L0011 (lessons/0011-appointments-no-double-booking.md).
+Origin: the person's answer 11 in run 001, 2026-11-19.
+Run from the repository root."""
+import sys
+
+sys.path.insert(0, ".")
+from caselib import run
+
+DAY = "2099-06-01"
+
+
+def checks(shop):
+    ana = shop.add("customers", name="Ana Lima", phone="")
+    shop.post(400, "/pets", customer_id="999", name="Ghost", species="dog")
+    shop.post(400, "/pets", name="Stray", species="dog")
+    rex = shop.add("pets", customer_id=ana, name="Rex", species="dog")
+    mia = shop.add("pets", customer_id=ana, name="Mia", species="cat")
+    shop.expect(shop.row("pets", rex)["customer_id"] == ana, "the pet does not belong to its customer")
+
+    def book(status, pet, time, date=DAY):
+        shop.post(status, "/appointments", pet_id=pet, date=date, time=time)
+
+    def booked():
+        return sorted((row["time"], row["pet_id"]) for row in shop.export()["appointments"]
+                      if row["date"] == DAY and not row["cancelled"])
+
+    book(303, rex, "10:00")
+    book(400, mia, "10:00")
+    book(400, rex, "10:00")
+    shop.expect(booked() == [("10:00", rex)], "a taken slot was booked again: %s" % booked())
+
+    # An appointment belongs to a pet that exists.
+    book(400, "", "11:00")
+    book(400, "999", "11:00")
+    shop.post(400, "/appointments", date=DAY, time="11:00")
+
+    # One-hour slots on the hour, first at 09:00 and last at 17:00.
+    for time in ["10:30", "08:00", "18:00", "9:00", "25:00", "", "noon", "09:00:00"]:
+        book(400, mia, time)
+    for date in ["2099-02-30", "01/06/2099", "", "2000-01-03"]:
+        book(400, mia, "11:00", date=date)
+    book(303, mia, "09:00")
+    book(303, mia, "17:00")
+    book(303, mia, "10:00", date="2099-06-02")
+    shop.expect(booked() == [("09:00", mia), ("10:00", rex), ("17:00", mia)], "the day holds %s" % booked())
+
+    # Cancelling frees the slot, once.
+    first = [row["id"] for row in shop.export()["appointments"] if row["time"] == "10:00" and row["date"] == DAY][0]
+    shop.post(303, "/appointments/%d/cancel" % first)
+    shop.post(400, "/appointments/%d/cancel" % first)
+    shop.post(404, "/appointments/999/cancel")
+    book(303, mia, "10:00")
+    shop.expect(booked() == [("09:00", mia), ("10:00", mia), ("17:00", mia)], "after cancel and rebook: %s" % booked())
+    shop.expect(len(shop.export()["appointments"]) == 5, "a cancelled appointment left the record")
+
+
+run(checks, wrong=[
+    ("a taken slot can be booked", "if taken:", "if False:"),
+    ("a cancelled appointment still blocks its slot", "AND date = ? AND time = ? AND cancelled = 0", "AND date = ? AND time = ?"),
+    ("any time of day accepted", "if time not in SLOTS:", "if False:"),
+    ("an appointment for no known pet", 'if pet is None:', "if False:"),
+])

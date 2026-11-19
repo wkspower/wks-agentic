@@ -1,0 +1,164 @@
+#!/usr/bin/env node
+// Case of lesson L0012 (lessons/0012-forms-in-a-real-browser.md).
+// Origin: a customer preselected on the sale form in the wizardly-cerf run of
+// 2026-11-18, which no check over HTTP could see; the person's answer 14 in
+// run 001, 2026-11-19. A missing browser fails this case; it never skips.
+// Run from the repository root.
+const { spawn } = require('child_process');
+const fs = require('fs');
+const net = require('net');
+const os = require('os');
+const path = require('path');
+
+let chromium;
+try {
+  ({ chromium } = require('playwright'));
+} catch (error) {
+  console.log('no browser to run the forms in: ' + error.message.split('\n')[0]);
+  process.exit(1);
+}
+
+const WRONG = [
+  ['the first customer is preselected on the sale form',
+    '<option value="">no customer</option>', ''],
+  ['a payment method is preselected on the sale form',
+    'name="method" value="%s" required', 'name="method" value="%s" checked'],
+];
+
+function freePort() {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
+  });
+}
+
+async function attempt(browser, product) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shop-'));
+  const port = await freePort();
+  const shop = spawn('python3', [path.join(product, 'petshop.py'), '--db', path.join(dir, 'shop.db'), '--port', String(port)],
+    { stdio: 'ignore' });
+  const base = 'http://127.0.0.1:' + port;
+  const page = await browser.newPage();
+  page.setDefaultTimeout(5000);
+  let checks = 0;
+  const expect = (condition, what) => { if (!condition) throw new Error('wrong: ' + what); checks += 1; };
+  const submit = (form) => Promise.all([page.waitForNavigation(), page.click(form + ' button[type=submit]')]);
+  try {
+    for (let tries = 0; ; tries += 1) {
+      try { await page.goto(base + '/'); break; } catch (error) {
+        if (tries > 50) throw new Error('the shop did not start');
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    // Every page is reachable from the first one by its links.
+    for (const link of ['Products', 'Customers', 'Sales', 'Appointments']) {
+      await Promise.all([page.waitForNavigation(), page.click('nav >> text=' + link)]);
+      expect((await page.title()).includes(link), 'the link ' + link + ' leads to "' + (await page.title()) + '"');
+    }
+
+    await page.goto(base + '/customers');
+    await page.fill('form[action="/customers"] input[name=name]', 'Ana <Lima>');
+    await page.fill('form[action="/customers"] input[name=phone]', '555-0101');
+    await submit('form[action="/customers"]');
+    expect((await page.textContent('main')).includes('Ana <Lima>'), 'the new customer is not shown, or her name was not escaped');
+    await page.fill('form[action="/customers"] input[name=name]', 'Bruno Sá');
+    await submit('form[action="/customers"]');
+
+    await page.selectOption('form[action="/pets"] select[name=customer_id]', { label: 'Ana <Lima>' });
+    await page.fill('form[action="/pets"] input[name=name]', 'Rex');
+    await page.fill('form[action="/pets"] input[name=species]', 'dog');
+    await submit('form[action="/pets"]');
+    expect((await page.textContent('main')).includes('Rex'), 'the new pet is not shown');
+
+    await page.goto(base + '/products');
+    await page.fill('form[action="/products"] input[name=name]', 'Kibble 2 kg');
+    await page.fill('form[action="/products"] input[name=price]', '12.50');
+    await page.fill('form[action="/products"] input[name=stock]', '4');
+    await page.fill('form[action="/products"] input[name=low_at]', '1');
+    await submit('form[action="/products"]');
+    expect((await page.textContent('main')).includes('12.50'), 'the new product and its price are not shown');
+
+    // The sale form: nothing chosen for the person in advance.
+    await page.goto(base + '/sales/new');
+    const sale = 'form[action="/sales"]';
+    expect(await page.$eval(sale + ' select[name=customer_id]', (el) => el.value) === '',
+      'a customer is preselected on the sale form');
+    expect(await page.$$eval(sale + ' input[name=method]', (els) => els.length === 3 && els.every((el) => !el.checked)),
+      'a payment method is preselected on the sale form, or there are not three');
+    expect(await page.$$eval(sale + ' select[name=product_id]', (els) => els.length >= 3 && els.every((el) => el.value === '')),
+      'a product is preselected on the sale form');
+    await page.selectOption(sale + ' select[name=product_id] >> nth=0', { label: 'Kibble 2 kg (12.50, 4 in stock)' });
+    await page.fill(sale + ' input[name=qty] >> nth=0', '3');
+    await page.check(sale + ' input[name=method][value=card]');
+    await submit(sale);
+    const sold = await page.textContent('main');
+    expect(sold.includes('37.50') && sold.includes('card'), 'the sale of 3 x 12.50 by card is not shown as 37.50');
+
+    // A refusal says why, in words, and keeps nothing.
+    await page.goto(base + '/sales/new');
+    await page.selectOption(sale + ' select[name=product_id] >> nth=0', { index: 1 });
+    await page.fill(sale + ' input[name=qty] >> nth=0', '2');
+    await page.check(sale + ' input[name=method][value=cash]');
+    await submit(sale);
+    expect((await page.textContent('main')).includes('only 1 in stock'), 'selling 2 with 1 in stock does not say why it was refused');
+
+    await page.goto(base + '/sales');
+    await submit('form[action$="/void"]');
+    expect((await page.textContent('main')).includes('voided'), 'the voided sale is not shown as voided');
+    await page.goto(base + '/products');
+    expect(await page.$eval('td.stock', (el) => el.textContent.trim()) === '4', 'the void did not bring the stock back to 4 on the page');
+
+    await page.goto(base + '/appointments');
+    const book = 'form[action="/appointments"]';
+    expect(await page.$eval(book + ' select[name=pet_id]', (el) => el.value) === '', 'a pet is preselected on the appointment form');
+    for (const outcome of ['Rex', 'already taken']) {
+      await page.goto(base + '/appointments');
+      await page.selectOption(book + ' select[name=pet_id]', { index: 1 });
+      await page.fill(book + ' input[name=date]', '2099-06-01');
+      await page.selectOption(book + ' select[name=time]', '10:00');
+      await submit(book);
+      expect((await page.textContent('main')).includes(outcome), 'booking 2099-06-01 10:00 does not show "' + outcome + '"');
+    }
+    return checks;
+  } finally {
+    await page.close();
+    shop.kill();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+(async () => {
+  let browser;
+  try {
+    browser = await chromium.launch();
+  } catch (error) {
+    console.log('no browser to run the forms in: ' + error.message.split('\n')[0]);
+    process.exit(1);
+  }
+  let code = 1;
+  try {
+    const checks = await attempt(browser, 'product');
+    let refused = 0;
+    for (const [name, from, to] of WRONG) {
+      const work = fs.mkdtempSync(path.join(os.tmpdir(), 'wrong-'));
+      try {
+        const source = fs.readFileSync('product/petshop.py', 'utf8');
+        if (source.split(from).length !== 2) throw new Error('wrong variant "' + name + '" cannot be applied: its text occurs ' + (source.split(from).length - 1) + ' times');
+        fs.writeFileSync(path.join(work, 'petshop.py'), source.replace(from, to));
+        let caught = false;
+        try { await attempt(browser, work); } catch (error) { caught = true; }
+        if (!caught) throw new Error('the case passes on a wrong variant: ' + name);
+        refused += 1;
+      } finally {
+        fs.rmSync(work, { recursive: true, force: true });
+      }
+    }
+    console.log(checks + ' checks passed in ' + browser.browserType().name() + ' ' + browser.version() + '; ' + refused + ' of ' + WRONG.length + ' wrong variants refused');
+    code = 0;
+  } catch (error) {
+    console.log(error.message.split('\n')[0]);
+  } finally {
+    await browser.close();
+  }
+  process.exit(code);
+})();

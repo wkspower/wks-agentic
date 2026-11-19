@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Case of lesson L0008 (lessons/0008-money-and-bounds.md).
+Origin: no upper bound on prices in the wizardly-cerf run of 2026-11-18;
+the person's answers 6 and 13 in run 001, 2026-11-19.
+Run from the repository root."""
+import sys
+
+sys.path.insert(0, ".")
+from caselib import run
+
+
+def checks(shop):
+    def product(price, name="Kibble", stock="5", low_at="0", status=303):
+        shop.post(status, "/products", name=name, price=price, stock=stock, low_at=low_at)
+
+    for text, cents in [("12.50", 1250), ("12.5", 1250), ("7", 700), ("0.01", 1), ("99999.99", 9999999)]:
+        product(text, name="Priced " + text)
+        got = [row["price_cents"] for row in shop.export()["products"] if row["name"] == "Priced " + text]
+        shop.expect(got == [cents], "price %s stored as %s, expected %d cents" % (text, got, cents))
+
+    count = len(shop.export()["products"])
+    for text in ["0", "0.00", "-1", "100000.00", "1000000000000", "12.345", "1e3", "abc", "", "NaN",
+                 "12,50", "1 2", "+5", ".5", "5."]:
+        product(text, status=400)
+    for stock in ["-1", "1000001", "1.5", "", "many"]:
+        product("1.00", stock=stock, status=400)
+    for low_at in ["-1", "1000001", "x"]:
+        product("1.00", low_at=low_at, status=400)
+    for name in ["", "   ", "x" * 81]:
+        product("1.00", name=name, status=400)
+    product("1.00", name="x" * 80)
+    product("1.00", name="Big stock", stock="1000000")
+    shop.expect(len(shop.export()["products"]) == count + 2, "a refused product was stored anyway")
+
+    for name, phone, status in [("", "1", 400), ("y" * 81, "1", 400), ("Ana", "5" * 31, 400),
+                                ("Ana", "5" * 30, 303), ("Bo", "", 303)]:
+        shop.post(status, "/customers", name=name, phone=phone)
+    owner = max(row["id"] for row in shop.export()["customers"])
+    for name, species, status in [("", "dog", 400), ("Rex", "", 400), ("Rex", "d" * 41, 400),
+                                  ("Rex", "dog", 303)]:
+        shop.post(status, "/pets", customer_id=owner, name=name, species=species)
+
+    big = [row["id"] for row in shop.export()["products"] if row["name"] == "Big stock"][0]
+    for qty in ["0", "-1", "1001", "1.5", "", "two"]:
+        shop.post(400, "/sales", method="cash", product_id=big, qty=qty)
+    shop.post(303, "/sales", method="cash", product_id=big, qty="1000")
+    shop.post(400, "/sales", *[("product_id", big), ("qty", "1")] * 21, method="cash")
+    shop.post(400, "/products/%d/stock" % big, delta="1000001")
+    shop.post(400, "/products/%d/stock" % big, delta="0")
+    shop.post(400, "/products/%d/stock" % big, delta="1.5")
+    shop.expect(shop.row("products", big)["stock"] == 999000, "stock after one sale of 1000 is not 999000")
+
+    status, body = shop.request("POST", "/customers", [("name", "z" * 70000)])
+    shop.expect(status == 413, "a form of 70,000 bytes answered %d, expected 413" % status)
+
+
+run(checks, wrong=[
+    ("no upper bound on prices", "MAX_PRICE_CENTS = 9_999_999", "MAX_PRICE_CENTS = 10 ** 30"),
+    ("no upper bound on a sale's quantity", "MAX_QTY = 1000", "MAX_QTY = 10 ** 30"),
+    ("names of any length", "MAX_NAME = 80", "MAX_NAME = 10 ** 6"),
+])

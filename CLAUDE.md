@@ -17,6 +17,7 @@ the lessons and the cases are what lasts.
 | `CLAUDE.md` | This file. Read at the start of every session. One line per lesson. |
 | `lessons/` | One file per lesson: the reason, the source, what would be a regression. |
 | `cases/` | One executable per checkable lesson. Run from the repository root. |
+| `caselib.py` | What the pet shop cases share: starts the shop, applies wrong variants. |
 | `check` | Proves the two stay linked. `./check` and `./check --selftest`. |
 | `HANDOFF.md` | State of the work and how to resume. Read it second. |
 | `product/` | Whatever a run builds. May be deleted and rebuilt at any time. |
@@ -41,3 +42,12 @@ the lessons and the cases are what lasts.
 - **L0002** A wrong variant is kept as a small change applied when the check runs, never as a full copy. [why](lessons/0002-no-full-copies.md) · case: [`cases/0002-no-full-copies`](cases/0002-no-full-copies)
 - **L0003** Agreement between agents of the same model is not evidence that something is right. [why](lessons/0003-same-model-agreement.md) · prose: no program can tell where a claim's evidence came from
 - **L0004** Before building, ask the person everything foreseeable in one round, each question with a recommendation. [why](lessons/0004-ask-in-one-round.md) · prose: whether a later question could have been foreseen is a judgement
+- **L0005** The pet shop system is for staff: products and stock, customers and their pets, counter sales, grooming appointments. [why](lessons/0005-scope-of-the-pet-shop.md) · prose: whether a feature is inside the scope is a reader's judgement
+- **L0006** The web app on localhost is the only way in, on Python's standard library and one SQLite file. [why](lessons/0006-one-way-in.md) · case: [`cases/0006-one-way-in`](cases/0006-one-way-in)
+- **L0007** A request from another site, or to another host name, is refused. [why](lessons/0007-cross-site-refused.md) · case: [`cases/0007-cross-site-refused`](cases/0007-cross-site-refused)
+- **L0008** Money is whole cents with tax included, and every input has a stated bound. [why](lessons/0008-money-and-bounds.md) · case: [`cases/0008-money-and-bounds`](cases/0008-money-and-bounds)
+- **L0009** A sale beyond stock is refused whole, stock never goes below zero, and low stock is listed. [why](lessons/0009-stock-never-negative.md) · case: [`cases/0009-stock-never-negative`](cases/0009-stock-never-negative)
+- **L0010** A sale records its method and the amount the server computed; it is never edited, only voided whole, once. [why](lessons/0010-sale-recorded-voided-whole.md) · case: [`cases/0010-sale-recorded-voided-whole`](cases/0010-sale-recorded-voided-whole)
+- **L0011** Grooming has one groomer and one-hour slots: an appointment belongs to a pet, and a taken slot is refused. [why](lessons/0011-appointments-no-double-booking.md) · case: [`cases/0011-appointments-no-double-booking`](cases/0011-appointments-no-double-booking)
+- **L0012** What a person does in the forms is checked in a real browser, and a missing browser fails. [why](lessons/0012-forms-in-a-real-browser.md) · case: [`cases/0012-forms-in-a-real-browser`](cases/0012-forms-in-a-real-browser)
+- **L0013** Done means every case passes, the app was used by hand in a browser, and what was not verified is said. [why](lessons/0013-done-means-used-by-hand.md) · prose: use by hand is by definition not a program

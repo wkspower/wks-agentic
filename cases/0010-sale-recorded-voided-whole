@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Case of lesson L0010 (lessons/0010-sale-recorded-voided-whole.md).
+Origin: the person's answers 8 and 9 in run 001, 2026-11-19.
+Run from the repository root."""
+import sys
+
+sys.path.insert(0, ".")
+from caselib import run
+
+
+def checks(shop):
+    food = shop.add("products", name="Kibble", price="2.50", stock="10", low_at="0")
+    toy = shop.add("products", name="Ball", price="4.00", stock="10", low_at="0")
+    ana = shop.add("customers", name="Ana Lima", phone="")
+
+    def stock():
+        return shop.row("products", food)["stock"], shop.row("products", toy)["stock"]
+
+    # The amount is what the server computes from its own prices, whatever the form says.
+    sale = shop.add("sales", ("product_id", food), ("qty", "3"), ("product_id", toy), ("qty", "1"),
+                    method="card", customer_id=ana, total="0.01", total_cents="1", price="0.01")
+    row = shop.row("sales", sale)
+    shop.expect(row["total_cents"] == 1150, "3 x 2.50 + 1 x 4.00 recorded as %s cents" % row["total_cents"])
+    shop.expect(row["method"] == "card" and row["customer_id"] == ana and row["voided"] is False,
+                "method, customer or state not recorded: %s" % row)
+    shop.expect(sorted((l["product_id"], l["qty"], l["unit_cents"]) for l in row["lines"])
+                == [(food, 3, 250), (toy, 1, 400)], "lines not recorded: %s" % row["lines"])
+    shop.expect(stock() == (7, 9), "stock after the sale is %s" % (stock(),))
+
+    anonymous = shop.add("sales", method="cash", customer_id="", product_id=toy, qty="1")
+    shop.expect(shop.row("sales", anonymous)["customer_id"] is None, "a sale without a customer got one")
+    for fields in [dict(method="bitcoin"), dict(method=""), dict(method="cash", customer_id="999")]:
+        shop.post(400, "/sales", product_id=toy, qty="1", **fields)
+    shop.post(400, "/sales", product_id=toy, qty="1")
+    shop.post(400, "/sales", method="cash")
+    shop.post(400, "/sales", method="cash", product_id=toy, qty="")
+    shop.expect(len(shop.export()["sales"]) == 2, "a refused sale was recorded")
+
+    # A finished sale keeps the prices it was made at, and has no way to be edited.
+    shop.post(303, "/products/%d/edit" % food, name="Kibble", price="9.00", low_at="0")
+    shop.expect(shop.row("products", food)["price_cents"] == 900, "the price change was not stored")
+    shop.expect(shop.row("sales", sale) == row, "a later price change altered a finished sale")
+    for path in ["/sales/%d" % sale, "/sales/%d/edit" % sale, "/sales/%d/lines" % sale]:
+        shop.post(404, path, method="cash", product_id=toy, qty="5", total_cents="1")
+    shop.expect(shop.row("sales", sale) == row, "a finished sale was edited")
+
+    # Voided whole, once; the stock comes back once.
+    shop.post(303, "/sales/%d/void" % sale)
+    shop.expect(shop.row("sales", sale)["voided"] is True, "the sale is not marked voided")
+    shop.expect(shop.row("sales", sale)["total_cents"] == 1150, "voiding changed the recorded amount")
+    shop.expect(stock() == (10, 9), "stock after the void is %s, expected (10, 9)" % (stock(),))
+    shop.post(400, "/sales/%d/void" % sale)
+    shop.expect(stock() == (10, 9), "a second void returned the stock again: %s" % (stock(),))
+    shop.post(404, "/sales/999/void")
+    shop.expect(len(shop.export()["sales"]) == 2, "voiding removed the sale from the record")
+
+
+run(checks, wrong=[
+    ("a sale can be voided twice", 'if sale["voided"]:', "if False:"),
+    ("a void returns no stock", "stock = stock + ? WHERE", "stock = stock + 0 * ? WHERE"),
+    ("any payment method accepted", "if method not in METHODS:", "if not method:"),
+])
