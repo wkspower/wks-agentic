@@ -1,25 +1,23 @@
 # Handoff
 
-## State (2026-11-19, after run 001)
+## State (2026-11-19, after run 002)
 
-**Before run 002:** `product/` was deleted on this branch on purpose. This is
-the rebuild test: the lessons and cases of run 001 are all that is left of the
-pet shop. `./check` fails until a product exists again. The lessons L0005 to
-L0015 are here unmerged and unread by the person, exactly as run 001 left them.
+Run 002 was the rebuild test: `product/` had been deleted, and the pet shop
+was built again from the lessons and cases of run 001 alone, after one round
+of 4 questions. `./check` passes: 18 lessons, 14 with a case, 4 prose only.
+`./check --selftest` refuses 11 of 11 wrong trees.
 
-Run 001 built the pet shop in `product/` from the one-line prompt. `./check`
-passes: 15 lessons, 11 with a case, 4 prose only. `./check --selftest`
-refuses 11 of 11 wrong trees.
+L0001 to L0004 are the seed lessons. L0005 to L0015 came from run 001.
+L0016 and L0017 are the person's answers in run 002; L0018 is a defect found
+looking at the pages. The person answered the questions behind L0016 and
+L0017 but has read none of L0005 to L0018 as written; merging them into
+`lessons-and-cases` is theirs to do.
 
-L0001 to L0004 are the seed lessons from the runs of 2026-11-18. L0005 to
-L0013 are the person's answers to one round of 14 questions. L0014 and L0015
-are defects found using the app by hand. None of L0005 to L0015 has been
-read by the person yet; merging them into `lessons-and-cases` is theirs to do.
-
-The cases of L0006 to L0015 talk to the product only through its command
+The cases of L0006 to L0018 talk to the product only through its command
 line, its forms and `/export.json`, so they are the contract for a rebuild.
-Their wrong variants name text in `product/petshop.py`; a rebuild has to
-rewrite those lines of each case, and the case says so when the text is gone.
+Their wrong variants name text in `product/petshop.py`. Run 002 kept every
+one of them by writing the new source to hold that text; a rebuild that does
+not must rewrite those lines, and the case says so when the text is gone.
 
 ## How to resume
 
@@ -44,10 +42,9 @@ rewrite those lines of each case, and the case says so when the text is gone.
 
 ## Not yet decided
 
-- The bounds in L0008 and the grooming hours in L0011 (09:00 to 17:00, every
-  day) are the builder's numbers. The person has not seen them.
-- Whether voiding a sale should ask first, and whether customers, pets and
-  products need editing or removing. See `runs/001-pet-shop.md`.
+- Whether cancelling an appointment should ask first, as void now does, and
+  whether a pet can move to another customer. See
+  `runs/002-pet-shop-rebuild.md`.
 - Whether `product/` should be deleted between runs of the same prompt (the
   rebuild test) or kept.
 - A size limit for `CLAUDE.md`. The check prints its size and enforces none.
@@ -57,3 +54,4 @@ rewrite those lines of each case, and the case says so when the text is gone.
 Each run adds a file under `runs/` and a line here.
 
 - [001 pet shop](runs/001-pet-shop.md), 2026-11-19: 1 round of 14 questions, 11 lessons added (9 with a case), 2 defects found by hand.
+- [002 pet shop, rebuilt](runs/002-pet-shop-rebuild.md), 2026-11-19: 1 round of 4 questions, 3 lessons added (all with a case), 1 defect found by hand, no old wrong variant rewritten.

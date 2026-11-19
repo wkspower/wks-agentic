@@ -344,9 +344,10 @@ th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(-
 tr:last-child td { border-bottom: 0; }
 th { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--soft); white-space: nowrap; }
 td.num, td.stock, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-td.when, td a, button, .tag { white-space: nowrap; }
+td.when, td.short, td a, button, .tag { white-space: nowrap; }
+td.words { min-width: 11rem; }
 tr.off td { color: var(--soft); }
-tr.off td.num { text-decoration: line-through; }
+tr.off td.total { text-decoration: line-through; }
 .tag { font-size: .8rem; padding: .1rem .5rem; border-radius: 99px; background: var(--warn-bg); color: var(--warn); }
 form.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 1rem;
   max-width: 34rem; display: grid; gap: .75rem; }
@@ -394,18 +395,23 @@ def table(heads, rows, empty):
     return '<div class="scroll"><table><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>' % (head, "".join(rows))
 
 
+def cell(words, extra=""):
+    """A cell of words: short ones stay on one line, long ones keep a readable width (L0018)."""
+    return '<td class="%s">%s%s</td>' % ("short" if len(words) <= 20 else "words", esc(words), extra)
+
+
 def options(rows, label):
     return "".join('<option value="%d">%s</option>' % (row["id"], esc(label(row))) for row in rows)
 
 
 def home_page(db):
-    low = ["<tr><td>%s</td><td class=\"stock\">%d</td><td class=\"num\">%d</td></tr>"
-           % (esc(row["name"]), row["stock"], row["low_at"]) for row in low_stock(db)]
+    low = ["<tr>%s<td class=\"stock\">%d</td><td class=\"num\">%d</td></tr>"
+           % (cell(row["name"]), row["stock"], row["low_at"]) for row in low_stock(db)]
     body = ('<p><a href="/sales/new">New sale</a> · <a href="/appointments">Book grooming</a></p>'
             "<h2>Low stock</h2>" + table(["Product", ">In stock", ">Low at"], low, "Nothing is low."))
     body += "<h2>Grooming today</h2>" + table(["Time", "Pet", "Customer"], [
-        '<tr><td class="when">%s</td><td>%s (%s)</td><td>%s</td></tr>'
-        % (row["time"], esc(row["pet"]), esc(row["species"]), esc(row["owner"]))
+        '<tr><td class="when">%s</td>%s%s</tr>'
+        % (row["time"], cell("%s (%s)" % (row["pet"], row["species"])), cell(row["owner"]))
         for row in appointments(db, "a.date = ? AND a.cancelled = 0", (today(),))], "No appointments today.")
     return page("Today", body)
 
@@ -415,12 +421,12 @@ def products_page(db):
     rows = []
     for row in db.execute("SELECT * FROM products ORDER BY name COLLATE NOCASE, id").fetchall():
         rows.append(
-            '<tr><td>%s%s</td><td class="num">%s</td><td class="stock">%d</td><td class="num">%d</td>'
+            '<tr>%s<td class="num">%s</td><td class="stock">%d</td><td class="num">%d</td>'
             '<td><form method="post" action="/products/%d/stock">'
             '<input type="text" name="delta" inputmode="numeric" placeholder="+10 or -2" required '
             'aria-label="Stock adjustment for %s"><button class="quiet" type="submit">Adjust</button></form></td>'
             '<td><a href="/products/%d/edit">Edit</a></td></tr>'
-            % (esc(row["name"]), ' <span class="tag">low</span>' if row["id"] in low else "", money(row["price_cents"]),
+            % (cell(row["name"], ' <span class="tag">low</span>' if row["id"] in low else ""), money(row["price_cents"]),
                row["stock"], row["low_at"], row["id"], esc(row["name"]), row["id"]))
     body = table(["Product", ">Price", ">In stock", ">Low at", "Received or removed", ""], rows, "No products yet.")
     body += ('<h2>New product</h2><form class="card" method="post" action="/products">'
@@ -452,15 +458,15 @@ def customers_page(db):
     pets = db.execute("SELECT p.*, c.name AS owner FROM pets p JOIN customers c ON c.id = p.customer_id "
                       "ORDER BY p.name COLLATE NOCASE, p.id").fetchall()
     body = table(["Customer", "Phone", ""], [
-        '<tr><td>%s</td><td>%s</td><td><a href="/customers/%d/edit">Edit</a></td></tr>'
-        % (esc(row["name"]), esc(row["phone"]), row["id"]) for row in customers], "No customers yet.")
+        '<tr>%s%s<td><a href="/customers/%d/edit">Edit</a></td></tr>'
+        % (cell(row["name"]), cell(row["phone"]), row["id"]) for row in customers], "No customers yet.")
     body += ('<h2>New customer</h2><form class="card" method="post" action="/customers">'
              '<label>Name<input type="text" name="name" maxlength="%d" placeholder="Ana Lima" required></label>'
              '<label>Phone, if any<input type="text" name="phone" maxlength="%d" placeholder="555-0101"></label>'
              '<button type="submit">Add customer</button></form>') % (MAX_NAME, MAX_PHONE)
     body += "<h2>Pets</h2>" + table(["Pet", "Species", "Customer", ""], [
-        '<tr><td>%s</td><td>%s</td><td>%s</td><td><a href="/pets/%d/edit">Edit</a></td></tr>'
-        % (esc(row["name"]), esc(row["species"]), esc(row["owner"]), row["id"]) for row in pets], "No pets yet.")
+        '<tr>%s%s%s<td><a href="/pets/%d/edit">Edit</a></td></tr>'
+        % (cell(row["name"]), cell(row["species"]), cell(row["owner"]), row["id"]) for row in pets], "No pets yet.")
     body += ('<h2>New pet</h2><form class="card" method="post" action="/pets">'
              '<label>Customer<select name="customer_id" required><option value="">choose a customer</option>%s</select></label>'
              '<label>Pet name<input type="text" name="name" maxlength="%d" placeholder="Rex" required></label>'
@@ -499,10 +505,10 @@ def sales_page(db):
         items = ", ".join("%d × %s" % (line["qty"], line["name"]) for line in sale_lines(db, sale["id"]))
         last = ('<span class="tag">voided</span>' if sale["voided"]
                 else '<a href="/sales/%d/void">Void</a>' % sale["id"])
-        rows.append('<tr%s><td class="num">%d</td><td class="when">%s</td><td>%s</td><td>%s</td><td>%s</td>'
-                    '<td class="num">%s</td><td>%s</td></tr>'
-                    % (' class="off"' if sale["voided"] else "", sale["id"], sale["at"], esc(sale["customer"] or "—"),
-                       esc(items), sale["method"], money(sale["total_cents"]), last))
+        rows.append('<tr%s><td class="num">%d</td><td class="when">%s</td>%s%s<td>%s</td>'
+                    '<td class="num total">%s</td><td>%s</td></tr>'
+                    % (' class="off"' if sale["voided"] else "", sale["id"], sale["at"], cell(sale["customer"] or "—"),
+                       cell(items), sale["method"], money(sale["total_cents"]), last))
     body = '<p><a href="/sales/new">New sale</a></p>' + table(
         [">No.", "When", "Customer", "Items", "Paid by", ">Total", ""], rows, "No sales yet.")
     if total > LISTED:
@@ -559,9 +565,9 @@ def appointments_page(db):
         last = ('<span class="tag">cancelled</span>' if row["cancelled"] else
                 '<form method="post" action="/appointments/%d/cancel"><button class="quiet" type="submit">Cancel</button></form>'
                 % row["id"])
-        rows.append('<tr%s><td class="when">%s</td><td class="when">%s</td><td>%s (%s)</td><td>%s</td><td>%s</td></tr>'
-                    % (' class="off"' if row["cancelled"] else "", row["date"], row["time"], esc(row["pet"]),
-                       esc(row["species"]), esc(row["owner"]), last))
+        rows.append('<tr%s><td class="when">%s</td><td class="when">%s</td>%s%s<td>%s</td></tr>'
+                    % (' class="off"' if row["cancelled"] else "", row["date"], row["time"],
+                       cell("%s (%s)" % (row["pet"], row["species"])), cell(row["owner"]), last))
     pets = db.execute("SELECT p.id, p.name, c.name AS owner FROM pets p JOIN customers c ON c.id = p.customer_id "
                       "ORDER BY p.name COLLATE NOCASE, p.id").fetchall()
     body = table(["Date", "Time", "Pet", "Customer", ""], rows, "Nothing booked from today on.")
