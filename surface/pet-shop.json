@@ -1,0 +1,175 @@
+{
+ "label": "pet shop",
+ "main": "product/petshop.py",
+ "one": {
+  "table": "customers",
+  "fields": {"name": "Ana Lima", "phone": "555-0101"},
+  "shows": "name"
+ },
+ "examples": {
+  "seed": [
+   ["/products", {"name": "Kibble", "price": "2.00", "stock": "50", "low_at": "0"}],
+   ["/customers", {"name": "Ana Lima", "phone": ""}],
+   ["/pets", {"customer_id": "1", "name": "Rex", "species": "dog"}]
+  ],
+  "pages": ["/", "/products", "/products/1/edit", "/customers", "/customers/1/edit", "/pets/1/edit", "/sales", "/sales/new", "/appointments"],
+  "filler": {"name": "Thing", "price": "1.00", "stock": "50", "low_at": "0", "delta": "1", "phone": "", "species": "cat", "qty": "1", "method": "cash", "date": "2099-06-01", "time": "09:00", "customer_id": "1", "pet_id": "1", "product_id": "1"},
+  "least": 3,
+  "refused": {"name": "a plus sign is refused", "path": "/products/\\d+/stock", "field": "delta", "pattern": "^\\+"}
+ },
+ "walk": {
+  "nav": ["Products", "Customers", "Sales", "Appointments"],
+  "steps": [
+   ["goto", "/customers"],
+   ["fill", "form[action=\"/customers\"] input[name=name]", "Ana <Lima>"],
+   ["fill", "form[action=\"/customers\"] input[name=phone]", "555-0101"],
+   ["submit", "form[action=\"/customers\"]"],
+   ["see", ["Ana <Lima>"], "the new customer is not shown, or her name was not escaped"],
+   ["fill", "form[action=\"/customers\"] input[name=name]", "Bruno Sá"],
+   ["submit", "form[action=\"/customers\"]"],
+   ["select", "form[action=\"/pets\"] select[name=customer_id]", {"label": "Ana <Lima>"}],
+   ["fill", "form[action=\"/pets\"] input[name=name]", "Rex"],
+   ["fill", "form[action=\"/pets\"] input[name=species]", "dog"],
+   ["submit", "form[action=\"/pets\"]"],
+   ["see", ["Rex"], "the new pet is not shown"],
+   ["goto", "/products"],
+   ["fill", "form[action=\"/products\"] input[name=name]", "Kibble 2 kg"],
+   ["fill", "form[action=\"/products\"] input[name=price]", "12.50"],
+   ["fill", "form[action=\"/products\"] input[name=stock]", "4"],
+   ["fill", "form[action=\"/products\"] input[name=low_at]", "1"],
+   ["submit", "form[action=\"/products\"]"],
+   ["see", ["12.50"], "the new product and its price are not shown"],
+   ["goto", "/sales/new"],
+   ["unchosen", "form[action=\"/sales\"] select[name=customer_id]", 1, "a customer is preselected on the sale form"],
+   ["unchosen", "form[action=\"/sales\"] input[name=method]", 3, "a payment method is preselected on the sale form, or there are fewer than three"],
+   ["unchosen", "form[action=\"/sales\"] select[name=product_id]", 3, "a product is preselected on the sale form"],
+   ["select", "form[action=\"/sales\"] select[name=product_id] >> nth=0", {"label": "Kibble 2 kg (12.50, 4 in stock)"}],
+   ["fill", "form[action=\"/sales\"] input[name=qty] >> nth=0", "3"],
+   ["check", "form[action=\"/sales\"] input[name=method][value=card]"],
+   ["submit", "form[action=\"/sales\"]"],
+   ["see", ["37.50", "card"], "the sale of 3 x 12.50 by card is not shown as 37.50"],
+   ["goto", "/sales/new"],
+   ["select", "form[action=\"/sales\"] select[name=product_id] >> nth=0", {"index": 1}],
+   ["fill", "form[action=\"/sales\"] input[name=qty] >> nth=0", "2"],
+   ["check", "form[action=\"/sales\"] input[name=method][value=cash]"],
+   ["submit", "form[action=\"/sales\"]"],
+   ["see", ["only 1 in stock"], "selling 2 with 1 in stock does not say why it was refused"],
+   ["goto", "/sales"],
+   ["count", "form[action$=\"/void\"]", 0, "the list of sales voids on one click"],
+   ["follow", "main a[href$=\"/void\"]"],
+   ["see", ["37.50"], "the question before a void does not show the sale"],
+   ["goto", "/products"],
+   ["text", "td.stock", "1", "opening the question already returned the stock"],
+   ["goto", "/sales"],
+   ["follow", "main a[href$=\"/void\"]"],
+   ["submit", "form[action$=\"/void\"]"],
+   ["see", ["voided"], "the voided sale is not shown as voided"],
+   ["goto", "/products"],
+   ["text", "td.stock", "4", "the void did not bring the stock back to 4 on the page"],
+   ["goto", "/customers"],
+   ["follow", "main a[href^=\"/customers/\"][href$=\"/edit\"] >> nth=1"],
+   ["value", "form[action^=\"/customers/\"][action$=\"/edit\"] input[name=name]", "Bruno Sá", "the form to correct a customer does not hold his name"],
+   ["fill", "form[action^=\"/customers/\"][action$=\"/edit\"] input[name=name]", "Bruno Sá Neto"],
+   ["fill", "form[action^=\"/customers/\"][action$=\"/edit\"] input[name=phone]", "555-0102"],
+   ["submit", "form[action^=\"/customers/\"][action$=\"/edit\"]"],
+   ["see", ["Bruno Sá Neto", "555-0102"], "the corrected customer is not shown"],
+   ["follow", "main a[href^=\"/pets/\"][href$=\"/edit\"]"],
+   ["fill", "form[action^=\"/pets/\"] input[name=species]", "poodle"],
+   ["submit", "form[action^=\"/pets/\"]"],
+   ["see", ["poodle"], "the corrected pet is not shown"],
+   ["goto", "/appointments"],
+   ["unchosen", "form[action=\"/appointments\"] select[name=pet_id]", 1, "a pet is preselected on the appointment form"],
+   ["goto", "/appointments"],
+   ["select", "form[action=\"/appointments\"] select[name=pet_id]", {"index": 1}],
+   ["fill", "form[action=\"/appointments\"] input[name=date]", "2099-06-01"],
+   ["select", "form[action=\"/appointments\"] select[name=time]", "10:00"],
+   ["submit", "form[action=\"/appointments\"]"],
+   ["see", ["Rex"], "booking 2099-06-01 10:00 does not show \"Rex\""],
+   ["goto", "/appointments"],
+   ["select", "form[action=\"/appointments\"] select[name=pet_id]", {"index": 1}],
+   ["fill", "form[action=\"/appointments\"] input[name=date]", "2099-06-01"],
+   ["select", "form[action=\"/appointments\"] select[name=time]", "10:00"],
+   ["submit", "form[action=\"/appointments\"]"],
+   ["see", ["already taken"], "booking 2099-06-01 10:00 does not show \"already taken\""]
+  ],
+  "chosen": [
+   {"name": "the first customer is preselected on the sale form", "select": "form[action=\"/sales\"] select[name=customer_id]"},
+   {"name": "a payment method is preselected on the sale form", "radio": "form[action=\"/sales\"] input[name=method]"}
+  ]
+ },
+ "long": {
+  "posts": [
+   ["/products", {"name": "{80*W}", "price": "99999.99", "stock": "1000000", "low_at": "1000000"}],
+   ["/products", {"name": "Hypoallergenic grain-free salmon and sweet potato dry food for adult dogs 12 kg", "price": "18.90", "stock": "12", "low_at": "3"}],
+   ["/customers", {"name": "{80*M}", "phone": "{30*5}"}],
+   ["/pets", {"customer_id": "1", "name": "{80*P}", "species": "{40*s}"}],
+   ["/sales", [["method", "other"], ["customer_id", "1"], ["product_id", "1"], ["qty", "1000"], ["product_id", "2"], ["qty", "2"]]],
+   ["/sales/1/void", {}],
+   ["/sales", [["method", "other"], ["customer_id", "1"], ["product_id", "1"], ["qty", "1000"], ["product_id", "2"], ["qty", "2"]]],
+   ["/appointments", {"pet_id": "1", "date": "{today}", "time": "17:00"}],
+   ["/appointments", {"pet_id": "1", "date": "2099-06-01", "time": "09:00"}]
+  ],
+  "pages": ["/", "/products", "/products/1/edit", "/customers", "/customers/1/edit", "/pets/1/edit", "/sales", "/sales/1/void", "/sales/2/void", "/sales/new", "/appointments", "/nowhere"]
+ },
+ "words": {
+  "posts": [
+   ["/products", {"name": "Cat litter 10 L", "price": "8.90", "stock": "3", "low_at": "5"}],
+   ["/products", {"name": "Flea collar, small", "price": "19.99", "stock": "6", "low_at": "2"}],
+   ["/products", {"name": "Hypoallergenic grain-free salmon and sweet potato dry food 12 kg", "price": "18.90", "stock": "12", "low_at": "20"}],
+   ["/customers", {"name": "Maria Aparecida de Souza Albuquerque", "phone": "+55 11 5550 0101"}],
+   ["/customers", {"name": "Bo Li", "phone": ""}],
+   ["/pets", {"customer_id": "1", "name": "Sir Barks a Lot", "species": "golden retriever"}],
+   ["/pets", {"customer_id": "2", "name": "Mia", "species": "cat"}],
+   ["/sales", [["method", "card"], ["customer_id", "1"], ["product_id", "1"], ["qty", "2"], ["product_id", "2"], ["qty", "1"], ["product_id", "3"], ["qty", "1"]]],
+   ["/sales", [["method", "cash"], ["product_id", "1"], ["qty", "1"]]],
+   ["/sales/2/void", {}],
+   ["/appointments", {"pet_id": "1", "date": "{today}", "time": "17:00"}],
+   ["/appointments", {"pet_id": "2", "date": "{today}", "time": "16:00"}]
+  ],
+  "pages": ["/", "/products", "/customers", "/sales", "/appointments"],
+  "cells": 100
+ },
+ "actions": {
+  "posts": [
+   ["/products", {"name": "Cat litter 10 L", "price": "8.90", "stock": "30", "low_at": "5"}],
+   ["/products", {"name": "Hypoallergenic grain-free salmon and sweet potato dry food 12 kg", "price": "99999.99", "stock": "1000000", "low_at": "20"}],
+   ["/customers", {"name": "Maria Aparecida de Souza Albuquerque", "phone": "{30*5}"}],
+   ["/customers", {"name": "Bo Li", "phone": ""}],
+   ["/pets", {"customer_id": "1", "name": "Sir Barks a Lot", "species": "golden retriever"}],
+   ["/pets", {"customer_id": "2", "name": "Mia", "species": "cat"}],
+   ["/sales", [["method", "card"], ["customer_id", "1"], ["product_id", "1"], ["qty", "2"], ["product_id", "2"], ["qty", "1000"]]],
+   ["/sales", [["method", "cash"], ["product_id", "1"], ["qty", "1"]]],
+   ["/appointments", {"pet_id": "1", "date": "2099-06-01", "time": "17:00"}],
+   ["/appointments", {"pet_id": "2", "date": "2099-06-01", "time": "16:00"}]
+  ],
+  "pages": ["/products", "/customers", "/sales", "/appointments"],
+  "rows": 16,
+  "also": [
+   {"page": "/products/2/edit", "selector": "form[action=\"/products/2/stock\"] input[name=delta]", "what": "the Edit page of a product does not show one form to adjust its stock"}
+  ]
+ },
+ "cards": {
+  "posts": [
+   ["/products", {"name": "Cat litter 10 L", "price": "8.90", "stock": "3", "low_at": "5"}],
+   ["/products", {"name": "{80*W}", "price": "99999.99", "stock": "1000000", "low_at": "20"}],
+   ["/customers", {"name": "Maria Aparecida de Souza Albuquerque", "phone": "+55 11 5550 0101"}],
+   ["/customers", {"name": "Bo Li", "phone": ""}],
+   ["/pets", {"customer_id": "1", "name": "Sir Barks a Lot", "species": "golden retriever"}],
+   ["/pets", {"customer_id": "2", "name": "{80*P}", "species": "cat"}],
+   ["/sales", [["method", "card"], ["customer_id", "1"], ["product_id", "1"], ["qty", "2"], ["product_id", "2"], ["qty", "1000"]]],
+   ["/sales", [["method", "cash"], ["product_id", "1"], ["qty", "1"]]],
+   ["/sales/2/void", {}],
+   ["/appointments", {"pet_id": "1", "date": "{today}", "time": "17:00"}],
+   ["/appointments", {"pet_id": "2", "date": "{today}", "time": "16:00"}]
+  ],
+  "pages": ["/", "/products", "/customers", "/sales", "/sales/1/void", "/appointments"],
+  "rows": 45,
+  "fields": 150
+ },
+ "back": {
+  "posts": [],
+  "forms": [
+   {"page": "/products", "form": "form[action=\"/products\"]", "type": {"name": "Kibble 2 kg", "price": "19,90", "stock": "4", "low_at": "1"}, "says": "rice", "kept": ["name", "price", "stock", "low_at"], "emptied": []}
+  ]
+ }
+}

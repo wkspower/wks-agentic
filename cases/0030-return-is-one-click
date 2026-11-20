@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Case of lesson L0030 (lessons/0030-return-is-one-click.md).
+Origin: the person's answer 10 in run 006, 2026-11-20: return is one button on the list.
+Run from the repository root."""
+import json
+import sys
+from html.parser import HTMLParser
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("school library")
+
+
+class Reader(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.forms = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form":
+            self.forms.append(((attrs.get("method") or "get").lower(), attrs.get("action") or ""))
+
+
+def checks(shop):
+    title = shop.add("titles", title="Holes", author="", isbn="", shelf="", copies="2")
+    one, two = sorted(row["id"] for row in shop.export()["copies"] if row["title_id"] == title)
+    ana = shop.add("borrowers", name="Ana Lima", kind="pupil", **{"class": "7B"})
+    first = shop.add("loans", borrower_id=ana, copy=one)
+    second = shop.add("loans", borrower_id=ana, copy=two)
+    back = "/loans/%d/return"
+    today = shop.export()["today"]
+
+    def offered(path):
+        status, body = shop.request("GET", path)
+        shop.expect(status == 200, "GET %s answered %d" % (path, status))
+        reader = Reader()
+        reader.feed(body)
+        return sorted(action for method, action in reader.forms if method == "post" and "/return" in action), body
+
+    def open_loans():
+        return sorted(row["id"] for row in shop.export()["loans"] if row["returned"] is None)
+
+    # The list of loans and the borrower's page carry the button of each open loan.
+    for path in ("/loans", "/borrowers/%d" % ana):
+        forms, _ = offered(path)
+        shop.expect(forms == [back % first, back % second],
+                    "%s offers %s, expected one return form for each of the two loans" % (path, forms))
+
+    # There is no page that asks, and opening the address returns nothing.
+    for ident in (first, second):
+        status, _ = shop.request("GET", back % ident)
+        shop.expect(status >= 400, "GET %s answered %d: a page stands between the list and the return" % (back % ident, status))
+    shop.expect(open_loans() == [first, second], "opening the return address returned: open are %s" % open_loans())
+
+    # One post returns; the loan stays on record with its day, and its button is gone.
+    shop.post(303, back % first)
+    shop.expect(open_loans() == [second], "after one post the open loans are %s" % open_loans())
+    shop.expect(shop.row("loans", first)["returned"] == today, "a loan returned today is returned on %s"
+                % shop.row("loans", first)["returned"])
+    for path in ("/loans", "/borrowers/%d" % ana):
+        forms, _ = offered(path)
+        shop.expect(forms == [back % second], "after the return %s offers %s" % (path, forms))
+    forms, body = offered("/returned")
+    shop.expect("Holes" in body and "Ana Lima" in body and not forms,
+                "the page of returned loans does not show the loan, or offers to return it again")
+
+    # A second return is refused and moves nothing.
+    shop.restart("--today", "2099-01-01")
+    shop.post(400, back % first)
+    shop.expect(shop.row("loans", first)["returned"] == today, "a second return moved the day the book came back")
+
+    # No address edits or removes a loan.
+    before = shop.export()["loans"]
+    for path in ("/loans/%d" % second, "/loans/%d/edit" % second, "/loans/%d/delete" % second, "/loans/%d/remove" % second):
+        status, _ = shop.request("POST", path, [("copy", one), ("borrower_id", ana), ("due", "2100-01-01")])
+        shop.expect(status >= 400, "POST %s answered %d" % (path, status))
+    shop.expect(shop.export()["loans"] == before, "a loan was changed or removed")
+
+
+@fault("GET", r"/loans|/borrowers/\d+")
+def asks_first(shop, ask):
+    """The button on the list leads to a question page, not to the return."""
+    status, body = ask.send()
+    if '/return"' in body:
+        body = body.replace('/return"', '/return/ask"')
+        shop.acted += 1
+    return status, body
+
+
+@fault("GET", r"/loans/(\d+)/return")
+def opening_returns(shop, ask, ident):
+    """Opening the return address is enough to return the book."""
+    if shop.real("POST", ask.path)[0] == 303:
+        shop.acted += 1
+    return 405, ""
+
+
+@fault("GET", "/loans")
+def returned_offered_again(shop, ask):
+    """A loan already returned still has its button."""
+    status, body = ask.send()
+    for row in shop.state()["loans"]:
+        if row["returned"] is not None:
+            body += '<form method="post" action="/loans/%d/return"><button>Return</button></form>' % row["id"]
+            shop.acted += 1
+    return status, body
+
+
+@fault("POST", r"/loans/(\d+)/return")
+def returned_twice(shop, ask, ident):
+    """A second return is taken like the first."""
+    if any(row["id"] == int(ident) and row["returned"] is not None for row in shop.state()["loans"]):
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+@fault("GET", "/export.json")
+def returned_forgotten(shop, ask):
+    """A returned loan is no longer on record."""
+    status, body = ask.send()
+    state = json.loads(body)
+    kept = [row for row in state["loans"] if row["returned"] is None]
+    shop.acted += len(state["loans"]) - len(kept)
+    state["loans"] = kept
+    return status, json.dumps(state)
+
+
+run(checks, wrong=[
+    ("the list leads to a question before returning", asks_first),
+    ("opening the return address returns the book", opening_returns),
+    ("a returned loan is offered for returning again", returned_offered_again),
+    ("a second return is accepted", returned_twice),
+    ("a returned loan leaves the record", returned_forgotten),
+])

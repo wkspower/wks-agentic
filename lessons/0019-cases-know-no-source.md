@@ -41,7 +41,12 @@ one had to be rewritten". The cases were pinning about two dozen lines of
 the program. The person's decision, 2026-11-19: no case names, reads or
 edits the text of the product's source; every rule a case guards is still
 shown something wrong, and refuses it.
-Read as written and accepted by the person, 2026-11-19 (run 005).
+Accepted by the person on 2026-11-19 (run 005), from a one-line summary of this lesson given in another session; the person has not read this file.
+
+Run 006, 2026-11-20: the case passed on a second product without taking
+its source away, because it looked for the first product's file by name.
+It now finds the product through `product/LABELS` and stops if any source
+is left in its scratch tree (L0034).
 
 ## What would be a regression
 A case that opens a file under `product/` as text, copies it, or changes it;

@@ -2,16 +2,22 @@
 """Case of lesson L0014 (lessons/0014-examples-are-accepted.md).
 Origin: run 001, 2026-11-19. Used by hand, the stock form showed "+10 or -2"
 as its example and refused "+10".
+Made general in run 006, 2026-11-20, when the school library chose the label:
+the pages, the rows they need and what fills the other fields are the
+product's, from its surface; a form that sends with GET is asked with GET.
 Reads every placeholder on every page as examples separated by " or ", and
-posts each one in its own form. Run from the repository root."""
+sends each one in its own form. Run from the repository root."""
+import re
 import sys
+import urllib.parse
 from html.parser import HTMLParser
 
 sys.path.insert(0, ".")
+import caselib
 from caselib import fault, run
 
-FILLER = {"name": "Thing", "price": "1.00", "stock": "50", "low_at": "0", "delta": "1", "phone": "",
-          "species": "cat", "qty": "1", "method": "cash", "date": "2099-06-01", "time": "09:00"}
+EXAMPLES = caselib.product()["examples"]
+REFUSED = EXAMPLES["refused"]
 
 
 class Forms(HTMLParser):
@@ -22,46 +28,47 @@ class Forms(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "form":
-            self.forms.append((attrs.get("action"), []))
+            self.forms.append((attrs.get("action"), (attrs.get("method") or "get").lower(), []))
         elif tag in ("input", "select") and attrs.get("name") and self.forms:
-            self.forms[-1][1].append((attrs["name"], attrs.get("placeholder")))
+            self.forms[-1][2].append((attrs["name"], attrs.get("placeholder")))
 
 
 def checks(shop):
-    product = shop.add("products", name="Kibble", price="2.00", stock="50", low_at="0")
-    owner = shop.add("customers", name="Ana Lima", phone="")
-    pet = shop.add("pets", customer_id=owner, name="Rex", species="dog")
-    filler = dict(FILLER, customer_id=owner, pet_id=pet, product_id=product)
+    for path, fields in EXAMPLES["seed"]:
+        shop.post(303, path, **fields)
+    filler = EXAMPLES["filler"]
     examples = 0
-    for path in ["/", "/products", "/products/%d/edit" % product, "/customers", "/customers/%d/edit" % owner,
-                 "/pets/%d/edit" % pet, "/sales", "/sales/new", "/appointments"]:
+    for path in EXAMPLES["pages"]:
         status, body = shop.request("GET", path)
         shop.expect(status == 200, "GET %s answered %d" % (path, status))
         reader = Forms()
         reader.feed(body)
-        for action, fields in reader.forms:
+        for action, method, fields in reader.forms:
             for position, (name, placeholder) in enumerate(fields):
                 for example in (placeholder or "").split(" or ") if placeholder else []:
                     for other, _ in fields:
                         shop.expect(other in filler, "the case does not know how to fill '%s' on %s" % (other, path))
                     pairs = [(other, example if spot == position else filler[other])
                              for spot, (other, _) in enumerate(fields)]
-                    got = shop.request("POST", action, pairs)[0]
-                    shop.expect(got == 303, "on %s the field '%s' shows the example \"%s\" and the form refuses it (%d)"
+                    if method == "post":
+                        got, fine = shop.request("POST", action, pairs)[0], 303
+                    else:
+                        got, fine = shop.request("GET", action + "?" + urllib.parse.urlencode(pairs))[0], 200
+                    shop.expect(got == fine, "on %s the field '%s' shows the example \"%s\" and the form refuses it (%d)"
                                 % (path, name, example, got))
                     examples += 1
-    shop.expect(examples >= 3, "only %d examples were found on the pages" % examples)
+    shop.expect(examples >= EXAMPLES["least"], "only %d examples were found on the pages" % examples)
 
 
-@fault("POST", r"/products/\d+/stock")
-def plus_refused(shop, ask):
-    """An adjustment written with a plus sign is refused."""
-    if ask.get("delta").startswith("+"):
+@fault("POST", REFUSED["path"])
+def example_refused(shop, ask, *groups):
+    """The form refuses what its own example shows: the fault the product's surface describes."""
+    if re.search(REFUSED["pattern"], ask.get(REFUSED["field"])):
         shop.acted += 1
         return 400, ""
     return ask.send()
 
 
 run(checks, wrong=[
-    ("a plus sign is refused", plus_refused),
+    (REFUSED["name"], example_refused),
 ])

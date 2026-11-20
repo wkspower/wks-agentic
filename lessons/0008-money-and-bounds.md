@@ -15,7 +15,7 @@ The wizardly-cerf run, 2026-11-18 (no upper bound on prices). The person,
 run 001, 2026-11-19 (answers 6 and 13).
 Split in two on the person's decision of 2026-11-19 (run 005): this half
 holds for any product that handles money; the pet shop's numbers and "tax
-included" went to L0025. Read and accepted by the person the same day.
+included" went to L0025. Accepted by the person the same day, from a one-line summary given in another session; the person has not read this file.
 
 ## What would be a regression
 A price kept as anything but integer cents, an amount that went through

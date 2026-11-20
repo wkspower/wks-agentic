@@ -6,7 +6,10 @@ import sys
 from html.parser import HTMLParser
 
 sys.path.insert(0, ".")
+import caselib
 from caselib import fault, run
+
+caselib.product("pet shop")  # this case was born in the pet shop and knows its pages (L0024, L0034)
 
 DAY = "2099-06-01"
 

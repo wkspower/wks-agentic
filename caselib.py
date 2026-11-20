@@ -1,9 +1,15 @@
-"""What the pet shop cases share. Not a case itself.
+"""What the cases over HTTP share. Not a case itself.
 
-A case starts the shop on a scratch database and talks to it over HTTP, which
-is the only way in (L0006). That makes the cases the contract a rebuilt
-product has to meet: the command line below, the form fields, /export.json.
-No case reads the product's source, and nothing here does either (L0019).
+A case starts the product ("the shop": the first one was a pet shop) on a
+scratch database and talks to it over HTTP, which is the only way in (L0006).
+That makes the cases the contract a rebuilt product has to meet: the command
+line below, the form fields, /export.json. No case reads the product's
+source, and nothing here does either (L0019).
+
+A case that belongs to one product names its pages itself and asks for that
+product by its label. A case under a general label names none: what it needs
+to know about the product in front of it is in surface/NAME.json, one file
+per product, read by product() (L0024, L0034).
 
 A wrong variant (L0002, L0019) is the same shop with one fault in front of
 it: a function that stands in for the shop on the requests it names, and may
@@ -25,7 +31,44 @@ import time
 import urllib.parse
 
 # The command line. SHOP lets the same cases be put to another build of the product.
-MAIN = os.environ.get("SHOP") or os.path.join("product", "petshop.py")
+# No product is known here until a case has asked for one with product() (L0034).
+MAIN = os.environ.get("SHOP")
+
+
+def label(text):
+    return " ".join(text.split("#")[0].split()).lower()
+
+
+def product(name=None):
+    """The surface of one product, and from here on the product the cases start.
+
+    Which one: the name given, or SURFACE, or the one label in product/LABELS
+    that has a file in surface/. No product to find is a failure, not a skip."""
+    global MAIN
+    found = {}
+    for file in sorted(os.listdir("surface")) if os.path.isdir("surface") else []:
+        if file.endswith(".json"):
+            with open(os.path.join("surface", file), encoding="utf-8") as handle:
+                one = json.load(handle)
+            found[label(one["label"])] = one
+    name = name or os.environ.get("SURFACE")
+    if name is None:
+        try:
+            with open(os.path.join("product", "LABELS"), encoding="utf-8") as handle:
+                declared = [label(line) for line in handle]
+        except OSError:
+            declared = []
+        named = [word for word in declared if word in found]
+        if len(named) != 1:
+            print("product/LABELS declares %d labels that have a surface in surface/ (%s): "
+                  "there is no one product to put this case to" % (len(named), ", ".join(sorted(found)) or "none there"))
+            sys.exit(1)
+        name = named[0]
+    if label(name) not in found:
+        print("no surface/*.json is labelled '%s'" % name)
+        sys.exit(1)
+    MAIN = os.environ.get("SHOP") or found[label(name)]["main"]
+    return found[label(name)]
 # No site-packages and no environment: an import from outside the standard library stops the shop (L0006).
 FLAGS = ["-S", "-E", "-s"]
 
@@ -80,6 +123,7 @@ class Shop:
         self.checks = self.acted = 0
         self.front = self.wrapper = self.proc = None
         self.closing = []
+        self.args = []  # what follows the usual command line, for a product that takes more
         self.dir = tempfile.mkdtemp()
         self.db = db or os.path.join(self.dir, "shop.db")
         with socket.socket() as probe:
@@ -88,13 +132,15 @@ class Shop:
         self.log = open(os.path.join(self.dir, "log"), "w+")
 
     def start(self):
+        if MAIN is None:
+            raise Failure("the case started a product without asking for its surface with product()")
         command = [sys.executable] + FLAGS
         if self.wrapper:  # a program that does one wrong thing and then runs the shop as it is
             path = os.path.join(self.dir, "wrong.py")
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(self.wrapper)
             command.append(path)
-        self.proc = subprocess.Popen(command + [MAIN, "--db", self.db, "--port", str(self.port)],
+        self.proc = subprocess.Popen(command + [MAIN, "--db", self.db, "--port", str(self.port)] + self.args,
                                      stdout=self.log, stderr=self.log)
         for _ in range(100):
             if self.proc.poll() is not None:
@@ -107,6 +153,13 @@ class Shop:
         said = self.said().strip().splitlines()
         self.stop()
         raise Failure("the shop did not start: %s" % (said[-1] if said else "no output"))
+
+    def restart(self, *args):
+        """Stop the product and start it again on the same file, with these arguments after the usual ones."""
+        self.proc.terminate()
+        self.proc.wait(timeout=5)
+        self.args = list(args)
+        return self.start()
 
     def said(self):
         """What the shop has printed so far."""

@@ -50,5 +50,10 @@ figure, button or link on more than one line, a cell of words on several
 lines in less than 150 px, or a row whose links and buttons are all out of
 sight. A product's Edit page without the form that adjusts its stock.
 
-The cases are written against the pet shop's pages (L0024). They measure
-Chromium only, and not a touch screen.
+The cases were written against the pet shop's pages and made general in
+run 006, 2026-11-20, when the school library chose `web pages` (L0024):
+what fills the lists and which pages are measured come from the product's
+surface. They refused the library's first build twice, at 320 px. Their
+wrong variants still expect a list too wide for 800 px to scroll in a box
+with its last column held in sight, which is the pet shop's design and not
+this lesson's. They measure Chromium only, and not a touch screen.

@@ -11,7 +11,7 @@ is still somewhere: `/export.json` leaves nothing out.
 The person, run 004, 2026-11-19 (answer 3 of 3: "Enough"). Run 002 had
 built it this way without asking and listed both under "Left out, and not
 asked".
-Read as written and accepted by the person, 2026-11-19 (run 005).
+Accepted by the person on 2026-11-19 (run 005), from a one-line summary of this lesson given in another session; the person has not read this file.
 
 ## What would be a regression
 More than 200 sales listed on the page, an older sale missing from

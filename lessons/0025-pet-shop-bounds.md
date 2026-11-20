@@ -23,8 +23,7 @@ A booking date has no row: the product takes any real day from today on.
 The person, run 001, 2026-11-19 (answers 6 and 13). The numbers were the
 builder's choice under answer 13; the person saw the table and kept it in
 run 002, 2026-11-19 (answer 1 of 4). Until run 005 this was the second half
-of L0008; split off on the person's decision of 2026-11-19, and read and
-accepted by the person the same day. The case is the bounds part of the
+of L0008; split off on the person's decision of 2026-11-19, and accepted by the person the same day, from a one-line summary given in another session; the person has not read this file. The case is the bounds part of the
 old case of L0008, with its three wrong variants, unchanged.
 
 ## What would be a regression

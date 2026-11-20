@@ -10,7 +10,7 @@ the button.
 ## Source
 The person, run 002, 2026-11-19 (answer 3 of 4: "Confirm on a second page").
 Run 001 had left it out and listed it under "Left out, and not asked".
-Read as written and accepted by the person, 2026-11-19 (run 005).
+Accepted by the person on 2026-11-19 (run 005), from a one-line summary of this lesson given in another session; the person has not read this file.
 
 ## What would be a regression
 A form on a list or on the first page that posts to a void address, a void

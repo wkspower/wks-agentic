@@ -1,11 +1,62 @@
 # Handoff
 
+**Run 007 (2026-11-20) made two changes to the library and did not record
+the review they came with.** `./check` passes: 33 lessons, 23 in force, 21
+cases run, 67 wrong variants refused; without `product/`, 9 in force and 5
+cases run. The changes: a copy that is out can be marked lost, which ends
+its loan that day as lost (L0031, reversed); classes are compared without
+regard to capitals (L0036, new). See `runs/007-library-review.md`.
 
-**This is the base (2026-11-20).** It holds the lessons and cases after run
-005 and no product. The person read and accepted the lessons on 2026-11-19
-and approved this merge. The pet shop itself lives on branch `run/005-labels`;
-its lessons are here, switched off until a product declares their labels.
-No second product has been built yet, so no case has been made general (L0024).
+
+**This is the base (2026-11-20, after run 007).** It holds every lesson and
+case and no product. Two products have been built from it: the pet shop
+(branch `run/005-labels`, which still has the cases as they were before run
+006 made eight of them general) and the school library (branch
+`run/007-library-review`). Their lessons are here, switched off until a
+product declares their labels.
+
+## The review of L0027 to L0036, as it really happened
+
+The person accepted these lessons on 2026-11-20 with one "ok", in the
+coordinating session, to a table of one-line summaries and two suggested
+changes. They have not read the lesson files. Each Source now says exactly
+that. The same correction was made to L0005 to L0025, which run 005 had
+marked "Read as written and accepted" on an instruction that overstated
+what the person had done (L0037).
+
+Still owed: the school's confirmation of the numbers in L0028 and L0029;
+the person's look at what run 007's builder chose (its run record lists
+them); and the person reading any lesson file at all.
+
+**Run 006 (2026-11-20) built the second product on this branch: a school
+library.** `./check` passed with it: 32 lessons, 22 in force, 20 cases run,
+57 wrong variants refused. The person answered one round of 14 questions
+with "Ok" and has not used the library or read L0027 to L0035. Merging
+those lessons into the base is theirs to do.
+
+What the run changed in the scaffold, beyond adding lessons:
+
+- `surface/NAME.json`, one per product, holds what the cases under general
+  labels may know about that product. The eight such cases read it; they
+  pass on the library here and on the pet shop build of run 005.
+- `caselib.py` and `caselib.js` name no product. A case asks for one:
+  `caselib.product()` for the product `product/LABELS` declares, or
+  `caselib.product("pet shop")` for a case born in one product (L0034).
+- To put the cases to another build: `SHOP=path/to/main cases/NNNN-...`, and
+  `SURFACE="pet shop"` as well when the tree's own product is another one.
+
+To use the library: `python3 product/library.py --sample`, then open
+http://127.0.0.1:8000/. `--today 2026-12-20` shows it on another day.
+
+Owed to the person from this run, in `runs/006-school-library.md`: ten
+things decided by the builder, and what was not verified.
+
+## The base (2026-11-20, before run 006)
+
+The base holds the lessons and cases after run 005 and no product. The
+person read and accepted the lessons on 2026-11-19 and approved that merge.
+The pet shop itself lives on branch `run/005-labels`; its lessons are here,
+switched off until a product declares their labels.
 
 ## State (2026-11-19, after run 005)
 
@@ -50,8 +101,9 @@ Not to be changed and not to be asked about until they bring it up:
 1. Read `CLAUDE.md`, then this file.
 2. Run `./check`. If it fails, that is the first thing to fix.
 3. To test a prompt, follow `prompts/README.md`.
-4. To use the shop: `python3 product/petshop.py --sample`, then open
-   http://127.0.0.1:8000/. The cases need Python 3 and Node with Playwright.
+4. To use the product on this branch, see the top of this file. The pet
+   shop is on `run/005-labels`: `python3 product/petshop.py --sample`. The
+   cases need Python 3 and Node with Playwright.
 
 ## How a new product starts from the base
 
@@ -66,11 +118,13 @@ pet shop's lessons and cases stay in it, not in force.
 3. Write `product/LABELS` from the answers, one label per line. A label no
    lesson carries fails the check, so a new kind of thing gets its label
    when its first lesson is written, not before.
-4. Run `./check` again. The cases now in force fail: some because there is
-   no product yet, and some because they were written against the pet
-   shop's pages. The second kind is expected (L0024): make that case general
-   then, keeping it passing on the pet shop's branch, and say so in the run
-   record. Do not switch the label off to get past it.
+4. Write `surface/NAME.json` for the product, with its label and program,
+   and run `./check` again. The cases now in force fail: some because there
+   is no product yet, and some because the surface does not yet say what
+   they need. A case under a general label that turns out to know one
+   product's pages is made general then (L0024), kept passing on the other
+   products' builds, and named in the run record. Do not switch the label
+   off to get past it. Run 006 did this for eight cases.
 5. Lessons learned while building get the labels they deserve: the
    product's own name for its business rules, an existing label when the
    lesson would hold for the pet shop too, `always` only for how the work
@@ -93,6 +147,13 @@ For a rebuild test of the pet shop, delete everything in `product/` except
   it grows the way the planted builds did.
 
 ## Not yet decided
+
+- Whether the pet shop's branch takes the general cases and its surface.
+  They pass on its build; the branch was not touched.
+- Whether the cases under `web pages` may go on requiring a scrolling box
+  with its last column held in sight at 800 px. L0026 does not ask for it;
+  the wrong variants of two cases do (`runs/006-school-library.md`).
+- Whether `money` should be made general. No second product has needed it.
 
 - A stated bound for the booking date (L0025 has no row for it).
 - Whether a lesson may need two labels at once. Today several labels mean
@@ -117,3 +178,5 @@ Each run adds a file under `runs/` and a line here.
 - [003 wrong variants by behaviour](runs/003-variants-by-behaviour.md), 2026-11-19: no questions, 1 lesson added (with a case), 2 changed; cases only, 29 faults at the interface in place of 28 text replacements.
 - [004 pet shop, rebuilt with no history](runs/004-rebuild-no-history.md), 2026-11-19: 1 round of 3 questions, 3 lessons added (all with a case), 1 defect found by hand, no inherited case changed.
 - [005 labels](runs/005-labels.md), 2026-11-19: no questions, scaffold changed so lessons are switched on per product; 4 lessons added (3 with a case), 3 folded into one, the person's review of L0005 to L0022 recorded; lists became cards on a narrow screen, case first.
+- [007 library review](runs/007-library-review.md), 2026-11-20: no questions, no prompt; 1 lesson reversed and 1 added (both with a case, case first), 1 defect found writing a case, 1 addition refused by an inherited case; the review the run was to record is not recorded, and why.
+- [006 school library](runs/006-school-library.md), 2026-11-20: 1 round of 14 questions, 9 lessons added (8 with a case), the second product; 8 cases made general and kept passing on the pet shop; 1 defect found in the scaffold and 1 in the product by hand.

@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Case of lesson L0028 (lessons/0028-a-loan-is-of-one-copy.md).
+Origin: the person's answers 4, 5 and 6 in run 006, 2026-11-20.
+Run from the repository root."""
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import Broken, fault, run
+
+caselib.product("school library")
+
+
+def checks(shop):
+    def copies(title):
+        return sorted(row["id"] for row in shop.export()["copies"] if row["title_id"] == title)
+
+    def out():
+        return sorted((row["copy_id"], row["borrower_id"]) for row in shop.export()["loans"] if row["returned"] is None)
+
+    holes = shop.add("titles", title="Holes", author="Louis Sachar", isbn="", shelf="F SAC", copies="2")
+    atlas = shop.add("titles", title="School atlas", author="", isbn="", shelf="", copies="12")
+    first, second = copies(holes)
+    shop.expect(len(copies(atlas)) == 12, "a title entered with 12 copies has %d" % len(copies(atlas)))
+    ana = shop.add("borrowers", name="Ana Lima", kind="pupil", **{"class": "7B"})
+    bo = shop.add("borrowers", name="Bo Li", kind="pupil", **{"class": "9A"})
+    kay = shop.add("borrowers", name="Ms Kay", kind="staff", **{"class": ""})
+
+    # One copy, one borrower.
+    loan = shop.add("loans", borrower_id=ana, copy=first)
+    row = shop.row("loans", loan)
+    shop.expect((row["copy_id"], row["borrower_id"], row["returned"]) == (first, ana, None),
+                "the loan of copy %d to borrower %d is recorded as %s" % (first, ana, row))
+    shop.expect(shop.row("copies", first)["status"] == "on loan", "a copy that is out is not shown as on loan")
+    shop.expect(shop.row("copies", second)["status"] == "available", "the other copy of the title is not available")
+    body = shop.post(400, "/loans", borrower_id=bo, copy=first)
+    shop.expect("Ana Lima" in body, "lending a copy that is out does not say who has it")
+    for what, fields in [("a copy that does not exist", {"borrower_id": bo, "copy": 9999}),
+                         ("no copy", {"borrower_id": bo, "copy": ""}),
+                         ("a copy that is not a number", {"borrower_id": bo, "copy": "Holes"}),
+                         ("a borrower that does not exist", {"borrower_id": 9999, "copy": second}),
+                         ("no borrower", {"copy": second})]:
+        shop.post(400, "/loans", **fields)
+        shop.expect(out() == [(first, ana)], "a loan with %s left the open loans as %s" % (what, out()))
+
+    # A copy marked lost or withdrawn is not lent; marked back, it is.
+    for status in ("lost", "withdrawn"):
+        shop.post(303, "/copies/%d/status" % second, ("status", status))
+        body = shop.post(400, "/loans", borrower_id=bo, copy=second)
+        shop.expect(status in body, "lending a copy marked %s does not say why it was refused" % status)
+    shop.post(303, "/copies/%d/status" % second, ("status", "available"))
+    shop.add("loans", borrower_id=bo, copy=second)
+
+    # A returned copy can go out again, to someone else.
+    shop.post(303, "/loans/%d/return" % loan)
+    shop.expect(shop.row("copies", first)["status"] == "available", "a returned copy is not available")
+    shop.add("loans", borrower_id=bo, copy=first)
+
+    # The limit: 3 for a pupil, 10 for staff, counted over books out now.
+    spare = copies(atlas)
+    shop.add("loans", borrower_id=bo, copy=spare[0])
+    body = shop.post(400, "/loans", borrower_id=bo, copy=spare[1])
+    shop.expect("3" in body and "pupil" in body, "the fourth book to a pupil is refused without the limit being named")
+    back = [row["id"] for row in shop.export()["loans"] if row["borrower_id"] == bo and row["returned"] is None][0]
+    shop.post(303, "/loans/%d/return" % back)
+    shop.add("loans", borrower_id=bo, copy=spare[1])
+    for copy in spare[2:12]:
+        shop.add("loans", borrower_id=kay, copy=copy)
+    free = [row["id"] for row in shop.export()["copies"] if row["status"] == "available"][0]
+    body = shop.post(400, "/loans", borrower_id=kay, copy=free)
+    shop.expect("10" in body and "staff" in body, "the eleventh book to staff is refused without the limit being named")
+    shop.expect(len([1 for _, who in out() if who == kay]) == 10, "staff with 10 books out has another count on record")
+
+    # A borrower who has left does not borrow.
+    shop.post(303, "/borrowers/%d/edit" % ana, name="Ana Lima", kind="pupil", active="0", **{"class": "7B"})
+    before = out()
+    shop.post(400, "/loans", borrower_id=ana, copy=free)
+    shop.expect(out() == before, "a refused loan to a borrower who has left changed the open loans")
+
+
+def open_loans(shop, **where):
+    return [row for row in shop.state()["loans"] if row["returned"] is None
+            and all(row[key] == value for key, value in where.items())]
+
+
+def number(text):
+    return int(text) if text.isdigit() else None
+
+
+@fault("POST", "/loans")
+def out_twice(shop, ask):
+    """A copy that is out is lent again: the nearest the library allows is to take it back first."""
+    for loan in open_loans(shop, copy_id=number(ask.get("copy"))):
+        if shop.real("POST", "/loans/%d/return" % loan["id"])[0] != 303:
+            raise Broken("the fault could not return loan %d" % loan["id"])
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/loans")
+def lost_lent(shop, ask):
+    """A copy marked lost or withdrawn is lent."""
+    for copy in shop.state()["copies"]:
+        if copy["id"] == number(ask.get("copy")) and copy["status"] in ("lost", "withdrawn"):
+            if shop.real("POST", "/copies/%d/status" % copy["id"], [("status", "available")])[0] != 303:
+                raise Broken("the fault could not mark copy %d available" % copy["id"])
+            shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/loans")
+def no_limit(shop, ask):
+    """Nobody counts the books a borrower holds."""
+    who = number(ask.get("borrower_id"))
+    held = open_loans(shop, borrower_id=who)
+    kinds = {row["id"]: row["kind"] for row in shop.state()["borrowers"]}
+    if who in kinds and len(held) >= {"pupil": 3, "staff": 10}[kinds[who]]:
+        if shop.real("POST", "/loans/%d/return" % held[0]["id"])[0] != 303:
+            raise Broken("the fault could not return loan %d" % held[0]["id"])
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/loans")
+def left_borrows(shop, ask):
+    """A borrower who has left still borrows."""
+    for row in shop.state()["borrowers"]:
+        if row["id"] == number(ask.get("borrower_id")) and not row["active"]:
+            fields = [("name", row["name"]), ("kind", row["kind"]), ("class", row["class"]), ("active", "1")]
+            if shop.real("POST", "/borrowers/%d/edit" % row["id"], fields)[0] != 303:
+                raise Broken("the fault could not bring borrower %d back" % row["id"])
+            shop.acted += 1
+    return ask.send()
+
+
+run(checks, wrong=[
+    ("a copy that is out is lent again", out_twice),
+    ("a copy marked lost or withdrawn is lent", lost_lent),
+    ("the limit is not counted", no_limit),
+    ("a borrower who has left borrows", left_borrows),
+])

@@ -4,28 +4,18 @@
 // links out of sight and the list of products its Adjust and Edit, while every case passed.
 // Fills the shop, then looks in every list row that has a link or a button for one that
 // can be seen and reached without scrolling: in the cards of a narrow screen, and at 800 px,
-// where the lists are tables that may still scroll inside their box. Run from the repository root.
-const { run, style } = require('../caselib.js');
+// where the lists are tables that may still scroll inside their box.
+// Made general in run 006, 2026-11-20, when the school library chose the label: what fills the
+// product and which pages are measured are the product's, in its surface ("actions").
+// Run from the repository root.
+const { run, style, surface } = require('../caselib.js');
 
-run(async (page, base, expect) => {
-  const post = async (path, fields) => {
-    const answer = await fetch(base + path, { method: 'POST', body: new URLSearchParams(fields), redirect: 'manual' });
-    if (answer.status !== 303) throw new Error('wrong: POST ' + path + ' answered ' + answer.status);
-  };
-  await post('/products', { name: 'Cat litter 10 L', price: '8.90', stock: '30', low_at: '5' });
-  await post('/products', { name: 'Hypoallergenic grain-free salmon and sweet potato dry food 12 kg', price: '99999.99', stock: '1000000', low_at: '20' });
-  await post('/customers', { name: 'Maria Aparecida de Souza Albuquerque', phone: '5'.repeat(30) });
-  await post('/customers', { name: 'Bo Li', phone: '' });
-  await post('/pets', { customer_id: '1', name: 'Sir Barks a Lot', species: 'golden retriever' });
-  await post('/pets', { customer_id: '2', name: 'Mia', species: 'cat' });
-  await post('/sales', [['method', 'card'], ['customer_id', '1'], ['product_id', '1'], ['qty', '2'], ['product_id', '2'], ['qty', '1000']]);
-  await post('/sales', [['method', 'cash'], ['product_id', '1'], ['qty', '1']]);
-  await post('/appointments', { pet_id: '1', date: '2099-06-01', time: '17:00' });
-  await post('/appointments', { pet_id: '2', date: '2099-06-01', time: '16:00' });
+run(async (page, base, expect, fill) => {
+  await fill(surface.actions.posts);
   let rows = 0;
   for (const width of [320, 390, 800]) {
     await page.setViewportSize({ width, height: 800 });
-    for (const path of ['/products', '/customers', '/sales', '/appointments']) {
+    for (const path of surface.actions.pages) {
       await page.goto(base + path);
       const [seen, hidden] = await page.$$eval('tbody tr', (trs) => {
         const inSight = (el) => {
@@ -53,13 +43,16 @@ run(async (page, base, expect) => {
       expect(hidden.length === 0, path + ' at ' + width + ' px hides ' + hidden.slice(0, 3).join('; '));
       rows += seen;
     }
-    await page.goto(base + '/products/2/edit');
-    const adjust = await page.$$eval('form[action="/products/2/stock"] input[name=delta]', (els) => els.filter((el) => {
-      const at = el.getBoundingClientRect(); return at.width > 0 && at.left >= 0 && at.right <= innerWidth;
-    }).length);
-    expect(adjust === 1, 'the Edit page of a product at ' + width + ' px shows ' + adjust + ' forms to adjust its stock');
+    // A row needs one way in, not all of them: what the list leaves out is on the page its link opens.
+    for (const also of surface.actions.also) {
+      await page.goto(base + also.page);
+      const there = await page.$$eval(also.selector, (els) => els.filter((el) => {
+        const at = el.getBoundingClientRect(); return at.width > 0 && at.left >= 0 && at.right <= innerWidth;
+      }).length);
+      expect(there === 1, also.what + ': ' + there + ' at ' + width + ' px');
+    }
   }
-  expect(rows >= 16, 'only ' + rows + ' rows were looked at');
+  expect(rows >= surface.actions.rows, 'only ' + rows + ' rows were looked at');
 }, [
   ['the last column scrolls away with the rest', style('td, th { position: static !important; }')],
   ['the build of run 004 before its fix: a table at every width, the last column scrolling away', style(
