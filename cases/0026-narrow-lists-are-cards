@@ -1,0 +1,79 @@
+#!/usr/bin/env node
+// Case of lesson L0026 (lessons/0026-narrow-lists-are-cards.md).
+// Origin: the person's decision of 2026-11-19 (run 005), after the narrow layout produced a
+// defect found by eye in each of runs 001, 002 and 004.
+// Fills the shop, then at each narrow width looks at every row of every list: its fields are
+// one under another, each shown with the name of its column, the rows are apart, and no box
+// on the page scrolls sideways. At a wide width the same lists are still tables.
+// Made general in run 006, 2026-11-20, when the school library chose the label: what fills the
+// product and which pages are measured are the product's, in its surface ("cards").
+// Run from the repository root.
+const { run, style, surface } = require('../caselib.js');
+
+run(async (page, base, expect, fill) => {
+  await fill(surface.cards.posts);
+  const lists = surface.cards.pages;
+  // What one page looks like: per row, whether its fields are stacked; which fields lack a name.
+  const look = () => {
+    const shown = (el) => { const at = el.getBoundingClientRect(); return at.width > 0 && at.height > 0; };
+    const out = { rows: 0, fields: 0, beside: [], unnamed: [], touching: [], scrolling: [] };
+    for (const table of document.querySelectorAll('table')) {
+      const names = [...table.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+      const headShown = [...table.querySelectorAll('thead th')].some((th) => {
+        const at = th.getBoundingClientRect(); return at.width > 1 && at.height > 1 && at.right > 0 && at.bottom > 0;
+      });
+      let last = null;
+      for (const tr of table.querySelectorAll('tbody tr')) {
+        out.rows += 1;
+        const row = tr.getBoundingClientRect();
+        if (last !== null && row.top < last - 1) out.touching.push(tr.textContent.trim().slice(0, 20));
+        last = row.bottom;
+        let floor = null;
+        [...tr.cells].forEach((td, spot) => {
+          if (!shown(td)) return;
+          out.fields += 1;
+          const at = td.getBoundingClientRect();
+          if (floor !== null && at.top < floor - 1) out.beside.push(td.textContent.trim().slice(0, 20) || names[spot]);
+          floor = at.bottom;
+          const name = names[spot];
+          const said = getComputedStyle(td, '::before').content + ' ' + td.innerText;
+          if (name && !headShown && !said.includes(name)) out.unnamed.push(name + ' of "' + td.textContent.trim().slice(0, 20) + '"');
+        });
+      }
+    }
+    for (const el of document.querySelectorAll('body *')) {
+      if (el.scrollWidth > el.clientWidth + 1 && /auto|scroll/.test(getComputedStyle(el).overflowX)) {
+        out.scrolling.push(el.tagName.toLowerCase() + (el.className ? '.' + el.className : ''));
+      }
+    }
+    return out;
+  };
+  let rows = 0; let fields = 0;
+  for (const width of [320, 390, 600]) {
+    await page.setViewportSize({ width, height: 800 });
+    for (const path of lists) {
+      await page.goto(base + path);
+      const seen = await page.evaluate(look);
+      expect(seen.rows > 0, path + ' has no list row to look at');
+      expect(seen.beside.length === 0, path + ' at ' + width + ' px is still a table: side by side in one row are '
+        + seen.beside.slice(0, 3).join('; '));
+      expect(seen.unnamed.length === 0, path + ' at ' + width + ' px shows a field without the name of its column: '
+        + seen.unnamed.slice(0, 3).join('; '));
+      expect(seen.touching.length === 0, path + ' at ' + width + ' px has rows that run into each other: ' + seen.touching.slice(0, 3).join('; '));
+      expect(seen.scrolling.length === 0, path + ' at ' + width + ' px has a box that scrolls sideways: ' + seen.scrolling.slice(0, 3).join(', '));
+      rows += seen.rows; fields += seen.fields;
+    }
+  }
+  expect(rows >= surface.cards.rows && fields >= surface.cards.fields, 'only ' + rows + ' rows and ' + fields + ' fields were looked at');
+  await page.setViewportSize({ width: 1100, height: 800 });
+  for (const path of lists) {
+    await page.goto(base + path);
+    const seen = await page.evaluate(look);
+    expect(seen.beside.length >= seen.rows, path + ' at 1100 px is not a table: only ' + seen.beside.length + ' fields beside another in ' + seen.rows + ' rows');
+  }
+}, [
+  ['the list stays a table on a narrow screen', style('table { display: table !important; } thead { display: table-header-group !important; position: static !important; } '
+    + 'tbody { display: table-row-group !important; } tr { display: table-row !important; } td, th { display: table-cell !important; }')],
+  ['cards that do not name their fields', style('td::before { content: none !important; }')],
+  ['a list is cards at every width', style('table, tbody, tr, td { display: block !important; } thead { display: none !important; }')],
+]);

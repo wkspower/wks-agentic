@@ -1,0 +1,56 @@
+#!/usr/bin/env node
+// Case of lesson L0035 (lessons/0035-back-after-a-refusal.md).
+// Origin: run 006, 2026-11-20. Driven by script, the library answered a refused loan with
+// "what you typed is still there", and the field was empty after Back.
+// For each form the product's surface names ("back"): types what the form refuses, reads the
+// refusal, goes back as a person would, and looks at every field. A missing browser fails.
+// Run from the repository root.
+const { run, surface, value } = require('../caselib.js');
+
+const { posts, forms } = surface.back;
+const scanned = forms.some((form) => form.emptied.length > 0);
+
+run(async (page, base, expect, fill) => {
+  await fill(posts);
+  let fields = 0;
+  for (const form of forms) {
+    await page.goto(base + form.page);
+    for (const [name, text] of Object.entries(form.type)) await page.fill(form.form + ' [name=' + name + ']', value(text));
+    const [answer] = await Promise.all([page.waitForNavigation(), page.click(form.form + ' button[type=submit]')]);
+    expect(answer.status() === 400, 'the form on ' + form.page + ' was sent something it should refuse and answered ' + answer.status());
+    const said = await page.textContent('main');
+    expect(said.includes(form.says), 'the refusal of the form on ' + form.page + ' does not say "' + form.says + '"');
+    if (form.never) expect(!said.includes(form.never), 'the refusal of the form on ' + form.page + ' says "' + form.never + '", which does not hold for it');
+    await page.goBack();
+    for (const name of form.kept) {
+      const now = await page.inputValue(form.form + ' [name=' + name + ']');
+      expect(now === value(form.type[name]), 'after the refusal and Back, ' + name + ' on ' + form.page + ' holds "' + now + '", not what was typed');
+      fields += 1;
+    }
+    for (const name of form.emptied) {
+      const now = await page.inputValue(form.form + ' [name=' + name + ']');
+      expect(now === '', 'after the refusal and Back, the scanned field ' + name + ' on ' + form.page + ' still holds "' + now + '"');
+      expect(await page.evaluate((field) => document.activeElement && document.activeElement.name === field, name),
+        'after the refusal and Back, the scanned field ' + name + ' on ' + form.page + ' does not have the focus');
+      fields += 1;
+    }
+  }
+  expect(fields >= 2, 'only ' + fields + ' fields were looked at after going back');
+}, [
+  ['a form comes back empty', () => {
+    window.addEventListener('pageshow', () => {
+      const typed = [...document.querySelectorAll('form[method=post] input:not([type=hidden])')].filter((field) => field.value !== field.defaultValue);
+      typed.forEach((field) => { field.value = field.defaultValue; });
+      if (typed.length) window.faultActed();
+    });
+    return false;
+  }],
+].concat(scanned ? [['a scanned field comes back with the last scan in it', () => {
+  const fields = [...document.querySelectorAll('input[autocomplete=off]')];
+  fields.forEach((field) => field.form.addEventListener('submit', () => sessionStorage.setItem('scan ' + field.name, field.value)));
+  window.addEventListener('pageshow', () => fields.forEach((field) => {
+    const last = sessionStorage.getItem('scan ' + field.name);
+    if (last && performance.getEntriesByType('navigation')[0].type === 'back_forward') { field.value = last; window.faultActed(); }
+  }));
+  return false;
+}]] : []));

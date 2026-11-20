@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Case of lesson L0021 (lessons/0021-pages-show-recent-export-all.md).
+Origin: the person's answer 3 in run 004, 2026-11-19: the latest 200 sales on the
+page and the whole record in /export.json is enough.
+Records 201 sales and reads the page and the export. Run from the repository root."""
+import json
+import re
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("pet shop")  # this case was born in the pet shop and knows its pages (L0024, L0034)
+
+SHOWN, MADE = 200, 201
+
+
+def checks(shop):
+    food = shop.add("products", name="Kibble", price="1.00", stock="1000", low_at="0")
+    for _ in range(MADE):
+        shop.post(303, "/sales", method="cash", product_id=food, qty="1")
+    sales = sorted(row["id"] for row in shop.export()["sales"])
+    shop.expect(len(sales) == MADE, "/export.json holds %d sales of %d made" % (len(sales), MADE))
+
+    status, body = shop.request("GET", "/sales")
+    shop.expect(status == 200, "GET /sales answered %d" % status)
+    listed = sorted(int(ident) for ident in re.findall(r'href="/sales/(\d+)/void"', body))
+    shop.expect(len(listed) == SHOWN, "the sales page lists %d sales, expected the latest %d" % (len(listed), SHOWN))
+    shop.expect(listed == sales[-SHOWN:], "the %d sales listed are not the latest ones" % SHOWN)
+    words = re.sub(r"<[^>]*>", " ", body)
+    shop.expect(re.search(r"\b%d\b[^.\d]*\b%d\b" % (SHOWN, MADE), words) is not None,
+                "the sales page does not say that it shows %d of %d" % (SHOWN, MADE))
+
+
+@fault("GET", "/export.json")
+def export_stops_too(shop, ask):
+    """The export holds no more than the page does."""
+    data = shop.state()
+    if len(data["sales"]) > SHOWN:
+        data["sales"] = sorted(data["sales"], key=lambda row: row["id"])[-SHOWN:]
+        shop.acted += 1
+    return 200, json.dumps(data)
+
+
+@fault("GET", "/sales")
+def page_lists_all(shop, ask):
+    """The page lists every sale there ever was."""
+    status, body = ask.send()
+    for row in shop.state()["sales"]:
+        link = 'href="/sales/%d/void"' % row["id"]
+        if not row["voided"] and link not in body:
+            body += "<a %s>Void</a>" % link
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", "/sales")
+def page_says_nothing(shop, ask):
+    """The page stops at 200 and does not say there are more."""
+    status, body = ask.send()
+    total = len(shop.state()["sales"])
+    if total > SHOWN and re.search(r"\b%d\b" % total, body):
+        body = re.sub(r"\b%d\b" % total, "", body)
+        shop.acted += 1
+    return status, body
+
+
+run(checks, wrong=[
+    ("the export stops at 200 too", export_stops_too),
+    ("the page lists every sale", page_lists_all),
+    ("the page does not say there are more", page_says_nothing),
+])

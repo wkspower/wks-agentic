@@ -1,0 +1,55 @@
+#!/usr/bin/env node
+// Case of lesson L0012 (lessons/0012-forms-in-a-real-browser.md).
+// Origin: a customer preselected on the sale form in the wizardly-cerf run of
+// 2026-11-18, which no check over HTTP could see; the person's answer 14 in
+// run 001, 2026-11-19. A missing browser fails this case; it never skips.
+// Made general in run 006, 2026-11-20, when the school library chose the label. What is
+// shared is here: a browser that must be there, every page reached by its link, a person's
+// way through the forms done step by step, and the controls on which nothing may be chosen
+// in advance. The way through and those controls are the product's, in its surface ("walk").
+// Run from the repository root.
+const { run, surface, value } = require('../caselib.js');
+
+const { nav, steps, chosen } = surface.walk;
+
+// One step of the way through. Each verb is something a person does or sees.
+const verbs = {
+  goto: (page, base, expect, where) => page.goto(base + where),
+  fill: (page, base, expect, field, text) => page.fill(field, value(text)),
+  select: (page, base, expect, field, option) => page.selectOption(field, option),
+  check: (page, base, expect, field) => page.check(field),
+  submit: (page, base, expect, form) => Promise.all([page.waitForNavigation(), page.click(form + ' button[type=submit]')]),
+  follow: (page, base, expect, link) => Promise.all([page.waitForNavigation(), page.click(link)]),
+  see: async (page, base, expect, texts, what) => {
+    const main = await page.textContent('main');
+    expect(texts.every((text) => main.includes(text)), what);
+  },
+  value: async (page, base, expect, field, text, what) => expect(await page.inputValue(field) === text, what),
+  text: async (page, base, expect, where, text, what) => expect((await page.$eval(where, (el) => el.textContent.trim())) === text, what),
+  count: async (page, base, expect, what_for, number, what) => expect((await page.$$eval(what_for, (els) => els.length)) === number, what),
+  // Nothing chosen for the person: every select is on its empty option, no radio or box is ticked.
+  unchosen: async (page, base, expect, controls, least, what) => expect(await page.$$eval(controls, (els, n) => els.length >= n
+    && els.every((el) => (el.tagName === 'SELECT' ? el.value === '' : !el.checked)), least), what),
+};
+
+// A wrong page: one of the controls the surface names arrives with a choice made.
+const preselected = (control) => new Function(control.select
+  ? 'const select = document.querySelector(' + JSON.stringify(control.select) + ');'
+    + 'const empty = select ? [...select.options].filter((option) => option.value === "") : [];'
+    + 'empty.forEach((option) => option.remove()); return empty.length > 0 && select.options.length > 0;'
+  : 'const radio = document.querySelector(' + JSON.stringify(control.radio) + '); if (radio) radio.checked = true; return Boolean(radio);');
+
+run(async (page, base, expect) => {
+  // Every page is reachable from the first one by its links.
+  for (const link of nav) {
+    await Promise.all([page.waitForNavigation(), page.click('nav >> text=' + link)]);
+    expect((await page.title()).includes(link), 'the link ' + link + ' leads to "' + (await page.title()) + '"');
+  }
+  let asked = 0;
+  for (const [verb, ...rest] of steps) {
+    if (!(verb in verbs)) throw new Error('wrong: the surface asks for "' + verb + '", which this case cannot do');
+    await verbs[verb](page, base, expect, ...rest);
+    asked += verb === 'unchosen';
+  }
+  expect(asked > 0, 'the way through the forms never looks for a choice made in advance');
+}, chosen.map((control) => [control.name, preselected(control)]));

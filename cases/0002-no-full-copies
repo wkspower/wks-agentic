@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Case of lesson L0002 (lessons/0002-no-full-copies.md).
+Origin: the wizardly-cerf run, where 40,257 lines were whole copies of builds.
+Fails when two files of 20 lines or more are byte-identical. Run from the root."""
+import hashlib, os, sys
+
+seen, compared, copies = {}, 0, []
+for base, dirs, names in os.walk("."):
+    dirs[:] = sorted(d for d in dirs if d not in (".git", "__pycache__", "node_modules"))
+    for name in sorted(names):
+        path = os.path.join(base, name)[2:]
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read()
+        except OSError:
+            continue
+        if data.count(b"\n") < 20:
+            continue
+        compared += 1
+        key = hashlib.sha256(data).hexdigest()
+        if key in seen:
+            copies.append("%s = %s" % (path, seen[key]))
+        seen.setdefault(key, path)
+for copy in copies[:10]:
+    print("copy: " + copy)
+if not compared:
+    print("no file of 20 lines or more was found, so nothing was compared")
+    sys.exit(1)
+print("%d files of 20+ lines compared, %d identical" % (compared, len(copies)))
+sys.exit(1 if copies else 0)

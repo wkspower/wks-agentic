@@ -1,0 +1,28 @@
+#!/bin/sh
+# Case of lesson L0019 (lessons/0019-cases-know-no-source.md).
+# Origin: run 002, 2026-11-19: the rebuilt product was written to hold the lines the
+# old wrong variants named; the person's decision of the same day.
+# Until run 008 this case ran every other case again in a tree without the product's
+# source. Now ./check runs them there in the first place (L0038), this case with them,
+# so what is left to show is that such a tree tells cases apart. Two planted trees go
+# through ./check: in one a case reads a product's source and must fail, in the other
+# (the control) a case only runs the product and must pass. Then the case looks at the
+# tree it is itself run in: no source may be there. Run by ./check; by hand from the
+# root of a tree that has a product it fails, since that tree has its source.
+t=$(mktemp -d) || exit 1
+trap 'rm -rf "$t"' EXIT
+head='#!/bin/sh
+# Case of lesson L0002'
+for tree in reads runs; do
+  ./check --plant "$t/$tree" >/dev/null 2>&1 || { echo "./check --plant did not plant a tree"; exit 1; }
+done
+printf '%s\nread=$(wc -c < product/app.py) || exit 1\necho "$read characters of the product read"\n' "$head" > "$t/reads/cases/0002-x"
+printf '%s\npython3 product/app.pyc\n' "$head" > "$t/runs/cases/0002-x"
+reads=refused; runs=accepted
+out=$(./check "$t/reads" 2>&1) && reads=ACCEPTED
+echo "$out" | grep -q '^FAIL L0002: cases/0002-x fails' || reads="$reads, and not by that case failing"
+out=$(./check "$t/runs" 2>&1) || runs=REFUSED
+echo "$out" | grep -q '^  L0002 cases/0002-x: a product' || runs="$runs, and the product did not run"
+source=$(find product -name '*.py' 2>/dev/null | wc -l); compiled=$(find product -name '*.pyc' 2>/dev/null | wc -l)
+echo "planted case that reads a product's source $reads, planted case that only runs it $runs; the tree this case runs in holds $source source files of the product and $compiled compiled"
+[ "$reads" = refused ] && [ "$runs" = accepted ] && [ "$source" -eq 0 ]

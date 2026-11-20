@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Case of lesson L0009 (lessons/0009-stock-never-negative.md).
+Origin: the person's answer 10 in run 001, 2026-11-19.
+Run from the repository root."""
+import json
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("pet shop")  # this case was born in the pet shop and knows its pages (L0024, L0034)
+
+
+def checks(shop):
+    food = shop.add("products", name="Kibble", price="10.00", stock="3", low_at="1")
+    toy = shop.add("products", name="Ball", price="2.00", stock="5", low_at="2")
+
+    def stock(ident):
+        return shop.row("products", ident)["stock"]
+
+    def untouched(what):
+        shop.expect((stock(food), stock(toy)) == (3, 5), "%s changed the stock" % what)
+        shop.expect(shop.export()["sales"] == [], "%s was recorded as a sale" % what)
+
+    shop.post(400, "/sales", method="cash", product_id=food, qty="4")
+    untouched("a sale of 4 with 3 in stock")
+    shop.post(400, "/sales", ("product_id", toy), ("qty", "1"), ("product_id", food), ("qty", "4"),
+              method="cash")
+    untouched("a sale whose second line exceeds stock")
+    shop.post(400, "/sales", ("product_id", food), ("qty", "2"), ("product_id", food), ("qty", "2"),
+              method="cash")
+    untouched("a sale with two lines of one product that together exceed stock")
+    shop.post(400, "/sales", method="cash", product_id="999", qty="1")
+    untouched("a sale of a product that does not exist")
+
+    shop.post(303, "/sales", method="cash", product_id=food, qty="3")
+    shop.expect(stock(food) == 0, "selling 3 of 3 left %d" % stock(food))
+    shop.post(400, "/sales", method="cash", product_id=food, qty="1")
+    shop.post(400, "/products/%d/stock" % food, delta="-1")
+    shop.expect(stock(food) == 0, "stock moved below or away from 0")
+    shop.post(303, "/products/%d/stock" % food, delta="5")
+    shop.post(303, "/products/%d/stock" % food, delta="-2")
+    shop.expect(stock(food) == 3, "receiving 5 and removing 2 from 0 gave %d" % stock(food))
+    shop.post(404, "/products/999/stock", delta="1")
+
+    # Low stock: listed when stock is at or below the product's own threshold.
+    shop.expect(shop.export()["low_stock"] == [], "low stock listed with 3 (at 1) and 5 (at 2)")
+    shop.post(303, "/sales", method="card", product_id=toy, qty="3")
+    shop.expect(shop.export()["low_stock"] == [toy], "the ball at 2 with threshold 2 is not listed")
+    status, page = shop.request("GET", "/")
+    shop.expect(status == 200 and "Ball" in page and "Low stock" in page,
+                "the first page does not show the low-stock product")
+    shop.post(303, "/products/%d/stock" % toy, delta="1")
+    shop.expect(shop.export()["low_stock"] == [], "the ball at 3 with threshold 2 is still listed")
+
+
+@fault("POST", "/sales")
+def sale_beyond_stock(shop, ask):
+    """A sale of more than there is goes through: the shop finds the missing stock first."""
+    wanted = {}
+    for ident, qty in zip(ask.all("product_id"), ask.all("qty")):
+        if ident.isdigit() and qty.isdigit():
+            wanted[int(ident)] = wanted.get(int(ident), 0) + int(qty)
+    for row in shop.state()["products"]:
+        short = wanted.get(row["id"], 0) - row["stock"]
+        if short > 0:
+            shop.real("POST", "/products/%d/stock" % row["id"], [("delta", short)])
+            shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", r"/products/(\d+)/stock")
+def adjustment_below_zero(shop, ask, ident):
+    """An adjustment that would leave less than nothing is accepted; the shop itself can hold no less than 0."""
+    stock = [row["stock"] for row in shop.state()["products"] if row["id"] == int(ident)]
+    delta = ask.get("delta")
+    if stock and delta[:1] == "-" and delta[1:].isdigit() and stock[0] + int(delta) < 0:
+        if stock[0]:
+            shop.real("POST", ask.path, [("delta", -stock[0])])
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+@fault("GET", "/export.json")
+def low_means_below(shop, ask):
+    """A product at its threshold, not below it, is not listed as low."""
+    data = shop.state()
+    at = {row["id"] for row in data["products"] if row["stock"] == row["low_at"]}
+    if at & set(data["low_stock"]):
+        data["low_stock"] = [ident for ident in data["low_stock"] if ident not in at]
+        shop.acted += 1
+    return 200, json.dumps(data)
+
+
+run(checks, wrong=[
+    ("a sale may exceed stock", sale_beyond_stock),
+    ("an adjustment below zero is accepted", adjustment_below_zero),
+    ("low stock means below, not at, the threshold", low_means_below),
+])

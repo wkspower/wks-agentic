@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Case of lesson L0034 (lessons/0034-product-found-by-its-surface.md).
+Origin: run 006, 2026-11-20. The case of L0019 passed on the school library
+saying "no product in this tree": the case library still knew the pet shop's
+program by name, and looked for that.
+Reads every surface, asks the case library in a fresh process which product it
+knows before anyone tells it, then plants small trees and asks it to find
+their product. Run from the repository root."""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ASK = "import caselib; print(caselib.MAIN); found = caselib.product(%s); print(found['label']); print(caselib.MAIN)"
+
+
+def fail(what):
+    print(what)
+    sys.exit(1)
+
+
+surfaces = {}
+for name in sorted(os.listdir("surface")) if os.path.isdir("surface") else []:
+    with open(os.path.join("surface", name), encoding="utf-8") as handle:
+        one = json.load(handle)
+    if not one.get("label") or not str(one.get("main", "")).startswith("product/"):
+        fail("surface/%s does not give a label and a program under product/" % name)
+    surfaces[one["label"]] = one["main"]
+if len(surfaces) < 2:
+    fail("%d surfaces were read: with fewer than two, finding the right one measures nothing" % len(surfaces))
+first, second = sorted(surfaces)[:2]
+
+env = {key: value for key, value in os.environ.items() if key not in ("SHOP", "SURFACE")}
+work = tempfile.mkdtemp()
+right = wrong = 0
+try:
+    def tree(labels):
+        """A tree with the case library, the surfaces, and a product that declares these labels (None: no product)."""
+        where = tempfile.mkdtemp(dir=work)
+        shutil.copy("caselib.py", where)
+        shutil.copytree("surface", os.path.join(where, "surface"))
+        if labels is not None:
+            os.mkdir(os.path.join(where, "product"))
+            with open(os.path.join(where, "product", "LABELS"), "w", encoding="utf-8") as handle:
+                handle.write("# what this product is\n" + "".join(label + "\n" for label in labels))
+        return where
+
+    def ask(labels, name=""):
+        done = subprocess.run([sys.executable, "-c", ASK % name], cwd=tree(labels), env=env, capture_output=True, text=True)
+        return done.returncode, done.stdout.split("\n")
+
+    # Before it is told, the case library knows no product.
+    code, said = ask([first, "web pages"])
+    if said[0] != "None":
+        fail("before any case asks, the case library already starts %s: a product it remembers by name" % said[0])
+    for labels, name, expected in (([first, "web pages"], "", first), (["web pages", second.upper() + "  "], "", second),
+                                   ([first], repr(second), second), (None, repr(first), first)):
+        code, said = ask(labels, name)
+        if code != 0 or said[1:3] != [expected, surfaces[expected]]:
+            fail("a tree that declares %s, asked for %s, found %s" % (labels, name or "its product", said[1:3]))
+        right += 1
+    for what, labels in (("no label that has a surface", ["web pages"]), ("two labels that have a surface", [first, second]),
+                         ("no product", None)):
+        code, said = ask(labels)
+        if code == 0:
+            fail("a tree with %s was given the product %s" % (what, said[1:3]))
+        wrong += 1
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+print("%d surfaces read; the case library names no product of its own; %d trees found their product, %d trees with none "
+      "or two were refused" % (len(surfaces), right, wrong))

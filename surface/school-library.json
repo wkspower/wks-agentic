@@ -1,0 +1,180 @@
+{
+ "label": "school library",
+ "main": "product/library.py",
+ "one": {"table": "borrowers", "fields": {"name": "Ana Lima", "kind": "pupil", "class": "7B"}, "shows": "name"},
+ "examples": {
+  "seed": [
+   ["/titles", {"title": "Holes", "author": "Louis Sachar", "isbn": "", "shelf": "", "copies": "2"}],
+   ["/borrowers", {"name": "Ana Lima", "kind": "pupil", "class": "7B"}],
+   ["/loans", {"borrower_id": "1", "copy": "1"}]
+  ],
+  "pages": ["/", "/titles", "/titles/1", "/titles/1/edit", "/borrowers", "/borrowers/1", "/borrowers/1/edit", "/loans", "/overdue", "/returned"],
+  "filler": {"title": "Thing", "author": "", "isbn": "", "shelf": "", "copies": "1", "name": "Someone", "kind": "pupil", "class": "", "active": "1", "q": ""},
+  "least": 10,
+  "refused": {"name": "an ISBN written with its hyphens is refused", "path": "/titles(/\\d+/edit)?", "field": "isbn", "pattern": "-"}
+ },
+ "walk": {
+  "nav": ["Desk", "Catalogue", "Borrowers", "Loans", "Overdue", "Returned"],
+  "steps": [
+   ["goto", "/titles"],
+   ["fill", "form[method=post][action=\"/titles\"] input[name=title]", "Holes <2nd ed.>"],
+   ["fill", "form[method=post][action=\"/titles\"] input[name=author]", "Louis Sachar"],
+   ["fill", "form[method=post][action=\"/titles\"] input[name=isbn]", "978-0-7475-4459-7"],
+   ["fill", "form[method=post][action=\"/titles\"] input[name=shelf]", "F SAC"],
+   ["fill", "form[method=post][action=\"/titles\"] input[name=copies]", "2"],
+   ["submit", "form[method=post][action=\"/titles\"]"],
+   ["see", ["Holes <2nd ed.>", "9780747544597", "2 copies"], "the new title is not shown with its ISBN and its two copies, or its name was not escaped"],
+   ["goto", "/borrowers"],
+   ["unchosen", "form[method=post][action=\"/borrowers\"] select[name=kind]", 1, "pupil or staff is chosen in advance on the form for a new borrower"],
+   ["fill", "form[method=post][action=\"/borrowers\"] input[name=name]", "Ana <Lima>"],
+   ["select", "form[method=post][action=\"/borrowers\"] select[name=kind]", "pupil"],
+   ["fill", "form[method=post][action=\"/borrowers\"] input[name=class]", "7B"],
+   ["submit", "form[method=post][action=\"/borrowers\"]"],
+   ["see", ["Ana <Lima>", "class 7B"], "the new borrower is not shown, or her name was not escaped"],
+   ["fill", "form[action=\"/loans\"] input[name=copy]", "1"],
+   ["submit", "form[action=\"/loans\"]"],
+   ["see", ["Holes <2nd ed.>", "1 of 3 allowed"], "the book lent is not shown on the borrower's page"],
+   ["count", "main form[action$=\"/return\"]", 1, "one book is out and the borrower's page does not offer one return"],
+   ["goto", "/borrowers"],
+   ["fill", "form[method=post][action=\"/borrowers\"] input[name=name]", "Bo Li"],
+   ["select", "form[method=post][action=\"/borrowers\"] select[name=kind]", "pupil"],
+   ["fill", "form[method=post][action=\"/borrowers\"] input[name=class]", "9A"],
+   ["submit", "form[method=post][action=\"/borrowers\"]"],
+   ["fill", "form[action=\"/loans\"] input[name=copy]", "1"],
+   ["submit", "form[action=\"/loans\"]"],
+   ["see", ["already on loan to Ana <Lima>"], "lending a copy that is out does not say who has it"],
+   ["goto", "/titles"],
+   ["fill", "form[method=get][action=\"/titles\"] input[name=q]", "sachar"],
+   ["submit", "form[method=get][action=\"/titles\"]"],
+   ["see", ["1 title matching", "Holes <2nd ed.>"], "searching the catalogue for the author does not show the title"],
+   ["goto", "/loans"],
+   ["submit", "form[action=\"/loans/1/renew\"]"],
+   ["see", ["renewed once"], "a renewed loan is not shown as renewed"],
+   ["submit", "form[action=\"/loans/1/return\"]"],
+   ["see", ["0 books out"], "after the one return a book is still shown as out"],
+   ["count", "main form[action$=\"/return\"]", 0, "a returned loan still has its button"],
+   ["goto", "/returned"],
+   ["see", ["Holes <2nd ed.>", "Ana <Lima>"], "the returned loan is not on the page of returned loans"],
+   ["goto", "/borrowers"],
+   ["follow", "main a[href=\"/borrowers/2/edit\"]"],
+   ["value", "form[action=\"/borrowers/2/edit\"] input[name=name]", "Bo Li", "the form to correct a borrower does not hold his name"],
+   ["fill", "form[action=\"/borrowers/2/edit\"] input[name=name]", "Bo Li-Chen"],
+   ["select", "form[action=\"/borrowers/2/edit\"] select[name=active]", "0"],
+   ["submit", "form[action=\"/borrowers/2/edit\"]"],
+   ["see", ["Bo Li-Chen", "has left the school"], "the corrected borrower is not shown as corrected and as having left"],
+   ["count", "form[action=\"/loans\"]", 0, "a borrower who has left is still offered the form to borrow"],
+   ["goto", "/titles/1"],
+   ["submit", "form[action=\"/copies/2/status\"]:has(input[value=lost])"],
+   ["text", "tbody tr:nth-child(2) td:nth-child(2)", "lost", "a copy marked lost is not shown as lost"],
+   ["follow", "main a[href=\"/titles/1/edit\"]"],
+   ["value", "form[action=\"/titles/1/edit\"] input[name=title]", "Holes <2nd ed.>", "the form to correct a title does not hold its title"],
+   ["fill", "form[action=\"/titles/1/edit\"] input[name=title]", "Holes"],
+   ["fill", "form[action=\"/titles/1/edit\"] input[name=isbn]", "080442957X"],
+   ["submit", "form[action=\"/titles/1/edit\"]"],
+   ["see", ["Holes", "ISBN 080442957X"], "the corrected title is not shown"]
+  ],
+  "chosen": [
+   {"name": "pupil is chosen in advance on the form for a new borrower", "select": "form[method=post][action=\"/borrowers\"] select[name=kind]"}
+  ]
+ },
+ "long": {
+  "posts": [
+   ["/titles", {"title": "{200*W}", "author": "{120*M}", "isbn": "978-0-7475-4459-7", "shelf": "{20*W}", "copies": "50"}],
+   ["/titles", {"title": "The natural history of the British Isles and their surrounding seas, told in pictures for younger readers", "author": "A Committee of Several Authors and Their Illustrator", "isbn": "080442957X", "shelf": "508 NAT", "copies": "1"}],
+   ["/borrowers", {"name": "{80*M}", "kind": "staff", "class": "{20*W}"}],
+   ["/borrowers", {"name": "Bo Li", "kind": "pupil", "class": "7B"}],
+   ["/loans", {"borrower_id": "1", "copy": "1"}],
+   ["/loans", {"borrower_id": "1", "copy": "51"}],
+   ["/loans", {"borrower_id": "2", "copy": "2"}],
+   ["/copies/3/status", {"status": "withdrawn"}],
+   ["/loans/1/renew", {}],
+   ["/loans/1/renew", {}],
+   {"restart": ["--today", "2099-06-01"]},
+   ["/loans/2/return", {}],
+   ["/loans", {"borrower_id": "2", "copy": "4"}]
+  ],
+  "pages": ["/", "/titles", "/titles?q=W", "/titles/1", "/titles/1/edit", "/titles/99999", "/borrowers", "/borrowers/1", "/borrowers/1/edit", "/borrowers/2", "/loans", "/loans?q={101*q}", "/loans/1/return", "/overdue", "/returned", "/nowhere"]
+ },
+ "words": {
+  "posts": [
+   ["/titles", {"title": "Noughts & Crosses", "author": "Malorie Blackman", "isbn": "9780552555708", "shelf": "F BLA", "copies": "3"}],
+   ["/titles", {"title": "The natural history of the British Isles and their surrounding seas, told in pictures for younger readers", "author": "A Committee of Several Authors and Their Illustrator", "isbn": "080442957X", "shelf": "508 NAT", "copies": "2"}],
+   ["/borrowers", {"name": "Maria Aparecida de Souza Albuquerque", "kind": "pupil", "class": "Year 7 Blue"}],
+   ["/borrowers", {"name": "Bo Li", "kind": "pupil", "class": "9A"}],
+   ["/borrowers", {"name": "Ms Kay", "kind": "staff", "class": ""}],
+   ["/loans", {"borrower_id": "1", "copy": "1"}],
+   ["/loans", {"borrower_id": "1", "copy": "4"}],
+   ["/loans", {"borrower_id": "2", "copy": "2"}],
+   ["/loans", {"borrower_id": "3", "copy": "5"}],
+   ["/loans/1/renew", {}],
+   {"restart": ["--today", "2099-06-01"]},
+   ["/loans", {"borrower_id": "2", "copy": "3"}],
+   ["/loans/5/return", {}],
+   ["/loans", {"borrower_id": "2", "copy": "3"}],
+   ["/loans/6/return", {}],
+   ["/loans", {"borrower_id": "3", "copy": "3"}]
+  ],
+  "pages": ["/titles", "/titles/1", "/borrowers", "/borrowers/1", "/loans", "/overdue", "/returned"],
+  "cells": 100
+ },
+ "actions": {
+  "posts": [
+   ["/titles", {"title": "Noughts & Crosses", "author": "Malorie Blackman", "isbn": "9780552555708", "shelf": "F BLA", "copies": "3"}],
+   ["/titles", {"title": "The natural history of the British Isles and their surrounding seas, told in pictures for younger readers", "author": "A Committee of Several Authors and Their Illustrator", "isbn": "080442957X", "shelf": "508 NAT", "copies": "2"}],
+   ["/borrowers", {"name": "Maria Aparecida de Souza Albuquerque", "kind": "pupil", "class": "Year 7 Blue"}],
+   ["/borrowers", {"name": "Bo Li", "kind": "pupil", "class": "9A"}],
+   ["/borrowers", {"name": "Ms Kay", "kind": "staff", "class": ""}],
+   ["/loans", {"borrower_id": "1", "copy": "1"}],
+   ["/loans", {"borrower_id": "1", "copy": "4"}],
+   ["/loans", {"borrower_id": "2", "copy": "2"}],
+   ["/loans", {"borrower_id": "3", "copy": "5"}],
+   ["/loans/1/renew", {}],
+   {"restart": ["--today", "2099-06-01"]},
+   ["/loans", {"borrower_id": "2", "copy": "3"}],
+   ["/loans/5/return", {}],
+   ["/loans", {"borrower_id": "2", "copy": "3"}],
+   ["/loans/6/return", {}],
+   ["/loans", {"borrower_id": "3", "copy": "3"}],
+   ["/titles", {"title": "{200*W}", "author": "{120*M}", "isbn": "978-0-7475-4459-7", "shelf": "{20*W}", "copies": "2"}]
+  ],
+  "pages": ["/titles", "/titles/1", "/borrowers", "/borrowers/1", "/loans", "/overdue"],
+  "rows": 36,
+  "also": [
+   {"page": "/borrowers/3", "selector": "form[action=\"/loans\"] input[name=copy]", "what": "the page a borrower's Lend link opens does not show one field for the copy to lend"}
+  ]
+ },
+ "cards": {
+  "posts": [
+   ["/titles", {"title": "Noughts & Crosses", "author": "Malorie Blackman", "isbn": "9780552555708", "shelf": "F BLA", "copies": "3"}],
+   ["/titles", {"title": "The natural history of the British Isles and their surrounding seas, told in pictures for younger readers", "author": "A Committee of Several Authors and Their Illustrator", "isbn": "080442957X", "shelf": "508 NAT", "copies": "2"}],
+   ["/borrowers", {"name": "Maria Aparecida de Souza Albuquerque", "kind": "pupil", "class": "Year 7 Blue"}],
+   ["/borrowers", {"name": "Bo Li", "kind": "pupil", "class": "9A"}],
+   ["/borrowers", {"name": "Ms Kay", "kind": "staff", "class": ""}],
+   ["/loans", {"borrower_id": "1", "copy": "1"}],
+   ["/loans", {"borrower_id": "1", "copy": "4"}],
+   ["/loans", {"borrower_id": "2", "copy": "2"}],
+   ["/loans", {"borrower_id": "3", "copy": "5"}],
+   ["/loans/1/renew", {}],
+   {"restart": ["--today", "2099-06-01"]},
+   ["/loans", {"borrower_id": "2", "copy": "3"}],
+   ["/loans/5/return", {}],
+   ["/loans", {"borrower_id": "2", "copy": "3"}],
+   ["/loans/6/return", {}],
+   ["/loans", {"borrower_id": "3", "copy": "3"}],
+   ["/titles", {"title": "{200*W}", "author": "", "isbn": "", "shelf": "", "copies": "1"}],
+   ["/borrowers", {"name": "{80*P}", "kind": "pupil", "class": ""}]
+  ],
+  "pages": ["/titles", "/titles/1", "/borrowers", "/borrowers/1", "/loans", "/overdue", "/returned"],
+  "rows": 45,
+  "fields": 150
+ },
+ "back": {
+  "posts": [
+   ["/borrowers", {"name": "Ana Lima", "kind": "pupil", "class": "7B"}]
+  ],
+  "forms": [
+   {"page": "/titles", "form": "form[method=post][action=\"/titles\"]", "type": {"title": "Teh Giver", "author": "Lois Lowry", "isbn": "12", "shelf": "F LOW", "copies": "2"}, "says": "The ISBN", "kept": ["title", "author", "isbn", "shelf", "copies"], "emptied": []},
+   {"page": "/borrowers/1", "form": "form[action=\"/loans\"]", "type": {"copy": "999"}, "says": "There is no copy 999", "never": "what you typed", "kept": [], "emptied": ["copy"]}
+  ]
+ }
+}

@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Case of lesson L0041 (lessons/0041-the-start-is-done-by-tooling.md).
+Origin: run 009, 2026-11-20. Since run 008 a product's lessons reached a session
+only if the model chose to run `./check --lessons`.
+Reads .claude/settings.json as Claude Code documents it, and runs the command of
+its SessionStart hook the way a session start would: through sh, from another
+directory, with CLAUDE_PROJECT_DIR naming the tree. Works out from the lesson
+lines and product/LABELS, without the check's own code, what that must print.
+Every tree but the first is a copy of this one with a small change (L0002).
+Run from the repository root."""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+CAP = 10000  # characters of a hook's output that Claude Code puts in the context; past it, a preview of 2,000
+LINE = re.compile(r"- \*\*(L\d{4})\*\* \[([^\]]+)\]")
+NAMED = re.compile(r"^\s*'(.+)': (\d+) lessons?$")
+SETTINGS = os.path.join(".claude", "settings.json")
+
+
+def label(text):
+    return " ".join(text.split("#")[0].split()).lower()
+
+
+def lines(tree, home):
+    found = []
+    path = os.path.join(tree, home)
+    for line in open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []:
+        match = LINE.match(line)
+        if match:
+            found.append(({label(word) for word in match.group(2).split(",")}, line))
+    return found
+
+
+def hooks(tree):
+    """The commands that run at every start of a session: no matcher, or one that matches all."""
+    try:
+        with open(os.path.join(tree, SETTINGS), encoding="utf-8") as handle:
+            groups = json.load(handle)["hooks"]["SessionStart"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return [hook["command"] for group in groups if group.get("matcher", "") in ("", "*")
+            for hook in group.get("hooks", []) if hook.get("type") == "command" and "args" not in hook]
+
+
+def refusal(tree):
+    """Why a session started in this tree would not have its lessons in front of it, or None; and what was measured."""
+    commands = hooks(tree)
+    if not commands:
+        return "%s has no command hook under SessionStart that fires at every start" % SETTINGS, None
+    elsewhere = tempfile.mkdtemp()
+    try:
+        done = subprocess.run(["sh", "-c", commands[0]], cwd=elsewhere, capture_output=True, text=True, timeout=60,
+                              env=dict(os.environ, CLAUDE_PROJECT_DIR=os.path.abspath(tree)),
+                              input=json.dumps({"hook_event_name": "SessionStart", "source": "startup"}))
+    finally:
+        shutil.rmtree(elsewhere, ignore_errors=True)
+    out = done.stdout
+    if done.returncode != 0:
+        return "the hook ended with %d, and then its output is not shown to the session" % done.returncode, None
+    if len(out) > CAP:
+        return "the hook prints %d characters, and past %d Claude Code gives a session only a preview" % (len(out), CAP), None
+    rest = lines(tree, "LESSONS.md")
+    carried, declared = {}, []
+    for labels, line in rest:
+        for word in labels:
+            carried.setdefault(word, []).append(line)
+    if os.path.exists(os.path.join(tree, "product", "LABELS")):
+        declared = [label(line) for line in open(os.path.join(tree, "product", "LABELS"), encoding="utf-8") if label(line)]
+    unknown = [word for word in declared if word not in carried]
+    if unknown:
+        said = [word for word in unknown if "'%s'" % word in out]
+        return (None if said == unknown else "product/LABELS declares '%s', which no lesson carries, and the hook "
+                "does not say so" % unknown[0]), "a label no lesson carries named"
+    if any(line in out.splitlines() for _, line in lines(tree, "CLAUDE.md")):
+        return "the hook prints an `always` lesson again, which CLAUDE.md already put in front of the session", None
+    under, current = {None: []}, None
+    for line in out.splitlines():
+        if NAMED.match(line):
+            current = NAMED.match(line).group(1)
+            under[current] = [int(NAMED.match(line).group(2))]
+        elif line.startswith("- **L"):
+            under[current].append(line)
+    off = sorted(set(carried) - set(declared))
+    for word in off:
+        if word not in under or under[word][0] != len(carried[word]):
+            return "the label '%s' is off and the hook does not name it with its %d lessons" % (word, len(carried[word])), None
+    if declared:
+        want = sorted(line for labels, line in rest if labels & set(declared))
+        got = sorted(under[None])
+        if got != want or any(len(under[word]) > 1 for word in off):
+            return "for %s the hook prints %d lessons in force and %d are: %s" % (
+                ", ".join(declared), len(got), len(want), sorted(set(got) ^ set(want))[:1]), None
+        return None, "%d lessons in force and %d labels that are off in %d characters" % (len(want), len(off), len(out))
+    for word in off:
+        if sorted(under[word][1:]) != sorted(carried[word]):
+            return "with no product the hook does not print what '%s' brings: %d of its %d lessons" % (
+                word, len(under[word]) - 1, len(carried[word])), None
+    if under[None]:
+        return "with no product the hook prints %d lessons under no label" % len(under[None]), None
+    return None, "%d labels with the %d lessons they bring in %d characters" % (len(off), len(rest), len(out))
+
+
+def fail(what):
+    print(what)
+    sys.exit(1)
+
+
+def write(tree, name, text):
+    os.makedirs(os.path.dirname(os.path.join(tree, name)), exist_ok=True)
+    with open(os.path.join(tree, name), "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def settings(tree, change):
+    with open(os.path.join(tree, SETTINGS), encoding="utf-8") as handle:
+        whole = json.load(handle)
+    change(whole["hooks"]["SessionStart"][0])
+    write(tree, SETTINGS, json.dumps(whole))
+
+
+def command(text):
+    return lambda group: group["hooks"][0].update(command=text)
+
+
+entry = open("CLAUDE.md", encoding="utf-8").read()
+told = re.search(r"[Rr]un `\./check --(lessons|start)[^`]*`", entry)
+if told:
+    fail("CLAUDE.md tells the session to %s: whether the lessons are read then depends on the model" % told.group(0))
+why, here = refusal(".")
+if why:
+    fail("in this tree: " + why)
+
+carried = sorted({word for labels, _ in lines(".", "LESSONS.md") for word in labels})
+if len(carried) < 2:
+    fail("fewer than two labels besides `always`: nothing could be switched, so nothing was measured")
+one, two = carried[0], carried[1]
+long_line = "- **L9999** [%s] %s.\n" % (one, "A lesson far too long " * 500)
+RIGHT = {
+    "no product, the base": lambda t: None,
+    "a product that declares '%s'" % one: lambda t: write(t, "product/LABELS", one + "\n"),
+    "the same product after it also declares '%s', with no step between" % two:
+        lambda t: write(t, "product/LABELS", "%s\n%s\n" % (one, two)),
+    "a product that declares a label no lesson carries": lambda t: write(t, "product/LABELS", one + "\nno such label\n"),
+}
+WRONG = {
+    "no settings file": lambda t: os.remove(os.path.join(t, SETTINGS)),
+    "a hook that fires only on a new session, not after a resume or a compaction":
+        lambda t: settings(t, lambda group: group.update(matcher="startup")),
+    "a hook that finds the check only from the root": lambda t: settings(t, command("./check --start")),
+    "a hook that ends with an error": lambda t: settings(t, command('"${CLAUDE_PROJECT_DIR}"/check --start; exit 1')),
+    "a hook that prints one label's lessons, whatever the product":
+        lambda t: settings(t, command('"${CLAUDE_PROJECT_DIR}"/check --lessons \'%s\'' % one)),
+    "a hook that prints the lessons that are off as well":
+        lambda t: settings(t, command('"${CLAUDE_PROJECT_DIR}"/check --start; cat "${CLAUDE_PROJECT_DIR}"/LESSONS.md')),
+    "a hook that prints nothing": lambda t: settings(t, command("true")),
+    "lessons in force beyond what a hook may print": lambda t: write(
+        t, "LESSONS.md", open(os.path.join(t, "LESSONS.md"), encoding="utf-8").read() + long_line),
+}
+work = tempfile.mkdtemp()
+accepted, refused = [], 0
+try:
+    for count, (name, change) in enumerate(list(RIGHT.items()) + list(WRONG.items())):
+        tree = os.path.join(work, str(count))
+        shutil.copytree(".", tree, ignore=shutil.ignore_patterns(".git", "__pycache__", "node_modules", "*.db*", "product"))
+        if name in WRONG:
+            write(tree, "product/LABELS", one + "\n")
+        change(tree)
+        why, measured = refusal(tree)
+        if name in RIGHT and why:
+            fail("%s: %s" % (name, why))
+        if name in WRONG and not why:
+            fail("wrong variant ACCEPTED: %s" % name)
+        if name in RIGHT:
+            accepted.append(measured)
+        else:
+            refused += 1
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+print("the SessionStart hook, run as a session start runs it, prints for this tree %s; with no product %s; "
+      "for a product of one label %s, and of two %s; %s; %d of %d wrong variants refused; "
+      "CLAUDE.md tells no session to run a command for its lessons"
+      % (here, accepted[0], accepted[1], accepted[2], accepted[3], refused, len(WRONG)))

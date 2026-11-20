@@ -1,0 +1,62 @@
+#!/usr/bin/env node
+// A check under lesson L0026 (lessons/0026-narrow-lists-are-cards.md); until run 005 the case of L0022.
+// Origin: run 004, 2026-11-19. Used by hand at 390 px, the list of sales scrolled its Void
+// links out of sight and the list of products its Adjust and Edit, while every case passed.
+// Fills the shop, then looks in every list row that has a link or a button for one that
+// can be seen and reached without scrolling: in the cards of a narrow screen, and at 800 px,
+// where the lists are tables that may still scroll inside their box.
+// Made general in run 006, 2026-11-20, when the school library chose the label: what fills the
+// product and which pages are measured are the product's, in its surface ("actions").
+// Run from the repository root.
+const { run, style, surface } = require('../caselib.js');
+
+run(async (page, base, expect, fill) => {
+  await fill(surface.actions.posts);
+  let rows = 0;
+  for (const width of [320, 390, 800]) {
+    await page.setViewportSize({ width, height: 800 });
+    for (const path of surface.actions.pages) {
+      await page.goto(base + path);
+      const [seen, hidden] = await page.$$eval('tbody tr', (trs) => {
+        const inSight = (el) => {
+          let box = el.parentElement;
+          while (box && !/auto|scroll/.test(getComputedStyle(box).overflowX)) box = box.parentElement;
+          const frame = box ? box.getBoundingClientRect() : { left: 0, right: innerWidth };
+          const left = Math.max(0, frame.left) - 1, right = Math.min(innerWidth, frame.right) + 1;
+          const at = el.getBoundingClientRect();
+          if (at.width === 0 || at.left < left || at.right > right) return false;
+          el.scrollIntoView({ block: 'center', inline: 'nearest' });
+          const now = el.getBoundingClientRect();
+          const top = document.elementFromPoint((now.left + now.right) / 2, (now.top + now.bottom) / 2);
+          return now.left === at.left && Boolean(top) && (top === el || el.contains(top));
+        };
+        let count = 0; const bad = [];
+        for (const tr of trs) {
+          const acts = [...tr.querySelectorAll('a, button')];
+          if (!acts.length) continue;
+          count += 1;
+          if (!acts.some(inSight)) bad.push(acts.map((el) => el.textContent.trim()).join('/') + ' of "' + tr.cells[0].textContent.trim().slice(0, 20) + '"');
+        }
+        return [count, bad];
+      });
+      expect(seen >= 2, path + ' has ' + seen + ' rows with a link or button to look for');
+      expect(hidden.length === 0, path + ' at ' + width + ' px hides ' + hidden.slice(0, 3).join('; '));
+      rows += seen;
+    }
+    // A row needs one way in, not all of them: what the list leaves out is on the page its link opens.
+    for (const also of surface.actions.also) {
+      await page.goto(base + also.page);
+      const there = await page.$$eval(also.selector, (els) => els.filter((el) => {
+        const at = el.getBoundingClientRect(); return at.width > 0 && at.left >= 0 && at.right <= innerWidth;
+      }).length);
+      expect(there === 1, also.what + ': ' + there + ' at ' + width + ' px');
+    }
+  }
+  expect(rows >= surface.actions.rows, 'only ' + rows + ' rows were looked at');
+}, [
+  ['the last column scrolls away with the rest', style('td, th { position: static !important; }')],
+  ['the build of run 004 before its fix: a table at every width, the last column scrolling away', style(
+    'table { display: table !important; } tbody { display: table-row-group !important; } tr { display: table-row !important; } '
+    + 'td, th { display: table-cell !important; position: static !important; white-space: nowrap !important; } '
+    + '.scroll { overflow-x: auto !important; }')],
+]);

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Case of lesson L0001 (lessons/0001-empty-is-not-a-result.md).
+# Origin: the method of the torre repository, and the wizardly-cerf run.
+# Run from the repository root.
+t=$(mktemp -d) || exit 1
+trap 'rm -rf "$t"' EXIT
+: > "$t/CLAUDE.md"
+if ./check "$t" >/dev/null 2>&1; then
+  echo "the check passed on a record with no lesson in it"; exit 1
+fi
+out=$(./check --selftest 2>&1) || { echo "$out" | grep FAIL; echo "the check accepts a wrong tree"; exit 1; }
+echo "empty record refused; $(echo "$out" | tail -1)"

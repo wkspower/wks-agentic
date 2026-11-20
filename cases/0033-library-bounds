@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Case of lesson L0033 (lessons/0033-library-bounds.md).
+Origin: the person's answer 13 in run 006, 2026-11-20; the X that ends one
+ISBN-10 in eleven. Sends each input at the edge of its bound and one step
+outside. Run from the repository root."""
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("school library")
+
+TITLE = {"title": "Holes", "author": "", "isbn": "", "shelf": "", "copies": "1"}
+BORROWER = {"name": "Ana Lima", "kind": "pupil", "class": ""}
+
+
+def checks(shop):
+    def count(table):
+        return len(shop.export()[table])
+
+    def tried(table, form, field, inside, outside):
+        for value in inside:
+            before = count(table)
+            shop.post(303, "/" + table, **dict(form, **{field: value}))
+            shop.expect(count(table) == before + 1, "%s '%s' was accepted and nothing was stored" % (field, value[:30]))
+        for value in outside:
+            before = count(table)
+            shop.post(400, "/" + table, **dict(form, **{field: value}))
+            shop.expect(count(table) == before, "%s '%s' (%d characters) was refused and stored" % (field, value[:30], len(value)))
+
+    tried("titles", TITLE, "title", ["T", "T" * 200, "  " + "T" * 200 + "  ", "Ünïcödé 📚"], ["", "   ", "T" * 201])
+    tried("titles", TITLE, "author", ["", "A" * 120], ["A" * 121])
+    tried("titles", TITLE, "shelf", ["", "S" * 20], ["S" * 21])
+    tried("titles", TITLE, "isbn", ["", "0140361219", "080442957X", "080442957x", "9780140361216", "978-0-14-036121-6", "0-14-036121-9"],
+          ["123", "97801403612166", "014036121", "abcdefghij", "X140361219", "978014036121X", "978 0 14 036121 6", "0140361219; --"])
+    tried("titles", TITLE, "copies", ["1", "50"], ["", "0", "51", "-1", "1.5", "1e1", "five", "+5"])
+    tried("borrowers", BORROWER, "name", ["N", "N" * 80, " " + "N" * 80 + " "], ["", "  ", "N" * 81])
+    tried("borrowers", BORROWER, "class", ["", "c" * 20], ["c" * 21])
+    tried("borrowers", BORROWER, "kind", ["pupil", "staff"], ["", "teacher", "Pupil ", "pupil,staff"])
+
+    # What was typed is stored trimmed, and an ISBN without its hyphens.
+    made = shop.add("titles", title="  The Hobbit ", author=" J. R. R. Tolkien ", isbn="978-0-261-10221-7", shelf=" F TOL ", copies="3")
+    row = shop.row("titles", made)
+    shop.expect((row["title"], row["author"], row["isbn"], row["shelf"]) == ("The Hobbit", "J. R. R. Tolkien", "9780261102217", "F TOL"),
+                "a title typed with spaces around it and an ISBN with hyphens is stored as %s" % row)
+    long = [row["id"] for row in shop.export()["titles"] if len(row["title"]) == 200]
+    shop.expect(len(long) == 2, "%d titles of exactly 200 characters are stored, expected 2" % len(long))
+
+    # More copies of a title: 1 to 50 at once.
+    more = "/titles/%d/copies" % made
+    shop.post(303, more, copies="50")
+    for value in ("0", "51", "", "many"):
+        shop.post(400, more, copies=value)
+    held = len([1 for row in shop.export()["copies"] if row["title_id"] == made])
+    shop.expect(held == 53, "a title entered with 3 copies and given 50 more has %d" % held)
+
+    # The copy number on a loan: digits, nine at most.
+    who = shop.add("borrowers", **BORROWER)
+    copy = [row["id"] for row in shop.export()["copies"] if row["title_id"] == made][0]
+    for value in ("-%d" % copy, "%d.0" % copy, "1" * 10, "0x1", " "):
+        shop.post(400, "/loans", borrower_id=who, copy=value)
+    shop.expect(count("loans") == 0, "a loan with a copy number that is not one was stored")
+    shop.post(303, "/loans", borrower_id=who, copy=" %d " % copy)
+
+    # One form: 65,536 bytes.
+    before = count("titles")
+    status, _ = shop.request("POST", "/titles", list(dict(TITLE, padding="p" * 65536).items()))
+    shop.expect(status in (400, 413) and count("titles") == before, "a form of more than 65,536 bytes answered %d" % status)
+
+
+def cut(field, most, name):
+    @fault("POST", r"/(titles|borrowers)")
+    def wrong(shop, ask, table):
+        typed = ask.get(field)
+        if len(typed) > most:
+            ask.put(field, typed[:most])
+            shop.acted += 1
+        return ask.send()
+    return name, wrong
+
+
+@fault("POST", "/titles")
+def any_isbn(shop, ask):
+    """Whatever stands in the ISBN field is taken."""
+    plain = ask.get("isbn").replace("-", "")
+    fine = (len(plain) == 13 and plain.isdigit()) or (len(plain) == 10 and plain[:9].isdigit() and plain[9] in "0123456789Xx")
+    if plain and not fine:
+        ask.put("isbn", "")
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/titles")
+def x_refused(shop, ask):
+    """An ISBN-10 that ends in X is refused: the bound as it was first written."""
+    if ask.get("isbn").upper().endswith("X"):
+        shop.acted += 1
+        return 400, ""
+    return ask.send()
+
+
+@fault("POST", r"/titles(/\d+/copies)?")
+def any_number_of_copies(shop, ask, more):
+    """More than 50 copies at once are taken, and none is taken for one."""
+    typed = ask.get("copies")
+    if typed in ("0", "51"):
+        ask.put("copies", "50" if typed == "51" else "1")
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/borrowers")
+def any_kind(shop, ask):
+    """A kind that is neither pupil nor staff is stored as a pupil."""
+    if ask.get("kind") not in ("pupil", "staff"):
+        ask.put("kind", "pupil")
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", r"/titles|/borrowers")
+def blank_is_a_name(shop, ask):
+    """A title or a name of spaces only is stored."""
+    for field in ("title", "name"):
+        if any(name == field for name, _ in ask.pairs) and not ask.get(field):
+            ask.put(field, "-")
+            shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/loans")
+def copy_number_guessed(shop, ask):
+    """A copy number is read as generously as Python reads one."""
+    typed = ask.get("copy")
+    try:
+        ask.put("copy", abs(int(float(typed))))
+        shop.acted += str(abs(int(float(typed)))) != typed
+    except (ValueError, OverflowError):
+        pass
+    return ask.send()
+
+
+run(checks, wrong=[
+    cut("title", 200, "a title of 201 characters is stored cut"),
+    cut("author", 120, "an author of 121 characters is stored cut"),
+    cut("shelf", 20, "a shelf mark of 21 characters is stored cut"),
+    cut("name", 80, "a name of 81 characters is stored cut"),
+    cut("class", 20, "a class of 21 characters is stored cut"),
+    ("any ISBN is taken", any_isbn),
+    ("an ISBN that ends in X is refused", x_refused),
+    ("any number of copies is taken", any_number_of_copies),
+    ("any kind is a pupil", any_kind),
+    ("a blank title or name is stored", blank_is_a_name),
+    ("a copy number is guessed", copy_number_guessed),
+])

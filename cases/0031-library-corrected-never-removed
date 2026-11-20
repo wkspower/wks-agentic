@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""Case of lesson L0031 (lessons/0031-library-corrected-never-removed.md).
+Origin: the person's answer 11 in run 006, 2026-11-20. Run 007: a copy that is
+out can be marked lost, which ends its loan that day as lost.
+Run from the repository root."""
+import json
+import re
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import Broken, fault, run
+
+caselib.product("school library")
+
+
+def checks(shop):
+    holes = shop.add("titles", title="Hols", author="L. Sachar", isbn="", shelf="", copies="2")
+    other = shop.add("titles", title="Skellig", author="David Almond", isbn="0340716002", shelf="F ALM", copies="1")
+    one, two = sorted(row["id"] for row in shop.export()["copies"] if row["title_id"] == holes)
+    shop.restart("--today", "2026-03-02")
+    ana = shop.add("borrowers", name="Anna Lima", kind="staff", **{"class": ""})
+    bo = shop.add("borrowers", name="Bo Li", kind="pupil", **{"class": "9A"})
+    loan = shop.add("loans", borrower_id=ana, copy=one)
+
+    # A title is corrected in place.
+    edit = "/titles/%d/edit" % holes
+    shop.post(303, edit, title=" Holes ", author="Louis Sachar", isbn="978-0-7475-4459-7", shelf="F SAC")
+    row = shop.row("titles", holes)
+    shop.expect((row["title"], row["author"], row["isbn"], row["shelf"]) == ("Holes", "Louis Sachar", "9780747544597", "F SAC"),
+                "the corrected title is stored as %s" % row)
+    shop.expect(shop.row("titles", other)["title"] == "Skellig", "correcting one title changed another")
+    shop.expect(sorted(c["id"] for c in shop.export()["copies"] if c["title_id"] == holes) == [one, two],
+                "correcting a title changed its copies")
+    for what, fields in [("an empty title", {"title": "  "}), ("a title of 201 characters", {"title": "T" * 201}),
+                         ("an ISBN of 5 digits", {"title": "Holes", "isbn": "12345"})]:
+        shop.post(400, edit, **dict({"author": "", "isbn": "", "shelf": ""}, **fields))
+        shop.expect(shop.row("titles", holes)["title"] == "Holes", "an edit with %s was stored" % what)
+    status, body = shop.request("GET", edit)
+    shop.expect(status == 200 and 'value="Holes"' in body, "the form to correct a title does not hold its title")
+
+    # A borrower is corrected in place, and marked as having left; the loan still points at her.
+    edit = "/borrowers/%d/edit" % ana
+    shop.post(303, edit, name="Ana Lima", kind="pupil", active="1", **{"class": "7B"})
+    row = shop.row("borrowers", ana)
+    shop.expect((row["name"], row["kind"], row["class"], row["active"]) == ("Ana Lima", "pupil", "7B", True),
+                "the corrected borrower is stored as %s" % row)
+    shop.expect(shop.row("borrowers", bo)["name"] == "Bo Li", "correcting one borrower changed another")
+    for what, fields in [("no name", {"name": ""}), ("a name of 81 characters", {"name": "N" * 81}),
+                         ("a kind that is neither", {"name": "Ana Lima", "kind": "visitor"}),
+                         ("a class of 21 characters", {"name": "Ana Lima", "class": "c" * 21})]:
+        shop.post(400, edit, **dict({"kind": "pupil", "class": "7B", "active": "1"}, **fields))
+        shop.expect(shop.row("borrowers", ana)["name"] == "Ana Lima" and shop.row("borrowers", ana)["class"] == "7B",
+                    "an edit with %s was stored" % what)
+    shop.post(303, edit, name="Ana Lima", kind="pupil", active="0", **{"class": "7B"})
+    shop.expect(shop.row("borrowers", ana)["active"] is False, "a borrower marked as having left is still active")
+    shop.expect(shop.row("loans", loan)["borrower_id"] == ana, "the loan no longer points at its borrower")
+    status, body = shop.request("GET", "/borrowers")
+    shop.expect(status == 200 and "Ana Lima" in body and "left" in body, "a borrower who has left is not on the list, or not shown as left")
+
+    # A copy is marked lost, withdrawn, and back.
+    mark = "/copies/%d/status"
+    for status in ("lost", "withdrawn", "available"):
+        shop.post(303, mark % two, ("status", status))
+        shop.expect(shop.row("copies", two)["status"] == status, "a copy marked %s is %s" % (status, shop.row("copies", two)["status"]))
+    for status in ("on loan", "gone", ""):
+        shop.post(400, mark % two, ("status", status))
+
+    # A copy that is out is not withdrawn: the book is returned first.
+    shop.restart("--today", "2026-03-20")
+    body = shop.post(400, mark % one, ("status", "withdrawn"))
+    shop.expect(shop.row("copies", one)["status"] == "on loan" and shop.row("loans", loan)["returned"] is None,
+                "marking a copy that is out as withdrawn changed the copy or its loan")
+    shop.expect("Ana Lima" in body, "the refusal to withdraw a copy that is out does not say who has it")
+
+    # A copy that is out is marked lost: its loan ends that day, as lost and not as returned (run 007).
+    def said(path):
+        status, body = shop.request("GET", path)
+        shop.expect(status == 200, "GET %s answered %d" % (path, status))
+        return body
+
+    def row_of(path, ident):
+        found = re.search(r'<tr[^>]*id="loan-%d".*?</tr>' % ident, said(path), re.S)
+        return found.group(0) if found else ""
+
+    shop.expect(row_of("/overdue", loan), "a loan made on 2026-03-02 is not on the overdue list on 2026-03-20")
+    title_page = said("/titles/%d" % holes)
+    shop.expect(re.search(r'<form[^>]*action="/copies/%d/status"[^>]*>\s*<input[^>]*value="lost"' % one, title_page),
+                "the page of a title has no button to mark lost a copy that is out")
+    shop.post(303, mark % one, ("status", "lost"))
+    row = shop.row("loans", loan)
+    shop.expect(shop.row("copies", one)["status"] == "lost", "a copy marked lost while out is %s" % shop.row("copies", one)["status"])
+    shop.expect((row.get("lost"), row["returned"]) == ("2026-03-20", None),
+                "a loan whose copy was marked lost on 2026-03-20 has lost %s and returned %s, expected 2026-03-20 and none"
+                % (row.get("lost"), row["returned"]))
+    shop.expect((row["lent"], row["due"], row["borrower_id"], row["copy_id"]) == ("2026-03-02", "2026-03-16", ana, one),
+                "ending a loan as lost changed the rest of it: %s" % row)
+    for path in ("/loans", "/overdue", "/borrowers/%d" % ana):
+        shop.expect(not row_of(path, loan), "a loan that ended as lost is still listed as out on %s" % path)
+    shop.expect("lost" in re.sub(r"<[^>]+>", " ", row_of("/returned", loan)),
+                "the page of loans that have ended does not show the loan, or does not say that it ended as lost")
+
+    # It is an end: no return and no renewal after it, and it is not undone when the book turns up.
+    shop.restart("--today", "2026-03-25")
+    shop.post(400, "/loans/%d/return" % loan)
+    shop.post(400, "/loans/%d/renew" % loan)
+    shop.expect(shop.row("loans", loan) == row, "a refused return or renewal changed a loan that ended as lost")
+    shop.post(303, mark % one, ("status", "available"))
+    shop.expect(shop.row("copies", one)["status"] == "available" and shop.row("loans", loan) == row,
+                "marking the copy available again changed the loan that ended as lost")
+    again = shop.add("loans", borrower_id=bo, copy=one)
+    shop.expect(again != loan and shop.row("loans", again)["lent"] == "2026-03-25" and shop.row("loans", loan) == row,
+                "a copy that turned up cannot be lent again, or lending it changed the old loan")
+    shop.post(303, "/loans/%d/return" % again)
+    shop.expect(shop.row("loans", again).get("lost") is None, "a returned loan is recorded as lost")
+
+    # Nothing is removed, by any address tried.
+    before = shop.export()
+    tried = 0
+    for row in ("/titles/%d" % holes, "/borrowers/%d" % bo, "/copies/%d" % two):
+        for path in (row, row + "/delete", row + "/remove"):
+            for method in ("POST", "DELETE"):
+                status, _ = shop.request(method, path)
+                shop.expect(status >= 400, "%s %s answered %d" % (method, path, status))
+                tried += 1
+    after = shop.export()
+    shop.expect(tried == 18 and after == before, "after 18 attempts to remove a row the record changed")
+
+
+@fault("POST", r"/(titles|borrowers)/\d+/edit")
+def edit_skips_bounds(shop, ask, table):
+    """A correction is stored cut to fit, whatever was typed."""
+    field, most = ("title", 200) if table == "titles" else ("name", 80)
+    typed = ask.get(field)
+    if not typed or len(typed) > most:
+        ask.put(field, (typed or "Untitled")[:most])
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", r"/borrowers/(\d+)/edit")
+def edit_changes_another(shop, ask, ident):
+    """A correction to one borrower is written to the next one as well."""
+    answer = ask.send()
+    for row in shop.state()["borrowers"]:
+        if answer[0] == 303 and row["id"] == int(ident) + 1:
+            if shop.real("POST", "/borrowers/%d/edit" % row["id"], ask.pairs)[0] != 303:
+                raise Broken("the fault could not write to borrower %d" % row["id"])
+            shop.acted += 1
+    return answer
+
+
+def out_loan(shop, ident):
+    """The open loan of a copy, as the library itself has it."""
+    for row in shop.state()["loans"]:
+        if row["copy_id"] == int(ident) and row["returned"] is None and row.get("lost") is None:
+            return row
+    return None
+
+
+@fault("POST", r"/copies/(\d+)/status")
+def out_not_marked_lost(shop, ask, ident):
+    """A copy that is out cannot be marked lost: the book must be returned first (the library of run 006)."""
+    if ask.get("status") == "lost" and out_loan(shop, ident):
+        shop.acted += 1
+        return 400, "On loan to Ana Lima. Return it first."
+    return ask.send()
+
+
+@fault("POST", r"/copies/(\d+)/status")
+def lost_recorded_as_returned(shop, ask, ident):
+    """A book lost while out is taken back and then marked lost: the record says it was returned."""
+    row = out_loan(shop, ident)
+    if ask.get("status") == "lost" and row:
+        if shop.real("POST", "/loans/%d/return" % row["id"])[0] != 303:
+            raise Broken("the fault could not return loan %d" % row["id"])
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", r"/copies/(\d+)/status")
+def out_withdrawn(shop, ask, ident):
+    """A copy that is out is withdrawn: the nearest the library allows is to take it back first."""
+    row = out_loan(shop, ident)
+    if ask.get("status") == "withdrawn" and row:
+        if shop.real("POST", "/loans/%d/return" % row["id"])[0] != 303:
+            raise Broken("the fault could not return loan %d" % row["id"])
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", r"/loans/(\d+)/(return|renew)")
+def lost_loan_goes_on(shop, ask, ident, what):
+    """A loan that ended as lost is returned or renewed like one that is out."""
+    if any(row["id"] == int(ident) and row.get("lost") for row in shop.state()["loans"]):
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+@fault(None, r"/copies/(\d+)/status|/export.json")
+def found_reopens_loan(shop, ask, ident):
+    """When the book turns up, the loan that ended as lost is rewritten as if it had not ended."""
+    if ask.method == "POST":
+        if ask.get("status") == "available":
+            reopened.update(row["id"] for row in shop.state()["loans"] if row["copy_id"] == int(ident) and row.get("lost"))
+        return ask.send()
+    status, body = ask.send()
+    state = json.loads(body)
+    for row in state["loans"]:
+        if row["id"] in reopened:
+            row["lost"] = None
+            shop.acted += 1
+    return status, json.dumps(state)
+
+
+reopened = set()
+
+
+@fault("POST", r"/copies/(\d+)/status")
+def any_status(shop, ask, ident):
+    """A status nobody defined is taken."""
+    if ask.get("status") not in ("available", "lost", "withdrawn"):
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+@fault(None, r"/(titles|borrowers|copies)/(\d+)(/delete|/remove)?")
+def can_be_removed(shop, ask, table, ident, how):
+    """There is an address that removes a row: the nearest the library allows is to mark it gone."""
+    if ask.method == "DELETE" or (ask.method == "POST" and how):
+        if table == "borrowers":
+            row = [row for row in shop.state()["borrowers"] if row["id"] == int(ident)][0]
+            shop.real("POST", ask.path.split("/delete")[0].split("/remove")[0] + "/edit",
+                      [("name", row["name"]), ("kind", row["kind"]), ("class", row["class"]), ("active", "0")])
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+run(checks, wrong=[
+    ("a correction skips the bounds", edit_skips_bounds),
+    ("a correction to one borrower changes another", edit_changes_another),
+    ("a copy that is out cannot be marked lost", out_not_marked_lost),
+    ("a book lost while out is recorded as returned", lost_recorded_as_returned),
+    ("a copy that is out is withdrawn", out_withdrawn),
+    ("a loan that ended as lost is returned or renewed", lost_loan_goes_on),
+    ("a book that turns up reopens its loan", found_reopens_loan),
+    ("any status is accepted", any_status),
+    ("a row can be removed", can_be_removed),
+])
