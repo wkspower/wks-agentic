@@ -163,6 +163,7 @@ class Plan:
     def __init__(self, ours, theirs, strict, here="here", other="the other", named=None):
         self.fork_ref, self.fork_how = parted(ours, theirs, named)
         fork, mine, yours = tree(self.fork_ref), tree(ours), tree(theirs)
+        self.fork, self.yours = fork, yours
         self.files = {path: ("blob", entry) for path, entry in mine.items()}  # path -> ("blob", entry) or ("text", content)
         self.refused, self.by_text, self.marked, self.by_hand, self.together, self.reach = [], [], [], [], [], []
         self.brought = []
@@ -285,6 +286,10 @@ class Plan:
             return value[0], value[1].encode("utf-8")
         return value[0], git("cat-file", "blob", value[1], raw=True)
 
+    def own(self, path):
+        """The other side did not change this file since they parted: what the tree holds of it is this side's."""
+        return self.yours.get(path) == self.fork.get(path)
+
     def unsettled(self):
         """Paths whose content a reader or the cases settle, so no rule says what they must hold."""
         return {what.split(": ")[-1] for what in self.by_text + self.marked} | (set(LINED) if self.by_hand else set())
@@ -298,13 +303,23 @@ def on_disk(root, path):
         return ("100755" if os.access(full, os.X_OK) else "100644"), handle.read()
 
 
-def differences(plan, root):
-    """Where the tree on disk is not what the plan gives."""
+def differences(plan, root, own=None):
+    """Where the tree on disk is not what the plan gives.
+
+    Given a list, and where the two sides left something to settle, a file or a line of the handoff that this
+    side alone had changed is put in the list and not called wrong, and a marker left behind is wrong (L1310)."""
     wrong = []
+    settling = own is not None and bool(plan.unsettled())
     for path in sorted(plan.files):
-        if path in plan.unsettled():
-            continue
         want, have = plan.content(path), on_disk(root, path)
+        if path in plan.unsettled():
+            if own is not None and have and re.search(rb"^<<<<<<< here\r?$", have[1], re.M) and re.search(rb"^>>>>>>> the other\r?$", have[1], re.M):
+                wrong.append("%s is still marked where the two changes meet" % path)
+            continue
+        if settling and path not in LINED + KEPT and plan.own(path):
+            if have != want:
+                own.append(path)
+            continue
         if have is None:
             wrong.append("%s is not in the tree" % path)
         elif path in LINED:
@@ -319,6 +334,10 @@ def differences(plan, root):
         elif path in KEPT:
             missing = [line for line in want[1].decode("utf-8", errors="replace").splitlines()
                        if line.strip() and line not in have[1].decode("utf-8", errors="replace").splitlines()]
+            theirs = (text(plan.yours.get(path)) or "").splitlines() if settling else missing
+            if len(missing) > len([line for line in missing if line in theirs]):
+                own.append("%s (%d of this side's lines)" % (path, len([line for line in missing if line not in theirs])))
+            missing = [line for line in missing if line in theirs]
             if missing:
                 wrong.append("%s: %d lines either side wrote are not in it, the first: %s" % (path, len(missing), missing[0][:60]))
         elif have[1] != want[1]:
@@ -411,7 +430,8 @@ def verify(ours, theirs, named=None):
     root = git("rev-parse", "--show-toplevel")
     os.chdir(root)
     plan = Plan(ours, theirs, not os.path.isdir("product"), ours, theirs, named)
-    wrong = ["the rules refuse to bring these two together: " + refusal for refusal in plan.refused] or differences(plan, root)
+    own = []
+    wrong = ["the rules refuse to bring these two together: " + refusal for refusal in plan.refused] or differences(plan, root, own)
     if wrong:
         print("this tree is NOT what the rules give for %s and %s, parted at %s:" % (ours, theirs, plan.fork_ref[:7]))
         for problem in wrong:
@@ -419,6 +439,11 @@ def verify(ours, theirs, named=None):
         return 1
     print("this tree is what the rules give for %s and %s, parted at %s: %d files compared, %d left to the cases or a reader"
           % (ours, theirs, plan.fork_ref[:7], len(plan.files) - len(plan.unsettled()), len(plan.unsettled())))
+    if plan.unsettled():
+        print("left to the cases or a reader, and holding no marker: %s" % ", ".join(sorted(plan.unsettled())))
+        print("changed in the settling besides, each this side's own (the other side had not changed it since they parted): %s"
+              % (", ".join(own) or "nothing"))
+        print("Everything taken from the other side is as that side has it (L1310).")
     return 0
 
 
@@ -430,12 +455,13 @@ def attempt(branch):
     work = tempfile.mkdtemp()
     copy = os.path.join(work, "tree")
     try:
-        git("worktree", "add", "--detach", copy, "HEAD", cwd=root)
+        tried = git("rev-parse", "--short", "HEAD", cwd=root)  # named now: the checkout may move while the check runs
+        git("worktree", "add", "--detach", copy, tried, cwd=root)
         shutil.rmtree(os.path.join(copy, "product"), ignore_errors=True)
         git("checkout", branch, "--", "product", cwd=copy)
         done = subprocess.run(["./check"], cwd=copy, capture_output=True, text=True)
         said = [line for line in done.stdout.strip().splitlines() if line.startswith(("FAIL", "lessons "))]
-        print("This tree as of %s with the product of %s, in a scratch copy:" % (git("rev-parse", "--short", "HEAD", cwd=root), branch))
+        print("This tree as of %s with the product of %s, in a scratch copy:" % (tried, branch))
         print("\n".join("  " + line for line in said) or "  the check said nothing: " + done.stderr.strip()[-200:])
         print("Nothing was kept, and %s is as it was. %s" % (branch, "Its product meets what is here." if done.returncode == 0
               else "Its product does NOT meet what is here; what to do about that is a decision, not part of bringing."))

@@ -17,9 +17,13 @@ with the tracker; the summary line is in `runs/013-maintenance-requests.md`.
   has not seen that.
 - Three general cases were widened for a `textarea` and for `select`s
   (0014, 0015, 0035), and `caselib.js` reads `{today+20}`.
+- **`--verify` now reads a settled bring** (L1310, case first): what came
+  from the other side must be as that side has it, no marker may be left,
+  and what this side alone had changed is named, not refused.
 - This branch holds all the base has. Bringing it to the base is the
   coordinating session's to do; `./bring` will name L0042's case and file,
-  three more cases, `caselib.js` and the surfaces as changed here only.
+  three more cases, L1310's, `caselib.js`, `bring` and the surfaces as changed
+  here only.
 
 To use the tracker: `python3 product/maintenance.py --sample`, then open
 http://127.0.0.1:8000/. `--today 2026-12-20` shows it on another day.
@@ -313,9 +317,17 @@ order of the runs does not change the lessons the base ends with.
      prove a merge of two changes, having no product. Check the branch out,
      run `./bring origin/BASE` there, settle what it names (text left
      marked; a lesson line written twice, of which one is removed), see
-     `./check` pass there with the product, `git commit`, `git push`. Then
-     step 1 again: the branch now holds all the base has, and nothing is
-     changed on both sides.
+     `./check` pass there with the product, `git commit`. Two runs that
+     made the same thing general in two ways are made one design there,
+     which changes files that were not marked (the product's own surface,
+     if the other's names are kept). Then, before anything else is
+     committed, `./bring --verify HEAD^1 HEAD^2`: it says that everything
+     taken from the base is as the base has it and no marker is left, and
+     names what the settling changed besides (L1310). Then `./bring --try
+     BRANCH` for every other product, the one the base just took in among
+     them: it tries the last commit, so it comes after the commit. Then
+     `git push`, and step 1 again: the branch now holds all the base has,
+     and nothing is changed on both sides.
    - *the two share no history*: add `--from COMMIT`, the commit that holds
      the tree the branch was started from.
 3. **If it says brought**, it has run `./check` and printed its summary
@@ -333,7 +345,9 @@ order of the runs does not change the lessons the base ends with.
 6. `git merge --abort` at any point before the commit puts everything back.
 
 To check a merge someone made another way: `./bring --verify OURS THEIRS`
-says whether the tree is what the rules give for those two commits.
+says whether the tree is what the rules give for those two commits. Where
+the two left something to settle it says instead whether the settling kept
+to its ground (L1310).
 
 ## How a new product starts from the base
 

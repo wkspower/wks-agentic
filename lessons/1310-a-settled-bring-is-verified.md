@@ -29,7 +29,9 @@ Lesson lines stay exact in every case: one changes as any lesson does, in a
 commit of its own. Where nothing was left to settle nothing is relaxed: the
 tree is what the rules give or it is not.
 
-After a settling is committed: `./bring --verify HEAD^1 HEAD^2`.
+After a settling is committed, and before anything else is:
+`./bring --verify HEAD^1 HEAD^2`. It compares the tree in the checkout, so a
+lesson added after the commit is one more difference.
 
 ## Source
 Run 013, 2026-11-20, real data: the first time two real runs met. Runs 012

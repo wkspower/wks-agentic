@@ -123,8 +123,8 @@ WRONG = {
     "the settling took a line the other run wrote out of the handoff":
         (change("HANDOFF.md", "**Run 012 built the shop.**\n", ""), "HANDOFF.md"),
     "the marked file was committed as it was left, with its markers":
-        (lambda repo: write(repo, "caselib.py", git(repo, "show", "HEAD:caselib.py").replace(
-            "    return surface['fits']\n", "<<<<<<< here\n    return surface['fits']\n=======\n    return surface['under']\n>>>>>>> the other\n")),
+        (lambda repo: write(repo, "caselib.py", HELPER.replace(
+            "    return None\n", "<<<<<<< here\n    return surface['fits']\n=======\n    return surface['under']\n>>>>>>> the other\n")),
          "caselib.py"),
 }
 
