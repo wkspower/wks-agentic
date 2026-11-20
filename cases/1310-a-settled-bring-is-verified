@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Case of lesson L1310 (lessons/1310-a-settled-bring-is-verified.md).
+Origin: run 013, 2026-11-20. Runs 012 and 013 had each rewritten one shared case to read a part of
+the surface, under two names. Settled on the branch of run 013, the tree had to change that run's
+own surface, which was not marked, and `./bring --verify` said NOT in the words it has for a tree
+that lost the other run's work.
+Plants the situation in a scratch repository: a base with no product (the small right tree of
+./check --plant, this tree's bring, a handoff, a shared helper), and two runs from it that each
+rewrote the same lines of the helper for a part of its own surface, "under" and "fits". The first
+is brought to the base; the second takes the base in, is left the helper marked, and settles: the
+helper to one design, its own surface to the name kept, its own lines of the handoff. --verify
+must accept that and name what the settling changed. Every wrong settling is the same with one
+small change (L0002) and must be refused by name. A missing git fails.
+Run from the repository root."""
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ENV = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_AUTHOR_NAME="case",
+           GIT_AUTHOR_EMAIL="case@example.invalid", GIT_COMMITTER_NAME="case", GIT_COMMITTER_EMAIL="case@example.invalid")
+HELPER = "def start():\n    return 'started'\n\n\ndef part(surface):\n    return None\n"
+HANDOFF = "# Handoff\n\nThe base: every lesson and no product.\n\n## Runs\n\n- 001: the first run.\n"
+RUNS = (("run/012-shop", "under"), ("run/013-library", "fits"))
+
+
+def fail(what):
+    print(what)
+    sys.exit(1)
+
+
+def read(repo, name):
+    with open(os.path.join(repo, name), encoding="utf-8") as handle:
+        return handle.read()
+
+
+def write(repo, name, text):
+    path = os.path.join(repo, name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def run(repo, *command):
+    return subprocess.run(list(command), cwd=repo, capture_output=True, text=True, env=ENV, timeout=300)
+
+
+def git(repo, *args):
+    done = run(repo, "git", *args)
+    if done.returncode != 0:
+        fail("the plant itself went wrong at git %s: %s" % (" ".join(args), (done.stderr or done.stdout).strip()[:200]))
+    return done.stdout.strip()
+
+
+def commit(repo, message):
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", message)
+
+
+def plant(work, name, conflict=True):
+    """The base, the two runs, the first brought to the base, the base taken into the second and not yet settled."""
+    repo = os.path.join(work, name)
+    if subprocess.run(["./check", "--plant", repo], capture_output=True).returncode != 0:
+        fail("./check --plant could not write the small right tree")
+    shutil.rmtree(os.path.join(repo, "product"))
+    shutil.copy("bring", os.path.join(repo, "bring"))
+    write(repo, "HANDOFF.md", HANDOFF)
+    write(repo, "caselib.py", HELPER)
+    git(repo, "init", "-q", "-b", "base")
+    commit(repo, "the base")
+    for branch, word in RUNS:
+        number, slug = branch[4:7], branch[8:]
+        git(repo, "checkout", "-q", "-b", branch, "base")
+        if conflict or word == "under":
+            write(repo, "caselib.py", HELPER.replace("None", "surface['%s']" % word))
+        write(repo, "surface/%s.json" % slug, '{"label": "%s", "%s": 1}\n' % (slug, word))
+        write(repo, "runs/%s-%s.md" % (number, slug), "# Run %s: the %s\n" % (number, slug))
+        top, rest = read(repo, "HANDOFF.md").split("\n", 1)
+        write(repo, "HANDOFF.md", "%s\n\n**Run %s built the %s.**\n%s- %s: the %s.\n" % (top, number, slug, rest, number, slug))
+        write(repo, "product/LABELS", "web pages\n")
+        write(repo, "product/%s.py" % slug, "print('the %s')\n" % slug)
+        commit(repo, "run " + number)
+    git(repo, "checkout", "-q", "base")
+    first = run(repo, "./bring", RUNS[0][0])
+    if first.returncode != 0:
+        fail("the first run is not brought to the base: %s" % first.stdout.strip()[-300:])
+    git(repo, "commit", "-q", "--no-edit")
+    git(repo, "checkout", "-q", RUNS[1][0])
+    taken = run(repo, "./bring", "base")
+    marked = "<<<<<<< here" in read(repo, "caselib.py")
+    if conflict and (taken.returncode == 0 or not marked or "caselib.py" not in taken.stdout):
+        fail("the helper both runs rewrote was not left marked and named on the branch with the product: nothing was planted")
+    if not conflict and (taken.returncode != 0 or marked):
+        fail("a bring with nothing changed on both sides left something to settle: %s" % taken.stdout.strip()[-300:])
+    return repo
+
+
+def settle(repo):
+    """One design: the first run's name. The second run's own surface follows it, and its own lines in the handoff."""
+    write(repo, "caselib.py", HELPER.replace("None", "surface['under']"))
+    write(repo, "surface/library.json", read(repo, "surface/library.json").replace('"fits"', '"under"'))
+    write(repo, "HANDOFF.md", read(repo, "HANDOFF.md").replace("**Run 013 built the library.**", "**Run 013 built the library and took the base in.**"))
+
+
+def verified(repo, after=None):
+    if after:
+        after(repo)
+    commit(repo, "settled")
+    return run(repo, "./bring", "--verify", "HEAD^1", "HEAD^2")
+
+
+def change(name, old, new):
+    return lambda repo: write(repo, name, read(repo, name).replace(old, new))
+
+
+# name: (a small change to the right settling, a word the refusal must say)
+WRONG = {
+    "the settling changed the surface of the other run's product":
+        (change("surface/shop.json", '"under": 1', '"under": 2'), "surface/shop.json"),
+    "the settling changed the other run's record":
+        (change("runs/012-shop.md", "the shop", "the shop, corrected"), "runs/012-shop.md"),
+    "the settling took a line the other run wrote out of the handoff":
+        (change("HANDOFF.md", "**Run 012 built the shop.**\n", ""), "HANDOFF.md"),
+    "the marked file was committed as it was left, with its markers":
+        (lambda repo: write(repo, "caselib.py", git(repo, "show", "HEAD:caselib.py").replace(
+            "    return surface['fits']\n", "<<<<<<< here\n    return surface['fits']\n=======\n    return surface['under']\n>>>>>>> the other\n")),
+         "caselib.py"),
+}
+
+if shutil.which("git") is None:
+    fail("git is missing: no branch can be planted, so nothing was measured")
+if not os.access("bring", os.X_OK):
+    fail("there is no ./bring")
+work = tempfile.mkdtemp()
+try:
+    repo = plant(work, "right")
+    settle(repo)
+    right = verified(repo)
+    if right.returncode != 0:
+        fail("./bring --verify refuses a settling that changed the marked helper, this side's own surface and this side's "
+             "own lines of the handoff, and nothing of the other side: %s" % right.stdout.strip()[-400:])
+    for word in ("surface/library.json", "HANDOFF.md"):
+        if word not in right.stdout:
+            fail("the settling was accepted and %s, which it changed and was not marked, is not named: %s" % (word, right.stdout.strip()[-300:]))
+    if "surface/shop.json" in right.stdout or "runs/" in right.stdout:
+        fail("a file the settling did not touch is named as changed by it: %s" % right.stdout.strip()[-300:])
+    for count, (name, (spoil, word)) in enumerate(WRONG.items()):
+        repo = plant(work, "wrong-%d" % count)
+        settle(repo)
+        wrong = verified(repo, spoil)
+        if wrong.returncode == 0:
+            fail("wrong variant ACCEPTED: %s" % name)
+        if word not in wrong.stdout or "NOT" not in wrong.stdout:
+            fail("%s: refused without naming %s: %s" % (name, word, wrong.stdout.strip()[-300:]))
+    # Where nothing was left to settle, nothing is relaxed: this side's own surface changed after a clean bring.
+    repo = plant(work, "clean", conflict=False)
+    clean = run(repo, "./bring", "--verify", "HEAD", "base")
+    if clean.returncode != 0:
+        fail("--verify refuses the tree ./bring made where nothing was changed on both sides: %s" % clean.stdout.strip()[-300:])
+    exact = verified(repo, change("surface/library.json", '"fits"', '"under"'))
+    if exact.returncode == 0 or "surface/library.json" not in exact.stdout:
+        fail("wrong variant ACCEPTED: nothing was left to settle, a surface was changed all the same, and --verify does not name it")
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+print("two runs that rewrote the same lines of a shared helper for two names in a surface, the second taking the base in "
+      "with the helper left marked: the settling to one name accepted by --verify, its 2 changes outside the marked file "
+      "named (this side's surface, this side's lines of the handoff); %d wrong settlings refused, each named; with nothing "
+      "left to settle, 1 changed surface refused" % len(WRONG))

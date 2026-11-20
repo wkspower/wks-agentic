@@ -82,3 +82,4 @@ the lessons and the cases are what lasts.
 - **L0041** [always] What must happen at the start of a session is done by tooling: a hook puts the lessons in force for the product in front of the session, and nothing depends on the session running a command.
 - **L1101** [always] A lesson's number is its run and its place in it, L1203 for the third lesson of run 12; the plain sequence ended at L0042, and no number is given twice or changed.
 - **L1102** [always] What a run learned comes back through `./bring`, never by copying a tree: what one side changed is taken, and what both changed is refused where no product can prove the result, and named.
+- **L1310** [always] A settled bring is still verified: what was taken from the other side is as that side has it and no marker is left, and what this side alone had changed may change in the settling and is named.
