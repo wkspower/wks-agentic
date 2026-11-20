@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Case of lesson L0039 (lessons/0039-the-entry-file-holds-always.md).
+Origin: run 008, 2026-11-20. CLAUDE.md was 11.9 KB, read whole by every session:
+4.4 KB of it were links that follow from a lesson's number, and 10 of its 34
+lesson lines were not in force for the product in the tree.
+Reads the lesson lines without the check's own code. No line may carry what
+its number gives; CLAUDE.md holds the `always` lessons and LESSONS.md the
+others; ./check --lessons prints exactly the others in force and names every
+label that is off. Then, in a copy without product/ (the base), every label
+is named and can be asked for. Run from the repository root."""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+LINE = re.compile(r"- \*\*(L\d{4})\*\* \[([^\]]+)\]")
+
+
+def fail(what):
+    print(what)
+    sys.exit(1)
+
+
+def label(text):
+    return " ".join(text.split("#")[0].split()).lower()
+
+
+def lines(home):
+    found = []
+    for line in open(home, encoding="utf-8").read().splitlines() if os.path.exists(home) else []:
+        if line.startswith("- **L"):
+            match = LINE.match(line)
+            if not match:
+                fail("%s has a lesson line that says no number and labels: %s" % (home, line[:50]))
+            found.append((match.group(1), {label(word) for word in match.group(2).split(",")}, line))
+    return found
+
+
+def printed(*labels, cwd="."):
+    done = subprocess.run(["./check", "--lessons"] + list(labels), cwd=cwd, capture_output=True, text=True)
+    return done.returncode, sorted(line for line in done.stdout.splitlines() if line.startswith("- **L")), done.stdout
+
+
+entry, rest = lines("CLAUDE.md"), lines("LESSONS.md")
+for lesson, _, line in entry + rest:
+    if "](" in line or re.search(r"(lessons|cases)/\d{4}", line):
+        fail("the line of %s carries a link or a path, which its number gives" % lesson)
+stray = [lesson for lesson, labels, _ in entry if "always" not in labels] + [
+    lesson for lesson, labels, _ in rest if "always" in labels]
+if stray or not entry or not rest:
+    fail("CLAUDE.md holds %d lessons and LESSONS.md %d; in the wrong one of the two: %s"
+         % (len(entry), len(rest), ", ".join(stray) or "none"))
+
+carried = {}
+for _, labels, line in rest:
+    for word in labels:
+        carried.setdefault(word, []).append(line)
+declared = set()
+if os.path.exists("product/LABELS"):
+    declared = {label(line) for line in open("product/LABELS", encoding="utf-8")} - {""}
+
+
+def named(out, off):
+    """Every label that is off is named with the number of lessons it would bring."""
+    missing = [word for word in off if "'%s': %d lesson" % (word, len(carried[word])) not in out]
+    if missing:
+        fail("./check --lessons does not name, with its count, the label that is off: %s" % ", ".join(missing))
+
+
+want = sorted(line for _, labels, line in rest if labels & declared)
+code, got, out = printed()
+if code != 0 or got != want:
+    fail("./check --lessons prints %d lesson lines for %s, and %d are in force besides `always`: %s"
+         % (len(got), ", ".join(sorted(declared)) or "no product", len(want), sorted(set(got) ^ set(want))[:2]))
+off = sorted(set(carried) - declared)
+named(out, off)
+here = len(out.encode("utf-8"))
+
+work = tempfile.mkdtemp()
+try:
+    base = os.path.join(work, "base")
+    shutil.copytree(".", base, ignore=shutil.ignore_patterns(".git", "__pycache__", "node_modules", "*.db*", "product"))
+    code, got, out = printed(cwd=base)
+    if code != 0 or got:
+        fail("without product/, ./check --lessons prints %d lesson lines: only `always` is in force there" % len(got))
+    named(out, sorted(carried))
+    for word in sorted(carried):
+        code, got, _ = printed(word, cwd=base)
+        if code != 0 or got != sorted(carried[word]):
+            fail("without product/, ./check --lessons '%s' prints %d lines, and the label brings %d"
+                 % (word, len(got), len(carried[word])))
+    if printed("no such label", cwd=base)[0] == 0:
+        fail("./check --lessons accepted a label no lesson carries")
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+print("CLAUDE.md, %d bytes, holds %d lessons, all `always`; LESSONS.md holds the other %d; no line carries a link; "
+      "./check --lessons prints the %d in force here in %d bytes and names %d labels that are off; "
+      "without product/ it prints none, names %d labels, and each brings its own lines when asked"
+      % (os.path.getsize("CLAUDE.md"), len(entry), len(rest), len(want), here, len(off), len(carried)))
