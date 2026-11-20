@@ -71,10 +71,12 @@ table{border-collapse:collapse;width:100%}
 th,td{text-align:left;vertical-align:top;padding:.45rem .6rem;border-bottom:1px solid var(--line)}
 th{font-size:.85rem;color:var(--soft);white-space:nowrap}
 td{min-width:150px;overflow-wrap:break-word}
-td.num,td.act{min-width:0;white-space:nowrap}
+td.num,td.short{min-width:0;white-space:nowrap}
+td.act{min-width:0}
 td.act,th.act{position:sticky;right:0;background:var(--bg)}
+td.act span{display:inline-block;white-space:nowrap}
 td.act form{display:inline-block;margin:0}
-td.act>*{margin-right:.4rem}
+td.act span>*{margin:0 .4rem .2rem 0}
 td.act button{padding:.15rem .55rem}
 td a{white-space:nowrap}
 @media (max-width:760px){
@@ -84,9 +86,11 @@ thead{display:none}
 tr{background:var(--box);border:1px solid var(--line);border-radius:6px;margin:0 0 .75rem;padding:.4rem .7rem}
 td{min-width:0;border:0;padding:.2rem 0;overflow-wrap:anywhere}
 td::before{content:attr(data-label);display:block;font-size:.75rem;color:var(--soft)}
+td.short{white-space:normal}
 td.empty{display:none}
-td.act{position:static;background:none;white-space:normal;display:flex;flex-wrap:wrap;gap:.45rem;align-items:center;padding-top:.45rem}
-td.act>*{margin:0}
+td.act{position:static;background:none;display:flex;flex-wrap:wrap;gap:.45rem;align-items:center;padding-top:.45rem}
+td.act span{display:contents}
+td.act span>*{margin:0}
 td.act button{padding:.35rem .8rem}
 }
 """
@@ -236,6 +240,11 @@ class Library:
         return "".join(out)
 
     @staticmethod
+    def acts(*groups):
+        """The buttons and links of a row. Each group stays on one line; the groups may stand one under another."""
+        return " ".join("<span>%s</span>" % " ".join(group) for group in groups if group)
+
+    @staticmethod
     def button(action, label, **hidden):
         fields = "".join('<input type="hidden" name="%s" value="%s">' % (name, e(value)) for name, value in hidden.items())
         return '<form method="post" action="%s">%s<button type="submit">%s</button></form>' % (action, fields, label)
@@ -282,7 +291,7 @@ class Library:
             "(SELECT 1 FROM loans l WHERE l.copy_id = c.id AND l.returned IS NULL AND l.lost IS NULL)) AS free "
             "FROM titles t WHERE %s ORDER BY fold(t.title), t.id LIMIT %d" % (where, SHOWN), *args)
         rows = [(None, [e(row["title"]), e(row["author"]), e(row["isbn"]), e(row["shelf"]), row["held"], row["free"],
-                        '<a href="/titles/%d">Copies</a> <a href="/titles/%d/edit">Edit</a>' % (row["id"], row["id"])])
+                        self.acts(['<a href="/titles/%d">Copies</a>' % row["id"], '<a href="/titles/%d/edit">Edit</a>' % row["id"]])])
                 for row in found]
         heads = [("Title", ""), ("Author", ""), ("ISBN", "num"), ("Shelf", ""), ("Copies", "num"), ("On the shelf", "num"), ("", "act")]
         return self.page("Catalogue", (
@@ -322,17 +331,17 @@ class Library:
         for copy in copies:
             mark = lambda status, label: self.button("/copies/%d/status" % copy["id"], label, status=status)
             if copy["loan"]:  # out: the borrower, and lost, which ends the loan; withdrawing waits for the book
-                acts = '<a href="/borrowers/%d">Borrower</a> %s' % (copy["who"], mark("lost", "Mark lost"))
+                acts = [mark("lost", "Mark lost"), '<a href="/borrowers/%d">Borrower</a>' % copy["who"]]
             elif copy["status"] == "available":
-                acts = mark("lost", "Mark lost") + " " + mark("withdrawn", "Withdraw")
+                acts = [mark("lost", "Mark lost"), mark("withdrawn", "Withdraw")]
             else:
                 other = "withdrawn" if copy["status"] == "lost" else "lost"
-                acts = mark("available", "Mark available") + " " + mark(other, "Withdraw" if other == "withdrawn" else "Mark lost")
+                acts = [mark("available", "Mark available"), mark(other, "Withdraw" if other == "withdrawn" else "Mark lost")]
             rows.append(("copy-%d" % copy["id"], [copy["id"], "on loan" if copy["loan"] else copy["status"],
-                                                  e(copy["name"] or ""), e(copy["due"] or ""), acts]))
+                                                  e(copy["name"] or ""), e(copy["due"] or ""), self.acts(acts)]))
         about = [part for part in ("by " + e(row["author"]) if row["author"] else "", "ISBN " + e(row["isbn"]) if row["isbn"] else "",
                                    "shelf " + e(row["shelf"]) if row["shelf"] else "", plural(len(copies), "copy", "copies")) if part]
-        heads = [("Copy", "num"), ("Status", ""), ("With", ""), ("Due back", "num"), ("", "act")]
+        heads = [("Copy", "num"), ("Status", "short"), ("With", ""), ("Due back", "num"), ("", "act")]
         return self.page("Catalogue", (
             '<h1>%s</h1><p>%s. <a href="/titles/%d/edit">Correct this title</a></p>%s<h2>More copies</h2>'
             '<form class="card" method="post" action="/titles/%d/copies"><label class="short">How many '
@@ -393,9 +402,9 @@ class Library:
             "FROM borrowers b WHERE %s ORDER BY fold(b.name), b.id LIMIT %d" % (where, SHOWN), *args)
         rows = [(None, [e(row["name"]), row["kind"], e(row["class"]), "%d of %d" % (row["held"], LIMIT[row["kind"]]),
                         "" if row["active"] else "has left",
-                        '<a href="/borrowers/%d">%s</a> <a href="/borrowers/%d/edit">Edit</a>'
-                        % (row["id"], "Lend" if row["active"] else "Open", row["id"])]) for row in found]
-        heads = [("Name", ""), ("Kind", ""), ("Class", ""), ("Books out", "num"), ("Left", ""), ("", "act")]
+                        self.acts(['<a href="/borrowers/%d">%s</a>' % (row["id"], "Lend" if row["active"] else "Open"),
+                                   '<a href="/borrowers/%d/edit">Edit</a>' % row["id"]])]) for row in found]
+        heads = [("Name", ""), ("Kind", "short"), ("Class", "short"), ("Books out", "num"), ("Left", "short"), ("", "act")]
         return self.page("Borrowers", (
             "<h1>Borrowers</h1>%s%s%s<h2>A new borrower</h2>%s"
             % (self.search("/borrowers", "Ana or 7B", "Name or class", typed), self.shown(total, found, "borrower", typed),
@@ -475,22 +484,23 @@ class Library:
 
     def loan_table(self, loans, who=True):
         today = datetime.date.fromisoformat(self.today())
-        heads = [("Copy", "num"), ("Title", "")] + ([("Borrower", ""), ("Class", "")] if who else []) + [
-            ("Lent", "num"), ("Due", "num"), ("State", ""), ("", "act")]
+        # The day it was lent is last: where the list is wider than its window, that is what goes under the buttons.
+        heads = [("Copy", "num"), ("Title", "")] + ([("Borrower", ""), ("Class", "short")] if who else []) + [
+            ("Due", "num"), ("State", ""), ("Lent", "num"), ("", "act")]
         rows = []
         for loan in loans:
             days = (today - datetime.date.fromisoformat(loan["due"])).days
             state = ['<span class="late">%s overdue</span>' % plural(days, "day")] if days > 0 else []
             if loan["renewals"]:
                 state.append("renewed once" if loan["renewals"] == 1 else "renewed twice")
-            acts = self.button("/loans/%d/return" % loan["id"], "Return")
+            buttons = [self.button("/loans/%d/return" % loan["id"], "Return")]
             if loan["renewals"] < RENEWALS:
-                acts += " " + self.button("/loans/%d/renew" % loan["id"], "Renew")
-            acts += ' <a href="/titles/%d">Copies</a>' % loan["title_id"]
+                buttons.append(self.button("/loans/%d/renew" % loan["id"], "Renew"))
+            links = ['<a href="/titles/%d">Copies</a>' % loan["title_id"]]
             if who:
-                acts += ' <a href="/borrowers/%d">Borrower</a>' % loan["borrower_id"]
+                links.append('<a href="/borrowers/%d">Borrower</a>' % loan["borrower_id"])
             rows.append(("loan-%d" % loan["id"], [loan["copy_id"], e(loan["title"])] + ([e(loan["name"]), e(loan["class"])] if who else [])
-                         + [loan["lent"], loan["due"], ", ".join(state), acts]))
+                         + [loan["due"], ", ".join(state), loan["lent"], self.acts(buttons, links)]))
         return self.table(heads, rows)
 
     def loans(self, query):
