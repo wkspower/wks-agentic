@@ -1,0 +1,28 @@
+#!/bin/sh
+# Case of lesson L0038 (lessons/0038-a-case-runs-once.md).
+# Origin: run 008, 2026-11-20. The check took 87 s, 42 of them in one case that ran
+# every other case a second time.
+# Plants a small tree with a product and two cases that write down each run and what
+# they find in product/, and puts ./check to it. Run from the repository root.
+t=$(mktemp -d) || exit 1
+trap 'rm -rf "$t"' EXIT
+./check --plant "$t/tree" >/dev/null 2>&1 || { echo "./check --plant did not plant a tree"; exit 1; }
+for case in "$t"/tree/cases/*; do
+  { sed -n 1,2p "$case"; echo 'echo "$0: $(ls product | tr "\n" " ")" >> "$RUNS"; echo "1 run written down"'; } > "$case.new"
+  mv "$case.new" "$case"; chmod +x "$case"
+done
+planted=$(ls "$t/tree/cases" | wc -l)
+out=$(RUNS="$t/runs" ./check "$t/tree" 2>&1) || { echo "$out" | grep FAIL; echo "the check fails on the planted tree"; exit 1; }
+runs=$(wc -l < "$t/runs"); distinct=$(sort -u "$t/runs" | wc -l)
+if [ "$planted" -lt 2 ] || [ "$runs" -ne "$planted" ] || [ "$distinct" -ne "$planted" ]; then
+  echo "$planted cases planted, $runs runs written down, $distinct of them different: each case is to run once"; exit 1
+fi
+if grep -q '\.py ' "$t/runs" || ! grep -q '\.pyc ' "$t/runs"; then
+  echo "a case was run with the product's source in its tree: $(head -1 "$t/runs" | cut -d: -f2)"; exit 1
+fi
+[ -f "$t/tree/product/app.py" ] || { echo "the check took the source out of the tree it was given, not out of a copy"; exit 1; }
+timed=$(echo "$out" | grep -c '^  L[0-9]* cases/.* ([0-9.]* s)$')
+if [ "$timed" -ne "$planted" ] || ! echo "$out" | tail -1 | grep -q '· [0-9]* s$'; then
+  echo "$timed of $planted case lines end with their seconds, and the summary line must end with the seconds of the run"; exit 1
+fi
+echo "$planted planted cases, each run once ($runs runs), each in a tree with bytecode and no source; the planted tree kept its source; $timed case lines and the summary say their seconds"

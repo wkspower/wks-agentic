@@ -9,6 +9,7 @@ product/LABELS, one label per line. A lesson is in force when it carries
 Usage: ./check [TREE]       check a tree (default: the one this file is in)
        ./check --cases      print the cases in force, one per line, and run nothing
        ./check --selftest   run the check against wrong trees it must refuse
+       ./check --plant DIR  write the small right tree of the selftest to DIR, for a case to spoil
 """
 import os
 import re
@@ -292,6 +293,8 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if args == ["--selftest"]:
         sys.exit(0 if selftest() else 1)
+    if args[:1] == ["--plant"] and len(args) == 2:
+        sys.exit(good(args[1]))
     listing = args[:1] == ["--cases"]
     args = args[1:] if listing else args
     here = os.path.dirname(os.path.abspath(__file__))
