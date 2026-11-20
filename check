@@ -48,7 +48,7 @@ DECLARED = os.path.join("product", "LABELS")
 SETTINGS = os.path.join(".claude", "settings.json")
 HOOK = '"${CLAUDE_PROJECT_DIR}"/check --start'  # run by Claude Code at every start of a session
 HEAD = "Lessons at the start of this session"  # CLAUDE.md says a session without this text was not given its lessons
-CAP = 10000  # characters of a hook's output that Claude Code puts in the context; beyond it, only a preview
+CAP = 10000  # characters of a hook's output that Claude Code puts in the context; past it, a preview of 2,000 and a file's path
 
 
 def read(path):
@@ -304,8 +304,8 @@ def hook_problems(tree, lines, carried, chosen):
     sizes = [len(start_text(lines, carried, chosen)), len(start_text(lines, carried, []))]
     for size, where in zip(sizes, ("this tree", "this tree without its product")):
         if size > CAP:
-            problems.append("`./check --start` prints %d characters for %s, and Claude Code puts the first %d of a "
-                            "hook's output in front of a session" % (size, where, CAP))
+            problems.append("`./check --start` prints %d characters for %s, and past %d Claude Code gives a session "
+                            "only a preview of a hook's output" % (size, where, CAP))
     return problems, sizes
 
 

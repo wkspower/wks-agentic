@@ -1,5 +1,40 @@
 # Handoff
 
+**Run 009 (2026-11-20) changed how the lessons reach a session, and nothing
+else.** `./check` passes: 38 lessons, 28 in force, 25 cases run; without
+`product/`, 14 in force and 9 cases run. See `runs/009-loading.md`.
+
+- **No session is told to run a command to see its lessons** (L0041). A
+  SessionStart hook in `.claude/settings.json` runs `./check --start`, and
+  Claude Code puts what it prints in front of the session: the lessons in
+  force for the product besides the `always` ones in `CLAUDE.md`, or, with no
+  product, every label that exists and the lessons it brings. The text
+  begins `Lessons at the start of this session`.
+- **Nothing is kept that can go stale.** The text is worked out at each start
+  from `LESSONS.md` and `product/LABELS`. A file written by the check and
+  included by `CLAUDE.md` was the way proposed first; it cannot be right
+  both with the product and after `product/` is removed, and L0041 says why.
+- `./check --lessons` is still there for whoever wants to look. Nothing
+  depends on it.
+- Past 10,000 characters a session gets only a preview of a hook's output. The base prints 4,243 today,
+  and every lesson that is not `always` adds its line to it. `./check` fails
+  when either tree goes past the limit; the summary line says both numbers.
+
+**What the next run should look for, because this run could not prove it
+from inside.** A session started by the person in the usual way has, before
+its first action, a text that begins `Lessons at the start of this session`
+and lists L0006 to L0036 as the summary of this file says (14 lessons with
+the library). Ask the session, as its first message or at the end, whether
+it had that text and which numbers were in it, and compare with
+`./check --start`. If it did not have it, `CLAUDE.md` tells it to say so
+first; a session that neither had the text nor said so is the failure to
+record. Then, as before: a lesson in force that the session breaks.
+What this run did see: headless starts of the installed Claude Code
+(2.1.329) in copies of this tree ran the hook, and the model listed the right
+lessons, with the library and without it. That is not the person's session.
+
+The person has not seen run 009, L0041, or the change to L0039.
+
 **Run 008 (2026-11-20) changed the scaffold, not the product.** `./check`
 passes: 37 lessons, 27 in force, 24 cases run, 67 wrong variants refused,
 in 41 s (87 s before); without `product/`, 13 in force and 8 cases run, in
@@ -118,8 +153,8 @@ Not to be changed and not to be asked about until they bring it up:
 
 ## How to resume
 
-1. Read `CLAUDE.md`, run `./check --lessons` and read what it prints, then
-   read this file.
+1. Read `CLAUDE.md` and the lessons the hook put in front of you, then
+   this file.
 2. Run `./check`. If it fails, that is the first thing to fix.
 3. To test a prompt, follow `prompts/README.md`.
 4. To use the product on this branch, see the top of this file. The pet
@@ -132,8 +167,8 @@ The base is this branch without `product/`. Nothing else is removed: the
 pet shop's lessons and cases stay in it, not in force.
 
 1. Make a branch from the base and run `./check`. It passes with only
-   `always` in force. `./check --lessons` prints every label that exists
-   with its count, and `./check --lessons LABEL` the lessons it brings.
+   `always` in force. Every label that exists and the lessons it brings
+   were put in front of the session at its start (L0041).
 2. Ask the person everything foreseeable in one round (L0004). What the
    product is and what it is built on are among the questions; offer the
    existing labels that seem to fit, and say which lessons each brings.
@@ -187,6 +222,11 @@ For a rebuild test of the pet shop, delete everything in `product/` except
   lost its only one in run 003.
 - Whether `product/` should be deleted between runs of the same prompt (the
   rebuild test) or kept.
+- What the base does when its labels and their lessons pass 10,000
+  characters, the most a hook may put in front of a session. Today 4,243.
+  The check fails there; what to print instead is not decided.
+- Whether a sub-agent gets the lessons in force. The hook is not known to
+  fire for one, and nothing here gives them to it.
 - A size limit for `CLAUDE.md`. The check prints its size and enforces none.
   Run 008 took it from 11,931 bytes to 5,605 by moving out the lessons that
   are not `always` and the links; it now grows only with `always` lessons.
@@ -207,4 +247,5 @@ Each run adds a file under `runs/` and a line here.
 - [005 labels](runs/005-labels.md), 2026-11-19: no questions, scaffold changed so lessons are switched on per product; 4 lessons added (3 with a case), 3 folded into one, the person's review of L0005 to L0022 recorded; lists became cards on a narrow screen, case first.
 - [007 library review](runs/007-library-review.md), 2026-11-20: no questions, no prompt; 1 lesson reversed and 1 added (both with a case, case first), 1 defect found writing a case, 1 addition refused by an inherited case; the review the run was to record is not recorded, and why.
 - [008 growth](runs/008-growth.md), 2026-11-20: no questions, no prompt, scaffold only; 3 lessons added (all with a case, case first), 3 amended; the check from 87 s to 41 s, `CLAUDE.md` from 11.9 KB to 5.6 KB, the sizes printed on every run; 1 defect found in the run's own case by its control.
+- [009 loading](runs/009-loading.md), 2026-11-20: no questions, no prompt, scaffold only; 1 lesson added (with a case, case first), 2 amended; the lessons in force reach a session through a SessionStart hook and no command it is told to run; an included file tried on paper and rejected; three real headless starts seen.
 - [006 school library](runs/006-school-library.md), 2026-11-20: 1 round of 14 questions, 9 lessons added (8 with a case), the second product; 8 cases made general and kept passing on the pet shop; 1 defect found in the scaffold and 1 in the product by hand.

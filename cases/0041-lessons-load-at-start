@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 
-CAP = 10000  # characters of a hook's output that Claude Code puts in the context; beyond it, a preview
+CAP = 10000  # characters of a hook's output that Claude Code puts in the context; past it, a preview of 2,000
 LINE = re.compile(r"- \*\*(L\d{4})\*\* \[([^\]]+)\]")
 NAMED = re.compile(r"^\s*'(.+)': (\d+) lessons?$")
 SETTINGS = os.path.join(".claude", "settings.json")
@@ -63,7 +63,7 @@ def refusal(tree):
     if done.returncode != 0:
         return "the hook ended with %d, and then its output is not shown to the session" % done.returncode, None
     if len(out) > CAP:
-        return "the hook prints %d characters, and Claude Code shows a session the first %d" % (len(out), CAP), None
+        return "the hook prints %d characters, and past %d Claude Code gives a session only a preview" % (len(out), CAP), None
     rest = lines(tree, "LESSONS.md")
     carried, declared = {}, []
     for labels, line in rest:

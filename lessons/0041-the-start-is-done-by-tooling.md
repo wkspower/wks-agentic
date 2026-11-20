@@ -21,9 +21,10 @@ product does. It is worked out at the start of each session from
 
 `./check --start` always ends with 0, and says what is wrong in the record
 instead of failing: when a hook fails, Claude Code shows the session nothing
-of what it printed. A hook's output is cut at 10,000 characters, with only a
-preview shown, so `./check` fails when the output is longer, for the tree
-and for the tree without its product.
+of what it printed. Past 10,000 characters Claude Code gives the session
+only the first 2,000 of a hook's output and the path of a file, which it
+does not ask the session to read. So `./check` fails when the output is
+longer, for the tree and for the tree without its product.
 
 ### The way that was tried first and rejected: a file made by the check, included by `CLAUDE.md`
 `CLAUDE.md` can include a file with `@path`. The file would hold the lines
