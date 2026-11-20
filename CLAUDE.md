@@ -73,3 +73,5 @@ the lessons and the cases are what lasts.
 - **L0039** [always] A lesson line holds only what its number does not give; this file lists the `always` lessons and `LESSONS.md` the others.
 - **L0040** [always] The summary line of the check says the lines of the product and of the cases in force; no limit is set.
 - **L0041** [always] What must happen at the start of a session is done by tooling: a hook puts the lessons in force for the product in front of the session, and nothing depends on the session running a command.
+- **L1101** [always] A lesson's number is its run and its place in it, L1203 for the third lesson of run 12; the plain sequence ended at L0042, and no number is given twice or changed.
+- **L1102** [always] What a run learned comes back through `./bring`, never by copying a tree: what one side changed is taken, and what both changed is refused where no product can prove the result, and named.

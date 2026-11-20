@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""Case of lesson L1102 (lessons/1102-what-a-run-learned-is-brought.md).
+Origin: run 011, 2026-11-20. Until then one run followed another, and its
+lessons were brought to the base by copying its tree over it.
+Plants the situation in scratch repositories: a base with no product (the small
+right tree of ./check --plant, this tree's check and bring, a handoff and a
+shared helper), and two branches made from it, run/012-shop and
+run/013-library, each of which added lessons with their files and cases, a
+surface, a run record, its lines in the handoff and a product, knowing nothing
+of the other. Brings both back with ./bring, in both orders, and works out
+without bring's own code what the base must then hold. Every wrong situation
+is the same plant with one small change (L0002). A missing git fails.
+Run from the repository root."""
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ENV = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_AUTHOR_NAME="case",
+           GIT_AUTHOR_EMAIL="case@example.invalid", GIT_COMMITTER_NAME="case", GIT_COMMITTER_EMAIL="case@example.invalid")
+LESSON = "# L%s\n\n## Reason\nBecause of %s.\n\n## Source\nRun %s.\n"
+CASE = "#!/bin/sh\n# Case of lesson L%s\necho '1 thing measured for %s'\n"
+HELPER = "def start():\n    return 'started'\n\n\n# between\n\n\ndef stop():\n    return 'stopped'\n"
+HANDOFF = "# Handoff\n\nThe base: every lesson and no product.\n\n## Runs\n\n- 001: the first run.\n"
+A, B = "run/012-shop", "run/013-library"
+
+
+def fail(what):
+    print(what)
+    sys.exit(1)
+
+
+def read(repo, name):
+    with open(os.path.join(repo, name), encoding="utf-8") as handle:
+        return handle.read()
+
+
+def write(repo, name, text, executable=False):
+    path = os.path.join(repo, name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    if executable:
+        os.chmod(path, 0o755)
+
+
+def run(repo, *command):
+    return subprocess.run(list(command), cwd=repo, capture_output=True, text=True, env=ENV, timeout=300)
+
+
+def git(repo, *args):
+    done = run(repo, "git", *args)
+    if done.returncode != 0:
+        fail("the plant itself went wrong at git %s: %s" % (" ".join(args), (done.stderr or done.stdout).strip()[:200]))
+    return done.stdout.strip()
+
+
+def commit(repo, message):
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", message)
+
+
+def learn(repo, number, labels, slug):
+    """What a session does when it learns something: the line, the lesson's file, its case."""
+    home = "CLAUDE.md" if labels == "always" else "LESSONS.md"
+    line = "- **L%s** [%s] The %s holds its rule %s.\n" % (number, labels, slug, number)
+    write(repo, home, read(repo, home) + line)
+    write(repo, "lessons/%s-%s.md" % (number, slug), LESSON % (number, slug, number[:2]))
+    write(repo, "cases/%s-%s" % (number, slug), CASE % (number, slug), True)
+    return home, line
+
+
+def branch(repo, name, lessons, spoil=None):
+    """A run on its own branch from the base: its lessons, a surface, a record, the handoff, a product."""
+    git(repo, "checkout", "-q", "-b", name, "base")
+    run_number, slug = name[4:7], name[8:]
+    lines = [learn(repo, number, labels, slug) for number, labels in lessons]
+    write(repo, "surface/%s.json" % slug, '{"label": "%s"}\n' % slug)
+    write(repo, "runs/%s-%s.md" % (run_number, slug), "# Run %s: the %s\n" % (run_number, slug))
+    top, rest = read(repo, "HANDOFF.md").split("\n", 1)
+    write(repo, "HANDOFF.md", "%s\n\n**Run %s built the %s.**\n%s- %s: the %s.\n" % (top, run_number, slug, rest, run_number, slug))
+    write(repo, "product/LABELS", "web pages\n")
+    write(repo, "product/%s.py" % slug, "print('the %s')\n" % slug)
+    if spoil:
+        spoil(repo)
+    commit(repo, "run " + run_number)
+    git(repo, "checkout", "-q", "base")
+    return lines
+
+
+def plant(work, name, a=None, b=None, a_lessons=(("1201", "web pages"),), b_lessons=(("1301", "always"), ("1302", "web pages")),
+          b_name=B):
+    repo = os.path.join(work, name)
+    if subprocess.run(["./check", "--plant", repo]).returncode != 0:
+        fail("./check --plant could not write the small right tree")
+    shutil.rmtree(os.path.join(repo, "product"))
+    for tool in ("check", "bring"):
+        shutil.copy(tool, os.path.join(repo, tool))
+    write(repo, "HANDOFF.md", HANDOFF)
+    write(repo, "caselib.py", HELPER)
+    write(repo, "runs/001-first.md", "# Run 001\n")
+    git(repo, "init", "-q", "-b", "base")
+    commit(repo, "the base")
+    lines = branch(repo, A, a_lessons, a) + branch(repo, b_name, b_lessons, b)
+    return repo, lines
+
+
+def state(repo):
+    return git(repo, "rev-parse", "HEAD"), git(repo, "status", "--porcelain"), os.path.exists(os.path.join(repo, ".git", "MERGE_HEAD"))
+
+
+def bring(repo, other, expect=True):
+    """Run the operation as the handoff says. Brought: commit it. Refused: the tree must be as it was."""
+    before = state(repo)
+    done = run(repo, "./bring", other)
+    if expect and done.returncode != 0:
+        fail("./bring %s on %s is refused: %s" % (other, git(repo, "rev-parse", "--abbrev-ref", "HEAD"),
+                                                 (done.stdout + done.stderr).strip()[-400:]))
+    if done.returncode == 0:
+        git(repo, "commit", "-q", "--no-edit")
+    elif state(repo) != before:
+        fail("./bring %s refused and still changed the tree: %s" % (other, git(repo, "status", "--porcelain")[:200]))
+    return done
+
+
+def held(repo, side, lines):
+    """Everything a branch added outside product/ is in the tree, byte for byte, and each of its lines once."""
+    for name in git(repo, "diff", "--name-only", "--diff-filter=A", "base~0", side).split():
+        if name.startswith("product/"):
+            continue
+        there = os.path.join(repo, name)
+        if not os.path.exists(there) or read(repo, name) != git(repo, "show", "%s:%s" % (side, name)) + "\n":
+            fail("%s of %s is not in the result as that branch has it" % (name, side))
+        if name.startswith("cases/") and not os.access(there, os.X_OK):
+            fail("%s of %s arrived and cannot be run" % (name, side))
+    for home, line in lines:
+        if read(repo, home).count(line) != 1:
+            fail("the line of %s is %d times in %s after bringing %s" % (line[4:9], read(repo, home).count(line), home, side))
+
+
+def checked(repo, lessons):
+    done = run(repo, "./check")
+    summary = (done.stdout.strip().splitlines() or [""])[-1]
+    if done.returncode != 0 or "lessons %d ·" % lessons not in done.stdout or "product: none" not in done.stdout:
+        fail("./check on the result does not pass with %d lessons and no product: %s" % (lessons, summary[:300]))
+    return done.stdout
+
+
+def both_orders(work):
+    results = []
+    for order in ((A, B), (B, A)):
+        repo, lines = plant(work, "right-%d" % len(results))
+        if not results:  # the control: the situation is the one a plain merge stops at
+            git(repo, "merge", "-q", "--no-edit", A)
+            stopped = run(repo, "git", "merge", "--no-edit", B)
+            conflicts = git(repo, "diff", "--name-only", "--diff-filter=U").split()
+            if stopped.returncode == 0 or not {"LESSONS.md", "HANDOFF.md"} <= set(conflicts):
+                fail("a plain git merge of the two planted branches does not conflict: nothing was planted")
+            git(repo, "merge", "--abort")
+            git(repo, "reset", "-q", "--hard", "base~1")
+        for side in order:
+            bring(repo, side)
+            if not run(repo, "git", "merge-base", "--is-ancestor", side, "HEAD").returncode == 0:
+                fail("after ./bring %s and a commit, git does not know the branch was brought" % side)
+        verify = run(repo, "./bring", "--verify", "HEAD~1", order[1])
+        if verify.returncode != 0:
+            fail("./bring --verify refuses the tree ./bring made: %s" % verify.stdout.strip()[-300:])
+        for side in order:
+            held(repo, side, lines[:1] if side == A else lines[1:])
+        for home, old in (("CLAUDE.md", "- **L0001** [always] One true thing.\n"), ("LESSONS.md", "- **L0002** [web pages] One true thing.\n")):
+            if read(repo, home).count(old) != 1:
+                fail("a lesson the base had before, %s, is not once in %s" % (old[4:9], home))
+        handoff = read(repo, "HANDOFF.md")
+        for text in ("**Run 012 built the shop.**", "**Run 013 built the library.**", "- 001: the first run.",
+                     "- 012: the shop.", "- 013: the library."):
+            if handoff.count(text) != 1:
+                fail("the handoff holds '%s' %d times after both branches were brought" % (text, handoff.count(text)))
+        if os.path.exists(os.path.join(repo, "product")):
+            fail("a product arrived on the base")
+        checked(repo, 5)
+        results.append((read(repo, "CLAUDE.md"), read(repo, "LESSONS.md"), sorted(git(repo, "ls-files").split())))
+    if results[0] != results[1]:
+        fail("the lessons on the base depend on which branch was brought first")
+    return len(conflicts), len(results[0][2])
+
+
+def shared_by_both(work):
+    """Each product changed the shared helper. The base refuses; the branch with a product takes the base in and proves it."""
+    repo, _ = plant(work, "shared",
+                    a=lambda r: write(r, "caselib.py", HELPER.replace("'started'", "'started by the shop'")),
+                    b=lambda r: write(r, "caselib.py", HELPER.replace("'stopped'", "'stopped by the library'")))
+    bring(repo, A)
+    refused = bring(repo, B, expect=False)
+    if refused.returncode == 0:
+        fail("wrong variant ACCEPTED: the base took a helper both branches changed, with no product to prove the merge")
+    if "caselib.py" not in refused.stdout:
+        fail("the base refused the second branch and did not name caselib.py: %s" % refused.stdout.strip()[-200:])
+    git(repo, "checkout", "-q", B)
+    taken = bring(repo, "base")
+    if "caselib.py" not in taken.stdout or not os.path.exists(os.path.join(repo, "product", "library.py")):
+        fail("on the branch with the product, taking the base in did not name the helper merged by text, or lost the product")
+    if os.path.exists(os.path.join(repo, "product", "shop.py")):
+        fail("the other product arrived on the branch")
+    git(repo, "checkout", "-q", "base")
+    bring(repo, B)
+    helper = read(repo, "caselib.py")
+    if "'started by the shop'" not in helper or "'stopped by the library'" not in helper:
+        fail("the helper on the base does not hold both products' changes")
+    checked(repo, 5)
+
+
+def copied_over(work):
+    """What the coordinating session did by hand after runs 005, 007 and 010, now with two branches."""
+    repo, _ = plant(work, "copied")
+    bring(repo, A)
+    for name in git(repo, "ls-files").split():
+        os.remove(os.path.join(repo, name))
+    for name in git(repo, "ls-tree", "-r", "--name-only", B).split():
+        if not name.startswith("product/"):
+            write(repo, name, git(repo, "show", "%s:%s" % (B, name)) + "\n", name.startswith("cases/") or name in ("check", "bring"))
+    lost = run(repo, "./bring", "--verify", "HEAD", B)
+    if lost.returncode == 0:
+        fail("wrong variant ACCEPTED: the second branch's tree copied over the base, which loses the first branch's lesson")
+    if "L1201" not in lost.stdout:
+        fail("the copy was refused and the lost lesson, L1201, was not named: %s" % lost.stdout.strip()[-200:])
+
+
+def line_of(number, text):
+    def change(repo):
+        whole = read(repo, "LESSONS.md")
+        old = [line for line in whole.splitlines(True) if line.startswith("- **L%s**" % number)][0]
+        write(repo, "LESSONS.md", whole.replace(old, "- **L%s** [web pages] %s\n" % (number, text)))
+    return change
+
+
+def file_of(text):
+    return lambda repo: write(repo, "lessons/0002-x.md", read(repo, "lessons/0002-x.md") + text)
+
+
+# name: (what to plant, which bring must be refused: 0 for the first branch, 1 for the second, and a word its refusal says)
+WRONG = {
+    "both branches took the same number, L1201, for two lessons":
+        (dict(b_name="run/012-library", b_lessons=(("1201", "web pages"),)), 1, "L1201"),
+    "one branch changed the line of a lesson the other also changed":
+        (dict(a=line_of("0002", "One true thing, for shops."), b=line_of("0002", "One true thing, for libraries.")), 1, "L0002"),
+    "one branch changed the file of a lesson the other also changed":
+        (dict(a=file_of("\nThe shop adds this.\n"), b=file_of("\nThe library adds that.\n")), 1, "L0002"),
+    "one branch removed a lesson the other changed":
+        (dict(a=lambda r: [line_of("0002", "")(r), write(r, "LESSONS.md", read(r, "LESSONS.md").replace(
+            "- **L0002** [web pages] \n", "")), os.remove(os.path.join(r, "lessons/0002-x.md")),
+            os.remove(os.path.join(r, "cases/0002-x"))], b=line_of("0002", "One true thing, for libraries.")), 1, "L0002"),
+    "a branch numbered its lesson in the sequence that ended at L0042":
+        (dict(b_lessons=(("0043", "web pages"),)), 1, "L0043"),
+    "a branch numbered a lesson in the block of a run that is not its own":
+        (dict(a_lessons=(("1305", "web pages"),)), 0, "L1305"),
+    "both branches wrote the same file of the same run record": (dict(
+        a=lambda r: write(r, "runs/014-next.md", "# by the shop\n"), b=lambda r: write(r, "runs/014-next.md", "# by the library\n")),
+        1, "runs/014-next.md"),
+}
+
+if shutil.which("git") is None:
+    fail("git is missing: no branch can be planted, so nothing was measured")
+if not os.access("bring", os.X_OK):
+    fail("there is no ./bring: a run's lessons can only come back by a merge that stops or a copy that loses")
+work = tempfile.mkdtemp()
+try:
+    conflicts, files = both_orders(work)
+    shared_by_both(work)
+    copied_over(work)
+    for count, (name, (planted, which, word)) in enumerate(WRONG.items()):
+        repo, _ = plant(work, "wrong-%d" % count, **planted)
+        sides = (A, planted.get("b_name", B))
+        if which:
+            bring(repo, sides[0])
+        refused = bring(repo, sides[which], expect=False)
+        if refused.returncode == 0:
+            fail("wrong variant ACCEPTED: %s" % name)
+        if word not in refused.stdout:
+            fail("%s: refused without naming %s: %s" % (name, word, refused.stdout.strip()[-200:]))
+        dirty = run(repo, "./check")
+        if dirty.returncode != 0:
+            fail("%s: after the refusal the base no longer passes its check" % name)
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+print("two branches from one base, 3 lessons with their cases between them, where a plain git merge stops at %d files: "
+      "both brought by ./bring in either order to the same %d files, no number changed, every added file byte for byte, "
+      "no product, ./check passing with 5 lessons; a helper both changed refused on the base, merged on the branch with "
+      "its product and then brought; a tree copied over the base refused by --verify, naming L1201; %d of %d other wrong "
+      "situations refused, each named, the base left as it was" % (conflicts, files, len(WRONG) + 2 - 2, len(WRONG)))
