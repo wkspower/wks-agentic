@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Case of lesson L0029 (lessons/0029-the-server-sets-the-dates.md).
+Origin: the person's answers 6, 7 and 9 in run 006, 2026-11-20.
+The library is started again on other days with --today, which is the only
+way a case can see a book become overdue. Run from the repository root."""
+import datetime
+import json
+import re
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("school library")
+
+
+def day(text, plus=0):
+    return (datetime.date.fromisoformat(text) + datetime.timedelta(days=plus)).isoformat()
+
+
+def checks(shop):
+    def overdue():
+        status, body = shop.request("GET", "/overdue")
+        shop.expect(status == 200, "GET /overdue answered %d" % status)
+        return body
+
+    shop.restart("--today", "2026-03-02")
+    shop.expect(shop.export()["today"] == "2026-03-02", "started with --today 2026-03-02, the library says today is %s"
+                % shop.export()["today"])
+    title = shop.add("titles", title="Holes", author="Louis Sachar", isbn="", shelf="", copies="5")
+    copies = sorted(row["id"] for row in shop.export()["copies"] if row["title_id"] == title)
+    ana = shop.add("borrowers", name="Ana Lima", kind="pupil", **{"class": "7B"})
+    bo = shop.add("borrowers", name="Bo Li", kind="pupil", **{"class": "9A"})
+    kay = shop.add("borrowers", name="Ms Kay", kind="staff", **{"class": ""})
+
+    # Lent today, due 14 days on, whatever the form says.
+    loan = shop.add("loans", borrower_id=ana, copy=copies[0], lent="2020-01-01", due="2030-01-01", renewals="2")
+    row = shop.row("loans", loan)
+    shop.expect((row["lent"], row["due"], row["renewals"]) == ("2026-03-02", "2026-03-16", 0),
+                "a loan made on 2026-03-02 is lent %s, due %s, renewed %s" % (row["lent"], row["due"], row["renewals"]))
+    theirs = shop.add("loans", borrower_id=bo, copy=copies[1])
+    staff = shop.add("loans", borrower_id=kay, copy=copies[2])
+
+    # Due today is not overdue; the day after it is, under the class of the borrower.
+    shop.restart("--today", "2026-03-16")
+    shop.expect("Ana Lima" not in overdue(), "a book due today is listed as overdue")
+    shop.restart("--today", "2026-03-17")
+    body = overdue()
+    heads = [re.sub(r"<[^>]+>", "", head).strip() for head in re.findall(r"<h2[^>]*>(.*?)</h2>", body, re.S)]
+    shop.expect(len(heads) == 3 and "7B" in heads[0] and "9A" in heads[1],
+                "three borrowers of classes 7B, 9A and none are overdue under the headings %s" % heads)
+    spots = [body.find(text) for text in ("7B</h2>", "Ana Lima", "9A</h2>", "Bo Li", "Ms Kay")]
+    shop.expect(-1 not in spots and spots == sorted(spots),
+                "the overdue page does not show each borrower under the heading of their class, those with no class last")
+    status, page = shop.request("GET", "/loans")
+    shop.expect(status == 200 and "overdue" in page.lower(), "the loans page does not say that a loan is overdue")
+
+    # Overdue does not stop a borrower; the page where the book is lent shows it.
+    status, page = shop.request("GET", "/borrowers/%d" % ana)
+    shop.expect(status == 200 and "overdue" in page.lower(), "the borrower's page does not show that she has a book overdue")
+    extra = shop.add("loans", borrower_id=ana, copy=copies[3])
+    shop.expect(shop.row("loans", extra)["due"] == "2026-03-31", "a loan made on 2026-03-17 is due %s" % shop.row("loans", extra)["due"])
+
+    # A renewal counts from the day it is made, twice at most, and opening the address renews nothing.
+    renew = "/loans/%d/renew" % loan
+    status, _ = shop.request("GET", renew)
+    shop.expect(status >= 400 and shop.row("loans", loan)["renewals"] == 0, "opening the renew address answered %d" % status)
+    shop.post(303, renew)
+    row = shop.row("loans", loan)
+    shop.expect((row["due"], row["renewals"], row["lent"]) == ("2026-03-31", 1, "2026-03-02"),
+                "renewed on 2026-03-17, a loan due 2026-03-16 is due %s after %s renewals" % (row["due"], row["renewals"]))
+    shop.expect("Ana Lima" not in overdue(), "a renewed loan is still listed as overdue")
+    shop.restart("--today", "2026-03-20")
+    shop.post(303, renew)
+    row = shop.row("loans", loan)
+    shop.expect((row["due"], row["renewals"]) == ("2026-04-03", 2), "the second renewal, on 2026-03-20, left the loan due %s after %s"
+                % (row["due"], row["renewals"]))
+    shop.restart("--today", "2026-03-25")
+    body = shop.post(400, renew)
+    row = shop.row("loans", loan)
+    shop.expect((row["due"], row["renewals"]) == ("2026-04-03", 2), "a refused third renewal changed the loan")
+    shop.expect("twice" in body, "the third renewal is refused without saying that two is the limit")
+    shop.post(303, "/loans/%d/return" % theirs)
+    shop.post(400, "/loans/%d/renew" % theirs)
+    row = shop.row("loans", theirs)
+    shop.expect((row["due"], row["renewals"], row["returned"]) == ("2026-03-16", 0, "2026-03-25"),
+                "a returned loan was renewed, or is not returned on the day: %s" % row)
+    shop.expect(shop.row("loans", staff)["due"] == "2026-03-16", "a loan nobody renewed changed its due date")
+
+
+def rewrite(shop, ask, change):
+    status, body = ask.send()
+    if status != 200:
+        return status, body
+    state = json.loads(body)
+    change(state)
+    return status, json.dumps(state)
+
+
+posted = {}
+
+
+@fault(None, "/loans|/export.json")
+def due_from_form(shop, ask):
+    """The due date is whatever the form sent."""
+    if ask.method == "POST":
+        before = len(shop.state()["loans"])
+        answer = ask.send()
+        if ask.get("due") and len(shop.state()["loans"]) > before:
+            posted[shop.state()["loans"][-1]["id"]] = ask.get("due")
+        return answer
+
+    def change(state):
+        for row in state["loans"]:
+            if row["id"] in posted:
+                row["due"] = posted[row["id"]]
+                shop.acted += 1
+    return rewrite(shop, ask, change) if ask.path == "/export.json" else ask.send()
+
+
+@fault("GET", "/overdue")
+def due_today_overdue(shop, ask):
+    """A book due today is already listed."""
+    status, body = ask.send()
+    state = shop.state()
+    names = {row["id"]: row for row in state["borrowers"]}
+    for row in state["loans"]:
+        if row["returned"] is None and row["due"] == state["today"]:
+            who = names[row["borrower_id"]]
+            body += "<h2>%s</h2><p>%s</p>" % (who["class"], who["name"])
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", "/overdue")
+def not_grouped(shop, ask):
+    """One list of overdue loans, with no class above them."""
+    status, body = ask.send()
+    plain = re.sub(r"<h2[^>]*>.*?</h2>", "", body, flags=re.S)
+    shop.acted += plain != body
+    return status, plain
+
+
+@fault("POST", r"/loans/(\d+)/renew")
+def third_renewal(shop, ask, ident):
+    """A loan renewed twice is renewed again."""
+    for row in shop.state()["loans"]:
+        if row["id"] == int(ident) and row["renewals"] >= 2 and row["returned"] is None:
+            shop.acted += 1
+            return 303, ""
+    return ask.send()
+
+
+@fault("GET", "/export.json")
+def renewed_from_old_date(shop, ask):
+    """A renewal adds 14 days to the old due date, not to today."""
+    def change(state):
+        for row in state["loans"]:
+            old = day(row["lent"], 14 * (row["renewals"] + 1))
+            if row["renewals"] and old != row["due"]:
+                row["due"] = old
+                shop.acted += 1
+    return rewrite(shop, ask, change)
+
+
+@fault("POST", "/loans")
+def overdue_blocks(shop, ask):
+    """A borrower with a book overdue is refused another."""
+    state = shop.state()
+    for row in state["loans"]:
+        if str(row["borrower_id"]) == ask.get("borrower_id") and row["returned"] is None and row["due"] < state["today"]:
+            shop.acted += 1
+            return 400, "overdue"
+    return ask.send()
+
+
+run(checks, wrong=[
+    ("the due date comes from the form", due_from_form),
+    ("a book due today is overdue", due_today_overdue),
+    ("the overdue list is not grouped by class", not_grouped),
+    ("a third renewal goes through", third_renewal),
+    ("a renewal counts from the old due date", renewed_from_old_date),
+    ("a borrower with a book overdue is refused", overdue_blocks),
+])

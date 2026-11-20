@@ -17,7 +17,8 @@ the lessons and the cases are what lasts.
 | `CLAUDE.md` | This file. Read at the start of every session. One line per lesson, with its labels. |
 | `lessons/` | One file per lesson: the reason, the source, what would be a regression. |
 | `cases/` | One executable per checkable lesson. Run from the repository root. |
-| `caselib.py`, `caselib.js` | What the pet shop cases share: start the shop, put a fault in front of it. |
+| `caselib.py`, `caselib.js` | What the cases share: start the product, put a fault in front of it. |
+| `surface/` | One file per product: what a case under a general label may know about it. |
 | `check` | Proves the two stay linked, and runs the cases in force. `./check` and `./check --selftest`. |
 | `HANDOFF.md` | State of the work and how to resume. Read it second. |
 | `product/` | Whatever a run builds. May be deleted and rebuilt at any time. |
@@ -68,3 +69,10 @@ the lessons and the cases are what lasts.
 - **L0024** [always] A case is born in the product that needed it, and is made general only when a second product needs it. [why](lessons/0024-cases-born-in-a-product.md) · prose: whether a second product needs a case is a judgement
 - **L0025** [pet shop] The pet shop's prices include tax, and its inputs are refused outside the table of bounds in the lesson. [why](lessons/0025-pet-shop-bounds.md) · case: [`cases/0025-pet-shop-bounds`](cases/0025-pet-shop-bounds)
 - **L0026** [web pages] On a narrow screen a list is shown as stacked cards, not as a table: nothing scrolls sideways, is crushed or breaks in two, and each row's actions are in sight, from 320 px up with the longest names allowed. [why](lessons/0026-narrow-lists-are-cards.md) · cases: [`cases/0026-narrow-lists-are-cards`](cases/0026-narrow-lists-are-cards), [`cases/0015-no-sideways-scroll`](cases/0015-no-sideways-scroll), [`cases/0018-columns-not-crushed`](cases/0018-columns-not-crushed), [`cases/0022-row-actions-in-sight`](cases/0022-row-actions-in-sight)
+- **L0027** [school library] The school library system is for library staff at one desk: a catalogue of titles and their numbered copies, borrowers, loans, returns, renewals and the overdue list. [why](lessons/0027-scope-of-the-school-library.md) · prose: whether a feature is inside the scope is a reader's judgement
+- **L0028** [school library] A loan is of one numbered copy to one borrower: a copy that is out, lost or withdrawn is refused, and so is a borrower who has left or holds 3 books as a pupil, 10 as staff. [why](lessons/0028-a-loan-is-of-one-copy.md) · case: [`cases/0028-a-loan-is-of-one-copy`](cases/0028-a-loan-is-of-one-copy)
+- **L0029** [school library] The server sets every date: due 14 days after lending, renewed at most twice to 14 days from today, and overdue loans are listed by class. [why](lessons/0029-the-server-sets-the-dates.md) · case: [`cases/0029-the-server-sets-the-dates`](cases/0029-the-server-sets-the-dates)
+- **L0030** [school library] Returning a book is one click on the list: no question page, opening an address never returns, and a loan is never edited or removed. [why](lessons/0030-return-is-one-click.md) · case: [`cases/0030-return-is-one-click`](cases/0030-return-is-one-click)
+- **L0031** [school library] Titles and borrowers can be corrected and nothing is removed: a copy is marked lost or withdrawn and back, a borrower who has left is marked so. [why](lessons/0031-library-corrected-never-removed.md) · case: [`cases/0031-library-corrected-never-removed`](cases/0031-library-corrected-never-removed)
+- **L0032** [school library] The catalogue and the borrowers are searched and show the first 200 matches, saying how many; loans out and overdue are shown in full, returned loans the latest 200; `/export.json` holds everything. [why](lessons/0032-lists-searched-export-all.md) · case: [`cases/0032-lists-searched-export-all`](cases/0032-lists-searched-export-all)
+- **L0033** [school library] The school library's inputs are refused outside the table of bounds in the lesson. [why](lessons/0033-library-bounds.md) · case: [`cases/0033-library-bounds`](cases/0033-library-bounds)

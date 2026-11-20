@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""Case of lesson L0032 (lessons/0032-lists-searched-export-all.md).
+Origin: the person's answer 12 in run 006, 2026-11-20.
+Fills the library past 200 titles, borrowers, open loans and returned loans
+and reads each page. Run from the repository root."""
+import json
+import re
+import sys
+import urllib.parse
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("school library")
+
+
+def checks(shop):
+    def page(path, **query):
+        if query:
+            path += "?" + urllib.parse.urlencode(query)
+        status, body = shop.request("GET", path)
+        shop.expect(status == 200, "GET %s answered %d" % (path, status))
+        return body
+
+    def rows(body, pattern):
+        return sorted({int(found) for found in re.findall(pattern, body)})
+
+    title_link, borrower_link, loan_row = r'href="/titles/(\d+)"', r'href="/borrowers/(\d+)"', r'id="loan-(\d+)"'
+
+    for count in range(1, 206):
+        shop.post(303, "/titles", title="Book %03d" % count, author="Writer %d" % (count % 7), isbn="", shelf="", copies="1")
+    odd = shop.add("titles", title="100% Wolf", author="Jayne LYONS", isbn="978-0-340-93049-1", shelf="F LYO", copies="1")
+    for count in range(1, 206):
+        shop.post(303, "/borrowers", name="Teacher %03d" % count, kind="staff", **{"class": "Staff room"})
+    pupil = shop.add("borrowers", name="Ana Lima", kind="pupil", **{"class": "7B"})
+    state = shop.export()
+    shop.expect((len(state["titles"]), len(state["copies"]), len(state["borrowers"])) == (206, 206, 206),
+                "206 titles of one copy and 206 borrowers were entered, and /export.json holds %d, %d and %d"
+                % (len(state["titles"]), len(state["copies"]), len(state["borrowers"])))
+
+    # The catalogue and the borrowers: 200 rows, and the number there are.
+    for path, link, total in (("/titles", title_link, 206), ("/borrowers", borrower_link, 206)):
+        body = page(path)
+        shop.expect(len(rows(body, link)) == 200, "%s lists %d rows, expected the first 200" % (path, len(rows(body, link))))
+        shop.expect(re.search(r"\b200 of %d\b" % total, body), "%s does not say that it shows 200 of %d" % (path, total))
+
+    # Search: title, author, ISBN and shelf mark; name and class; capitals do not matter; % is a character.
+    for query, expected in (("book 20", 6), ("writer 3", 29), ("lyons", 1), ("9780340930491", 1), ("f lyo", 1), ("%", 1),
+                            ("_", 0), ("no such book", 0), ("Book", 205)):
+        body = page("/titles", q=query)
+        found = rows(body, title_link)
+        shop.expect(len(found) == min(expected, 200), "searching the catalogue for '%s' lists %d titles, expected %d"
+                    % (query, len(found), min(expected, 200)))
+        shop.expect(re.search(r"\b%d\b" % expected, re.sub(r"<[^>]+>", " ", body)),
+                    "searching the catalogue for '%s' does not say that %d match" % (query, expected))
+    shop.expect(rows(page("/titles", q="%"), title_link) == [odd], "searching for '%' does not find the one title that has it")
+    for query, expected in (("ana", 1), ("7b", 1), ("teacher 2", 6), ("STAFF ROOM", 205), ("nobody", 0)):
+        found = rows(page("/borrowers", q=query), borrower_link)
+        shop.expect(len(found) == min(expected, 200) and (expected != 1 or found == [pupil]),
+                    "searching the borrowers for '%s' lists %d of them, expected %d" % (query, len(found), expected))
+
+    # Loans out are never cut: 206 of them are all on the page, and found by copy, title or borrower.
+    staff = [row["id"] for row in state["borrowers"] if row["kind"] == "staff"]
+    copies = [row["id"] for row in state["copies"]]
+    for spot, copy in enumerate(copies[:205]):
+        shop.post(303, "/loans", borrower_id=staff[spot // 10], copy=copy)
+    mine = shop.add("loans", borrower_id=pupil, copy=copies[205])
+    body = page("/loans")
+    shop.expect(len(rows(body, loan_row)) == 206, "206 books are out and /loans lists %d" % len(rows(body, loan_row)))
+    shop.expect(re.search(r"\b206\b", re.sub(r"<[^>]+>", " ", body)), "/loans does not say that 206 books are out")
+    shop.expect(rows(page("/loans", q=str(copies[205])), loan_row) == [mine], "searching the loans for a copy number does not find its loan")
+    shop.expect(rows(page("/loans", q="wolf"), loan_row) == [mine], "searching the loans for a title does not find its loan")
+    shop.expect(rows(page("/loans", q="ana lima"), loan_row) == [mine], "searching the loans for a borrower does not find her loan")
+    shop.expect(len(rows(page("/loans", q="Teacher 001"), loan_row)) == 10, "searching the loans for a borrower with 10 books does not list 10")
+
+    # Returned loans: the latest 200, and how many there are; overdue loans, all of them.
+    loans = [row["id"] for row in shop.export()["loans"]]
+    for loan in loans[:203]:
+        shop.post(303, "/loans/%d/return" % loan)
+    body = page("/returned")
+    shop.expect(rows(body, loan_row) == loans[3:203], "203 loans came back and /returned lists %d, expected the latest 200"
+                % len(rows(body, loan_row)))
+    shop.expect(re.search(r"\b200 of 203\b", body), "/returned does not say that it shows 200 of 203")
+    for spot, copy in enumerate(copies[:203]):
+        shop.post(303, "/loans", borrower_id=staff[spot // 10], copy=copy)
+    shop.restart("--today", "2099-01-01")
+    body = page("/overdue")
+    shop.expect(len(rows(body, loan_row)) == 206, "206 loans are overdue and /overdue lists %d" % len(rows(body, loan_row)))
+    state = shop.export()
+    shop.expect(len(state["loans"]) == 409 and len([1 for row in state["loans"] if row["returned"]]) == 203,
+                "/export.json holds %d loans, expected all 409" % len(state["loans"]))
+
+    # The search text has its bound.
+    for path in ("/titles", "/borrowers", "/loans"):
+        status, _ = shop.request("GET", path + "?q=" + "q" * 101)
+        shop.expect(status == 400, "%s with a search text of 101 characters answered %d" % (path, status))
+        page(path, q="q" * 100)
+
+
+def base(path):
+    return path.split("?")[0]
+
+
+@fault("GET", r"/(titles|borrowers)")
+def lists_everything(shop, ask, table):
+    """The page lists every row there is."""
+    status, body = ask.send()
+    shown = set(re.findall(r'href="/%s/(\d+)"' % table, body))
+    for row in shop.state()[table]:
+        if str(row["id"]) not in shown:
+            body += '<a href="/%s/%d">more</a>' % (table, row["id"])
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", r"/(titles|borrowers|returned)")
+def silent_about_the_rest(shop, ask, table):
+    """The page shows 200 rows and does not say that there are more."""
+    status, body = ask.send()
+    plain = re.sub(r"\b200 of \d+\b", "200", body)
+    shop.acted += plain != body
+    return status, plain
+
+
+@fault("GET", r"/(titles|borrowers|loans)\?q=.*")
+def search_finds_everything(shop, ask, table):
+    """Whatever is searched for, the whole list comes back."""
+    shop.acted += 1
+    return shop.real("GET", "/" + table)
+
+
+@fault("GET", r"/titles\?q=.*")
+def percent_is_a_wildcard(shop, ask):
+    """% and _ in the search text match anything."""
+    if urllib.parse.parse_qs(ask.path.split("?")[1]).get("q", [""])[0] in ("%", "_"):
+        shop.acted += 1
+        return shop.real("GET", "/titles?q=o")
+    return ask.send()
+
+
+@fault("GET", r"/(loans|overdue)")
+def loans_cut_at_200(shop, ask, page):
+    """The loans still out are cut at 200 like the other lists."""
+    status, body = ask.send()
+    spots = [found.start() for found in re.finditer(r'<tr[^>]*id="loan-\d+"', body)]
+    if len(spots) > 200:
+        body = body[:spots[200]]
+        shop.acted += 1
+    return status, body
+
+
+@fault("GET", "/returned")
+def returned_oldest_first(shop, ask):
+    """The page of returned loans shows the first 200, not the latest."""
+    status, body = ask.send()
+    back = [row["id"] for row in shop.state()["loans"] if row["returned"]]
+    if len(back) > 200:
+        body = re.sub(r'id="loan-%d"' % back[-1], 'id="loan-%d"' % back[0], body)
+        shop.acted += 1
+    return status, body
+
+
+@fault("GET", "/export.json")
+def export_leaves_out(shop, ask):
+    """/export.json holds the latest 200 rows of each kind."""
+    status, body = ask.send()
+    state = json.loads(body)
+    for table in ("titles", "borrowers", "loans"):
+        if len(state[table]) > 200:
+            state[table] = state[table][-200:]
+            shop.acted += 1
+    return status, json.dumps(state)
+
+
+@fault("GET", r"/(titles|borrowers|loans)\?q=.*")
+def any_search_text(shop, ask, table):
+    """A search text of any length is taken."""
+    if len(urllib.parse.parse_qs(ask.path.split("?")[1]).get("q", [""])[0]) > 100:
+        shop.acted += 1
+        return shop.real("GET", "/" + table)
+    return ask.send()
+
+
+run(checks, wrong=[
+    ("the page lists every row", lists_everything),
+    ("the page is silent about the rows it does not show", silent_about_the_rest),
+    ("a search returns the whole list", search_finds_everything),
+    ("% and _ match anything", percent_is_a_wildcard),
+    ("loans out are cut at 200", loans_cut_at_200),
+    ("returned loans show the oldest 200", returned_oldest_first),
+    ("/export.json leaves rows out", export_leaves_out),
+    ("a search text of any length is taken", any_search_text),
+])

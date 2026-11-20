@@ -1,0 +1,5 @@
+# What this product is. One label per line; ./check puts in force the lessons that carry one of them.
+school library
+web pages
+local web server
+python stdlib and sqlite on localhost
