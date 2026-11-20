@@ -68,3 +68,4 @@ the lessons and the cases are what lasts.
 - **L0037** [always] A record of the person's approval says what they saw and how they said it. · prose: no program can tell what a person read
 - **L0038** [always] The check runs every case once, on a copy of the tree with the product's source taken away, and prints the seconds each took.
 - **L0039** [always] A lesson line holds only what its number does not give; this file lists the `always` lessons, `LESSONS.md` the others, and a session reads those in force from `./check --lessons`.
+- **L0040** [always] The summary line of the check says the lines of the product and of the cases in force; no limit is set.
