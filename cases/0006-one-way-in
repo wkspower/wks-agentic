@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Case of lesson L0006 (lessons/0006-one-way-in.md).
 Origin: the person's answers 3, 4 and 7 in run 001, 2026-11-19.
+Made general in run 006, 2026-11-20, when the school library chose the label:
+the row it enters to see the state kept is the product's, from its surface.
 The shop is started with no site-packages (caselib.FLAGS) and with Python's own
 record of every module it imports, which is read after the shop has been used.
 Run from the repository root."""
@@ -12,6 +14,7 @@ sys.path.insert(0, ".")
 import caselib
 from caselib import Failure, Shop, run
 
+ONE = caselib.product()["one"]
 caselib.FLAGS += ["-X", "importtime"]
 
 
@@ -36,15 +39,16 @@ def checks(shop):
     shop.expect(not reached, "the shop answers on %s, not only on localhost" % address)
 
     # One SQLite file holds the state, and a second start on it sees the same state.
-    made = shop.add("customers", name="Ana Lima", phone="555-0101")
+    table, shows = ONE["table"], ONE["shows"]
+    made = shop.add(table, **ONE["fields"])
     with open(shop.db, "rb") as handle:
         shop.expect(handle.read(15) == b"SQLite format 3", "the database file is not SQLite")
     again = Shop(db=shop.db).start()
     try:
-        names = [row["name"] for row in again.export()["customers"] if row["id"] == made]
+        kept = [row[shows] for row in again.export()[table] if row["id"] == made]
     finally:
         again.stop()
-    shop.expect(names == ["Ana Lima"], "a second start on the same file does not see the customer")
+    shop.expect(kept == [ONE["fields"][shows]], "a second start on the same file does not see the row entered in %s" % table)
 
     # Every module the shop has imported by now is Python's own, or a file beside the program.
     beside = os.path.dirname(caselib.MAIN)

@@ -5,27 +5,14 @@
 // Fills the shop, then at each narrow width looks at every row of every list: its fields are
 // one under another, each shown with the name of its column, the rows are apart, and no box
 // on the page scrolls sideways. At a wide width the same lists are still tables.
+// Made general in run 006, 2026-11-20, when the school library chose the label: what fills the
+// product and which pages are measured are the product's, in its surface ("cards").
 // Run from the repository root.
-const { run, style } = require('../caselib.js');
+const { run, style, surface } = require('../caselib.js');
 
-run(async (page, base, expect) => {
-  const post = async (path, fields) => {
-    const answer = await fetch(base + path, { method: 'POST', body: new URLSearchParams(fields), redirect: 'manual' });
-    if (answer.status !== 303) throw new Error('wrong: POST ' + path + ' answered ' + answer.status);
-  };
-  await post('/products', { name: 'Cat litter 10 L', price: '8.90', stock: '3', low_at: '5' });
-  await post('/products', { name: 'W'.repeat(80), price: '99999.99', stock: '1000000', low_at: '20' });
-  await post('/customers', { name: 'Maria Aparecida de Souza Albuquerque', phone: '+55 11 5550 0101' });
-  await post('/customers', { name: 'Bo Li', phone: '' });
-  await post('/pets', { customer_id: '1', name: 'Sir Barks a Lot', species: 'golden retriever' });
-  await post('/pets', { customer_id: '2', name: 'P'.repeat(80), species: 'cat' });
-  await post('/sales', [['method', 'card'], ['customer_id', '1'], ['product_id', '1'], ['qty', '2'], ['product_id', '2'], ['qty', '1000']]);
-  await post('/sales', [['method', 'cash'], ['product_id', '1'], ['qty', '1']]);
-  await post('/sales/2/void', {});
-  const today = new Date().toLocaleDateString('en-CA');
-  await post('/appointments', { pet_id: '1', date: today, time: '17:00' });
-  await post('/appointments', { pet_id: '2', date: today, time: '16:00' });
-  const lists = ['/', '/products', '/customers', '/sales', '/sales/1/void', '/appointments'];
+run(async (page, base, expect, fill) => {
+  await fill(surface.cards.posts);
+  const lists = surface.cards.pages;
   // What one page looks like: per row, whether its fields are stacked; which fields lack a name.
   const look = () => {
     const shown = (el) => { const at = el.getBoundingClientRect(); return at.width > 0 && at.height > 0; };
@@ -77,7 +64,7 @@ run(async (page, base, expect) => {
       rows += seen.rows; fields += seen.fields;
     }
   }
-  expect(rows >= 45 && fields >= 150, 'only ' + rows + ' rows and ' + fields + ' fields were looked at');
+  expect(rows >= surface.cards.rows && fields >= surface.cards.fields, 'only ' + rows + ' rows and ' + fields + ' fields were looked at');
   await page.setViewportSize({ width: 1100, height: 800 });
   for (const path of lists) {
     await page.goto(base + path);
