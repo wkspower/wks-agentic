@@ -84,6 +84,7 @@ td.act a,td.act button{margin-right:.35rem}
  td.act{position:static;background:transparent;padding-top:.45rem}
  td::before{content:attr(data-label);display:block;font-size:.75rem;color:var(--soft)}
  td.act::before{content:none}
+ td:empty{display:none}
 }
 """
 
@@ -642,8 +643,10 @@ def make_handler(library, port):
                       % (e(title), STYLE, clock, links, body))
 
         def refuse(self, status, why):
-            self.page(status, "Not done", '<h1>Not done</h1><p class="late">%s</p><p class="note">Nothing was changed. '
-                                          "Use your browser’s Back button to return to the form; what you typed is still there.</p>" % e(why))
+            # Says only what holds for every form: a scanned field comes back empty on purpose (L0035).
+            after = ("Nothing was changed. Use your browser’s Back button to return to the form." if status in (400, 413)
+                     else 'Nothing was changed. <a href="/">To the desk</a>')
+            self.page(status, "Not done", '<h1>Not done</h1><p class="late">%s</p><p class="note">%s</p>' % (e(why), after))
 
         def own(self):
             """A request to another host name, or a post from another site, is refused (L0007)."""

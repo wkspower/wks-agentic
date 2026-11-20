@@ -16,6 +16,11 @@ products share into the case, leave the rest with each product.
 The person's decision, 2026-11-19 (run 005): "Do not make any case general
 in this run. The web cases stay written against the pet shop's pages."
 
+First done in run 006, 2026-11-20: the school library switched on three of
+the pet shop's labels, their eight cases failed, and each was made general
+by moving what it knew about the pet shop into `surface/pet-shop.json`
+(L0034). They pass on both products with the checks they had.
+
 ## What would be a regression
 A case rewritten to be general with only one product to show what general
 means; or a second product that switches a label on and has its lesson's

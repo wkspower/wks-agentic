@@ -43,6 +43,11 @@ edits the text of the product's source; every rule a case guards is still
 shown something wrong, and refuses it.
 Read as written and accepted by the person, 2026-11-19 (run 005).
 
+Run 006, 2026-11-20: the case passed on a second product without taking
+its source away, because it looked for the first product's file by name.
+It now finds the product through `product/LABELS` and stops if any source
+is left in its scratch tree (L0034).
+
 ## What would be a regression
 A case that opens a file under `product/` as text, copies it, or changes it;
 a wrong variant given as text to find and replace; a wrong variant counted

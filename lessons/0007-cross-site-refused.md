@@ -13,6 +13,9 @@ measure, audit or blind build looked for it. The person, run 001, 2026-11-19
 (answer 7: "cross-site posts are still refused").
 Read as written and accepted by the person, 2026-11-19 (run 005).
 
+The case was made general in run 006, 2026-11-20, when the school library
+chose this label; what it needs to know of a product is in `surface/` (L0024).
+
 ## What would be a regression
 A post with a foreign Origin, or `Sec-Fetch-Site` other than same-origin, or
 any request with a foreign Host, answered with anything but 403.
