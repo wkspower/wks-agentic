@@ -17,7 +17,13 @@ The cases never run in the tree itself. The check copies it, compiles the
 product in the copy, takes the product's source out of it, and runs every
 case in force once, there (L0019, L0038).
 
+No session is told to run this file to see its lessons. The SessionStart hook
+in .claude/settings.json runs `check --start`, and what that prints is put in
+front of the session by Claude Code: the lessons in force besides those in
+CLAUDE.md, or, with no product, every label and what it brings (L0041).
+
 Usage: ./check [TREE]       check a tree (default: the one this file is in)
+       ./check --start      print what a session is given at its start; the hook runs this, and it always ends with 0
        ./check --lessons    print the lessons in force besides those in CLAUDE.md, and the labels that are off
        ./check --lessons LABEL ...   print the lessons a label brings
        ./check --cases      print the cases in force, one per line, and run nothing
@@ -25,6 +31,7 @@ Usage: ./check [TREE]       check a tree (default: the one this file is in)
        ./check --plant DIR  write the small right tree of the selftest to DIR, for a case to spoil
 """
 import compileall
+import json
 import os
 import re
 import shutil
@@ -38,6 +45,10 @@ NAMES = re.compile(r"\blesson (L\d{4})\b")
 ALWAYS = "always"
 ENTRY, REST = "CLAUDE.md", "LESSONS.md"  # the lessons that are always in force, and all the others
 DECLARED = os.path.join("product", "LABELS")
+SETTINGS = os.path.join(".claude", "settings.json")
+HOOK = '"${CLAUDE_PROJECT_DIR}"/check --start'  # run by Claude Code at every start of a session
+HEAD = "Lessons at the start of this session"  # CLAUDE.md says a session without this text was not given its lessons
+CAP = 10000  # characters of a hook's output that Claude Code puts in the context; beyond it, only a preview
 
 
 def read(path):
@@ -242,6 +253,62 @@ def print_lessons(tree, asked):
     return True
 
 
+def start_text(lines, carried, chosen, problems=()):
+    """What the hook puts in front of a session: the lessons in force besides `always`, or every label with its lessons."""
+    out = ["%s, printed by `./check --start` from the SessionStart hook in `%s`." % (HEAD, SETTINGS)]
+    if problems:
+        out.append("Wrong in the record, to be put right before anything else (`./check` says more):")
+        out += ["  " + problem for problem in problems]
+    off = [word for word in sorted(carried) if word != ALWAYS and word not in chosen]
+    if chosen:
+        out.append("In force for the product in `product/` (%s), besides the `always` lessons in `%s`:"
+                   % (", ".join(chosen), ENTRY))
+        out += [line for _, labels, _, line in lines if set(labels) & set(chosen) and ALWAYS not in labels]
+        if off:
+            out.append("Not in force, kept for the product that declares the label in `%s`:" % DECLARED)
+        out += ["  '%s': %s" % (word, count(len(carried[word]))) for word in off]
+    else:
+        out.append("No product in this tree: only the `always` lessons in `%s` are in force. A product says what it "
+                   "is in `%s`, one label per line. The labels that exist, and the lessons each brings:" % (ENTRY, DECLARED))
+        for word in off:
+            out.append("  '%s': %s" % (word, count(len(carried[word]))))
+            out += [line for _, labels, _, line in lines if word in labels]
+    return "\n".join(out) + "\n"
+
+
+def print_start(tree):
+    """Never fails: when a hook ends with an error, Claude Code shows the session nothing of what it printed."""
+    try:
+        problems, lines, carried, chosen, _ = record(tree)
+        sys.stdout.write(start_text(lines, carried, chosen, problems))
+    except Exception as error:  # whatever is wrong, the session is told and goes on
+        print("%s could not be printed (%s). Run `./check` and put that right first." % (HEAD, error))
+    return 0
+
+
+def hook_problems(tree, lines, carried, chosen):
+    """The hook is there in the form Claude Code documents, and what it prints fits in what a hook may print."""
+    problems = []
+    try:
+        groups = json.loads(read(os.path.join(tree, SETTINGS)))["hooks"]["SessionStart"]
+        found = [group.get("matcher", "") in ("", "*") for group in groups for hook in group.get("hooks", [])
+                 if hook.get("type") == "command" and hook.get("command") == HOOK and "args" not in hook]
+    except (ValueError, KeyError, TypeError, AttributeError):
+        found = []
+    if not found:
+        problems.append("%s has no SessionStart hook with the command %s: no session is given the lessons in force "
+                        "at its start" % (SETTINGS, HOOK))
+    elif not any(found):
+        problems.append("%s: the SessionStart hook has a matcher, so it does not fire at every start (a new session, "
+                        "a resume, a clear, a compaction)" % SETTINGS)
+    sizes = [len(start_text(lines, carried, chosen)), len(start_text(lines, carried, []))]
+    for size, where in zip(sizes, ("this tree", "this tree without its product")):
+        if size > CAP:
+            problems.append("`./check --start` prints %d characters for %s, and Claude Code puts the first %d of a "
+                            "hook's output in front of a session" % (size, where, CAP))
+    return problems, sizes
+
+
 def check(tree, only_list=False):
     problems, lines, carried, chosen, on = record(tree)
     files = lesson_files(tree, lines, problems)
@@ -286,6 +353,8 @@ def check(tree, only_list=False):
         shutil.rmtree(work, ignore_errors=True)
     if not lines:
         problems.append("no lesson found: an empty record is not a result")
+    more, at_start = hook_problems(tree, lines, carried, chosen)
+    problems += more
     for word in sorted(carried, key=lambda word: (word != ALWAYS, word)):
         print("  label '%s': %s, %s" % (word, "on" if word in on else "off", count(len(carried[word]))))
     for lesson in off:
@@ -293,17 +362,16 @@ def check(tree, only_list=False):
     print("  the cases ran in a copy of the tree: %d source files of the product compiled and taken out of it%s"
           % (compiled, "; left in product/ as they are: " + ", ".join(kept) if kept else ""))
     entry = len(read(os.path.join(tree, ENTRY)).encode("utf-8"))
-    in_force = sum(len(line.encode("utf-8")) + 1 for _, labels, _, line in lines if on & set(labels) and ALWAYS not in labels)
     product_lines = sum(lines_of(os.path.join(base, name)) for base, _, found in os.walk(os.path.join(tree, "product"))
                         for name in found if os.path.join(base, name) != os.path.join(tree, DECLARED)
                         and "__pycache__" not in base and not name.endswith((".pyc", ".db", ".db-journal")))
     ratio = " (%.1f to 1)" % (case_lines / product_lines) if product_lines else ""
     print("lessons %d · in force %d · not in force %d · with a case %d · prose only %d · "
           "cases run %d · cases not run %d · product: %s · product %d lines · cases in force %d lines%s · "
-          "%s %d bytes, and %d of lessons in force besides · %d s"
+          "at the start of a session %s %d bytes and %d characters from the hook (%d with no product) · %d s"
           % (len(lines), len(lines) - len(off), len(off), len(lines) - prose, prose, ran, not_run,
              ", ".join(chosen) or "none", product_lines, case_lines, ratio,
-             ENTRY, entry, in_force, round(time.time() - started)))
+             ENTRY, entry, at_start[0], at_start[1], round(time.time() - started)))
     for problem in problems:
         print("FAIL " + problem)
     return not problems
@@ -337,6 +405,7 @@ def good(tree):
         write(tree, "lessons/%s-x.md" % number, GOOD_LESSON)
         write(tree, "cases/%s-x" % number, GOOD_CASE % number, True)
     write(tree, "product/LABELS", "# what this product is\nweb pages\n")
+    write(tree, SETTINGS, json.dumps({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": HOOK}]}]}}))
     write(tree, "product/app.py", "print('a product')\n")
 
 
@@ -397,6 +466,17 @@ WRONG = {
         t, ENTRY, "# x\n") or write(t, REST, line() + line("0002", "web pages")),
     "a lesson with a case, marked prose": lambda t: write(t, REST, line("0002", "web pages", case=False)),
     "two lesson files for one number": lambda t: write(t, "lessons/0002-z.md", GOOD_LESSON),
+    # Since run 009 (L0041): the lessons in force are put in front of a session by a hook, not by a command it is told to run.
+    "no hook at the start of a session": lambda t: remove(t, SETTINGS),
+    "a settings file that is not JSON": lambda t: write(t, SETTINGS, "{hooks"),
+    "a hook at the start that runs something else": lambda t: write(t, SETTINGS, read(os.path.join(t, SETTINGS)).replace("--start", "--cases")),
+    "a hook that fires only on a new session, not after a resume or a compaction": lambda t: write(
+        t, SETTINGS, read(os.path.join(t, SETTINGS)).replace('{"hooks": [', '{"matcher": "startup", "hooks": [')),
+    "lessons in force beyond what a hook may print": lambda t: write(
+        t, REST, line("0002", "web pages").replace("One true thing", "One true thing " * 700)),
+    "lessons beyond what a hook may print once the product is taken away": lambda t: write(
+        t, REST, line("0002", "web pages") + line("0003", "money").replace("One true thing", "One true thing " * 700))
+    or write(t, "lessons/0003-x.md", GOOD_LESSON) or write(t, "cases/0003-x", GOOD_CASE % "0003", True),
 }
 
 NOT_CAUGHT = (
@@ -449,6 +529,8 @@ if __name__ == "__main__":
         sys.exit(0 if selftest() else 1)
     if args[:1] == ["--plant"] and len(args) == 2:
         sys.exit(good(args[1]))
+    if args == ["--start"]:
+        sys.exit(print_start(here()))
     if args[:1] == ["--lessons"]:
         sys.exit(0 if print_lessons(here(), args[1:]) else 1)
     listing = args[:1] == ["--cases"]

@@ -1,4 +1,4 @@
-# L0039 — A lesson line holds only what its number does not give; `CLAUDE.md` lists the `always` lessons, `LESSONS.md` the others, and a session reads those in force from `./check --lessons`
+# L0039 — A lesson line holds only what its number does not give; `CLAUDE.md` lists the `always` lessons and `LESSONS.md` the others
 
 ## Reason
 `CLAUDE.md` is read whole at the start of every session, so every byte in it
@@ -22,6 +22,12 @@ and names every label that is off, with its count. `./check --lessons LABEL`
 prints the lines a label would bring: that is how a session on the base,
 with no product, finds which labels exist and chooses among them.
 
+Since run 009 no session is told to run that command. A hook runs
+`./check --start` at the start of every session and its output is put in
+front of the session: the lines in force, or on the base every label with
+the lines it brings (L0041). `./check --lessons` stays, for a person or a
+session that wants to look.
+
 Nothing is lost by a lesson being off: its line, its file and its case are
 kept and checked as before (L0023).
 
@@ -35,13 +41,18 @@ check still refuses what its selftest refused) are the coordinating
 session's. Where the lines went, that a command prints them, and that a case
 names its lesson are this run's choices. The person has not seen this lesson.
 
+Run 009, 2026-11-20: the sentence lost its last part, "and a session reads
+those in force from `./check --lessons`". The person, on reading that nobody
+knew whether a session would run that command: "sounds like we are relying
+on non determinism for something we want determinism?", as the coordinating
+session reports it. What replaced it is L0041.
+
 ## What would be a regression
 A lesson line with a link or a path on it; a lesson in `CLAUDE.md` that is
 not `always`, or an `always` lesson in `LESSONS.md`; `./check --lessons`
 leaving out a lesson in force or printing one that is off; a label that is
 off and not named; the base unable to print what a label brings.
 
-What no case catches: a session that does not run `./check --lessons` reads
-only the `always` lessons. Until run 008 the file itself put every lesson in
-front of the session; now one command does, and the first instruction in
-`CLAUDE.md` is to run it. Whether sessions do is to be seen in the next run.
+Run 008 left one thing no case caught: a session that did not run
+`./check --lessons` read only the `always` lessons. Run 009 took that
+dependence away (L0041).

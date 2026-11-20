@@ -1,8 +1,9 @@
 # The lessons that are not `always` in force
 
 One line per lesson, in the form `CLAUDE.md` describes. No session reads this
-file whole: `./check --lessons` prints the lines in force for the product in
-`product/`, and `./check --lessons LABEL` the lines a label brings.
+file whole: a hook gives each session, at its start, the lines in force for
+the product in `product/`, or with no product every label and its lines
+(L0041). `./check --lessons LABEL` prints the lines a label brings.
 
 - **L0005** [pet shop] The pet shop system is for staff: products and stock, customers and their pets, counter sales, grooming appointments. · prose: whether a feature is inside the scope is a reader's judgement
 - **L0006** [python stdlib and sqlite on localhost] The web app on localhost is the only way in, on Python's standard library and one SQLite file.

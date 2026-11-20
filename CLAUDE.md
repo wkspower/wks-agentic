@@ -15,7 +15,8 @@ the lessons and the cases are what lasts.
 | Path | Holds |
 |---|---|
 | `CLAUDE.md` | This file. Read at the start of every session. One line for each lesson that is `always` in force. |
-| `LESSONS.md` | One line for every other lesson, with its labels. Not read whole: `./check --lessons` prints the ones in force. |
+| `LESSONS.md` | One line for every other lesson, with its labels. Not read whole: the ones in force are given to a session at its start. |
+| `.claude/settings.json` | The hook that gives a session the lessons in force at its start, by running `./check --start`. |
 | `lessons/` | One file per lesson, `lessons/NNNN-*.md` for LNNNN: the reason, the source, what would be a regression. |
 | `cases/` | The cases. Each says in its first lines which lesson it is a case of; most are `cases/NNNN-*`. |
 | `caselib.py`, `caselib.js` | What the cases share: start the product, put a fault in front of it. |
@@ -28,10 +29,12 @@ the lessons and the cases are what lasts.
 
 ## What a session does
 
-- **First, run `./check --lessons` and read what it prints.** The lessons
-  below are in force for every product. That command prints the others in
-  force for the product in `product/`, and names each label that is off.
-  With no product, `./check --lessons LABEL` prints what a label would bring.
+- **The lessons in force are in front of you with no step to take** (L0041).
+  The ones below hold for every product. A hook adds the others in force for
+  the product in `product/`, and with no product every label that exists and
+  the lessons it brings, in a text that begins `Lessons at the start of this
+  session`. If you have no such text, the hook did not run here: say so
+  first, and take the text from `./check --start`.
 - **When something is learned, it becomes a lesson before the work goes on.**
   Learned means: the person decides or corrects something, a defect is found,
   or an approach is tried and rejected. Write `lessons/NNNN-slug.md` and add
@@ -67,6 +70,6 @@ the lessons and the cases are what lasts.
 - **L0034** [always] What the cases know about a product is in its file under `surface/`, found through `product/LABELS`; nothing the cases share remembers a product of its own.
 - **L0037** [always] A record of the person's approval says what they saw and how they said it. · prose: no program can tell what a person read
 - **L0038** [always] The check runs every case once, on a copy of the tree with the product's source taken away, and prints the seconds each took.
-- **L0039** [always] A lesson line holds only what its number does not give; this file lists the `always` lessons, `LESSONS.md` the others, and a session reads those in force from `./check --lessons`.
+- **L0039** [always] A lesson line holds only what its number does not give; this file lists the `always` lessons and `LESSONS.md` the others.
 - **L0040** [always] The summary line of the check says the lines of the product and of the cases in force; no limit is set.
 - **L0041** [always] What must happen at the start of a session is done by tooling: a hook puts the lessons in force for the product in front of the session, and nothing depends on the session running a command.
