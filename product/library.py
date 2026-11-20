@@ -447,11 +447,11 @@ class Pages:
     def loan_rows(self, loans, back, borrower=True):
         rows = []
         for loan in loans:
-            acts = button("/loans/%d/return" % loan["id"], "Return", back)
+            # "Copies" leads to the title's copies, where a book that will not come back is marked lost (L0031).
+            acts = '<a href="/titles/%d">Copies</a>' % loan["title_id"] + button("/loans/%d/return" % loan["id"], "Return", back)
             if loan["renewals"] < RENEWALS:
                 acts += button("/loans/%d/renew" % loan["id"], "Renew", back)
-            # The title leads to its copies, where a book that will not come back is marked lost (L0031).
-            cells = [("num", str(loan["copy_id"])), ("", '<a href="/titles/%d">%s</a>' % (loan["title_id"], e(loan["title"])))]
+            cells = [("num", str(loan["copy_id"])), ("", e(loan["title"]))]
             if borrower:
                 cells.append(("", e(loan["name"]) + (" (%s)" % e(loan["class"]) if loan["class"] else "")))
             cells += [("tag", self.due(loan)), ("act", acts)]

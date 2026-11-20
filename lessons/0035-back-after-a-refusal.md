@@ -30,3 +30,7 @@ are kept where they are not.
 
 The case measures Chromium only. How another browser restores a form is its
 own affair, and none was tried.
+
+No real scanner has been tried (noted in run 007). The reason above is how a
+scanner is said to behave: it types the digits and Enter into the field that
+has the focus. The case and the agent typed digits and Enter in its place.

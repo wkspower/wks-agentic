@@ -1,8 +1,38 @@
 # Handoff
 
+**Run 007 (2026-11-20) made two changes to the library and did not record
+the review they came with.** `./check` passes: 33 lessons, 23 in force, 21
+cases run, 67 wrong variants refused; without `product/`, 9 in force and 5
+cases run. The changes: a copy that is out can be marked lost, which ends
+its loan that day as lost (L0031, reversed); classes are compared without
+regard to capitals (L0036, new). See `runs/007-library-review.md`.
+
+## Owed: the person's review of L0027 to L0035, in their own message
+
+The instruction of run 007 says the person read L0027 to L0035 and accepts
+them with those two changes. It arrived as an automated notice that says it
+is not user input and carries no approval, and the session's permission
+check stopped the acceptance from being written into the lessons. Nothing
+in `lessons/` says the person accepted anything in run 007. **Do not merge
+this branch into the base as reviewed until the person has said so
+themselves.** When they do, write what the instruction asked for:
+
+- In the Source of each of L0027 to L0035: read and accepted by the person
+  on 2026-11-20 (or the day they say).
+- Kept as built, where a Source says "the person has not seen it": `--today`
+  with its notice (L0027); an ISBN of 10 that ends in X, and the bounds for
+  search text and copy number (L0033); the scan field that comes back empty
+  (L0035). Say they have seen it and kept it.
+- L0028 and L0029: the numbers (3 books for a pupil, 10 for staff, 14 days,
+  two renewals) are accepted as built and owed a confirmation by the school.
+  Mark them so; not to be asked about until the person brings it up.
+- Then look at what run 007's builder chose, listed in its run record:
+  withdrawn left as it was, how a class is shown when both spellings exist,
+  and ten smaller things.
+
 
 **Run 006 (2026-11-20) built the second product on this branch: a school
-library.** `./check` passes with it: 32 lessons, 22 in force, 20 cases run,
+library.** `./check` passed with it: 32 lessons, 22 in force, 20 cases run,
 57 wrong variants refused. The person answered one round of 14 questions
 with "Ok" and has not used the library or read L0027 to L0035. Merging
 those lessons into the base is theirs to do.
@@ -151,4 +181,5 @@ Each run adds a file under `runs/` and a line here.
 - [003 wrong variants by behaviour](runs/003-variants-by-behaviour.md), 2026-11-19: no questions, 1 lesson added (with a case), 2 changed; cases only, 29 faults at the interface in place of 28 text replacements.
 - [004 pet shop, rebuilt with no history](runs/004-rebuild-no-history.md), 2026-11-19: 1 round of 3 questions, 3 lessons added (all with a case), 1 defect found by hand, no inherited case changed.
 - [005 labels](runs/005-labels.md), 2026-11-19: no questions, scaffold changed so lessons are switched on per product; 4 lessons added (3 with a case), 3 folded into one, the person's review of L0005 to L0022 recorded; lists became cards on a narrow screen, case first.
+- [007 library review](runs/007-library-review.md), 2026-11-20: no questions, no prompt; 1 lesson reversed and 1 added (both with a case, case first), 1 defect found writing a case, 1 addition refused by an inherited case; the review the run was to record is not recorded, and why.
 - [006 school library](runs/006-school-library.md), 2026-11-20: 1 round of 14 questions, 9 lessons added (8 with a case), the second product; 8 cases made general and kept passing on the pet shop; 1 defect found in the scaffold and 1 in the product by hand.
