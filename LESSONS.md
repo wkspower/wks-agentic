@@ -38,3 +38,4 @@ the product in `product/`, or with no product every label and its lines
 - **L1206** [school canteen] The server sets every canteen date, and the page of a day adds up what happened that day: sales by method, items sold, top-ups, pay-outs, voids, and the cash expected in the drawer, which is cash sales plus top-ups less pay-outs less what was voided that day.
 - **L1207** [school canteen] The canteen's sales page lists the latest 200 sales and an account's page its latest 200 sales and its latest 200 top-ups and pay-outs, each saying how many there are; accounts are searched by name, class or card and show the first 200 matches; the menu is shown whole; `/export.json` holds everything.
 - **L1208** [school canteen] The canteen's prices include tax, and its inputs are refused outside the table of bounds in the lesson.
+- **L1209** [local web server] A connection that is open and sends nothing holds nobody up: the next request is answered all the same.
