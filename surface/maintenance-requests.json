@@ -217,7 +217,7 @@
   ],
   "pages": ["/", "/requests", "/requests/1", "/overdue", "/closed", "/places", "/places/1", "/workers", "/workers/1"],
   "rows": 90,
-  "fields": 450
+  "fields": 380
  },
  "back": {
   "posts": [

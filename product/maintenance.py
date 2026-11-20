@@ -50,7 +50,7 @@ nav a.here{font-weight:700;border-bottom:2px solid #fff}
 main{padding:16px;max-width:1160px;margin:0 auto}
 h1,h2{overflow-wrap:anywhere} h1{font-size:24px;margin:4px 0 12px} h2{font-size:18px;margin:22px 0 8px}
 p,dd,dt,li{overflow-wrap:anywhere} a{color:#1a56a8}
-.count{color:#4a5361} .late{color:#b3261e;font-weight:700}
+.count{color:#4a5361} .late{color:#b3261e;font-weight:700;white-space:nowrap}
 .tag{display:inline-block;padding:0 7px;border-radius:9px;font-size:13px;background:#e3e7ee;white-space:nowrap}
 .tag.urgent{background:#b3261e;color:#fff} .tag.low{background:#eef0f3;color:#4a5361}
 .off{color:#6b7380}
@@ -77,10 +77,11 @@ table{border-collapse:collapse;width:100%}
 th,td{padding:8px 7px;text-align:left;vertical-align:top;border-bottom:1px solid #e6e8ec}
 th{font-size:13px;color:#4a5361;white-space:nowrap;background:#f8f9fb}
 tbody tr:last-child td{border-bottom:0}
-td.words{min-width:150px;overflow-wrap:anywhere} td.wide{min-width:230px}
+td.words{min-width:150px;overflow-wrap:break-word} td.wide{min-width:210px} td.status{min-width:180px}
 td.num,td.st,td.act{white-space:nowrap}
 td.act,th.act{position:sticky;right:0;background:#fff;box-shadow:-1px 0 0 #d5d9e0} th.act{background:#f8f9fb}
-td.act>*{margin-right:3px}
+td.act>*{margin:0 3px 3px 0}
+@media (min-width:721px) and (max-width:999px){td.act{white-space:normal;width:158px;min-width:158px}}
 @media (max-width:720px){
  .scroll{overflow-x:visible;background:none;border:0}
  table,tbody,tr,td{display:block} thead{display:none}
@@ -399,20 +400,25 @@ class App:
         out = []
         for row in rows:
             short = row["description"] if len(row["description"]) <= 90 else row["description"][:89] + "…"
-            due = e(row["closed"] or "") if closed else e(row["due"]) + (' <b class="late">+%d d</b>' % self.late(row) if self.late(row) else "")
+            if closed:
+                when = "closed %s" % e(row["closed"] or "")
+            else:
+                when = "due %s" % e(row["due"]) + (' · <b class="late">%d %s overdue</b>' % (
+                    self.late(row), "day" if self.late(row) == 1 else "days") if self.late(row) else "")
             acts = '<a class="open" href="/requests/%d">Open</a>' % row["id"] + "".join(
                 '<form class="inline" method="post" action="/requests/%d/%s"><input type="hidden" name="back" value="%s">'
                 '<button type="submit">%s</button></form>' % (row["id"], verb, e(back), BUTTONS[verb])
                 for verb in CHANGES if row["state"] in CHANGES[verb][0])
+            # The state, the worker and the day are one column, so that the list fits its box at 800 px (L0042).
             out.append(
                 '<tr><td class="words wide" data-th="Request">#%d <span class="tag %s">%s</span> %s: %s</td>'
-                '<td class="words" data-th="Place">%s</td><td class="num" data-th="%s">%s</td><td class="st" data-th="State">%s</td>'
-                '<td class="words" data-th="Worker">%s</td><td class="act" data-th="Actions">%s</td></tr>'
+                '<td class="words" data-th="Place">%s</td><td class="words status" data-th="State and day">%s%s<br>%s</td>'
+                '<td class="act" data-th="Actions">%s</td></tr>'
                 % (row["id"], row["priority"], row["priority"], e(row["category"].capitalize()), e(short),
-                   e(place_name({"kind": row["place_kind"], "name": row["place_name"]})), "Closed" if closed else "Due", due,
-                   e(row["state"]), e(row["worker_name"] or ""), acts))
-        return ('<div class="scroll"><table><thead><tr><th>Request</th><th>Place</th><th>%s</th><th>State</th><th>Worker</th>'
-                '<th class="act">Actions</th></tr></thead><tbody>%s</tbody></table></div>' % ("Closed" if closed else "Due", "".join(out)))
+                   e(place_name({"kind": row["place_kind"], "name": row["place_name"]})), e(row["state"]),
+                   " · " + e(row["worker_name"]) if row["worker_name"] else "", when, acts))
+        return ('<div class="scroll"><table><thead><tr><th>Request</th><th>Place</th><th>State and day</th>'
+                '<th class="act">Actions</th></tr></thead><tbody>%s</tbody></table></div>' % "".join(out))
 
     def desk(self, db, query):
         rows = self.requests(db, "r.state in ('open', 'in progress')")
@@ -587,7 +593,7 @@ class App:
         form = ("<h2>Record a new request for %s</h2>%s" % (e(place_name(row)), self.request_form(db, "/requests", place=row)) if row["active"]
                 else '<p class="off">This place is inactive and takes no new request. It is made active again on its Edit page.</p>')
         return place_name(row), (
-            '<p class="count">%s%s. <a href="/places/%d/edit">Edit</a> · <a href="/requests?place_id=%d">All %d of its requests</a></p>'
+            '<p class="count">%s%s. <a href="/places/%d/edit">Edit</a> · <a href="/requests?place_id=%d">Every request of this place (%d)</a></p>'
             '<h2>Open here now</h2>%s%s'
             % ("Apartment" if row["kind"] == "apartment" else "Common area", "" if row["floor"] is None else ", floor %d" % row["floor"],
                ident, ident, closed + len(mine), self.table(mine, "/places/%d" % ident, none="Nothing is open for this place."), form))

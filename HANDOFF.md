@@ -1,5 +1,30 @@
 # Handoff
 
+**Run 013 (2026-11-20) built the third product on its own branch: a
+maintenance request tracker for an apartment building.** `./check` passes
+with it: 50 lessons, 32 in force, 29 cases run; see
+`runs/013-maintenance-requests.md`.
+
+- The person answered one round of 16 questions with one typed word,
+  "Accepted". L1301 to L1309 come from those answers; the person has not
+  read their files, and has not used the tracker.
+- **A recorded mistake came back.** The buttons held in sight covered a
+  row's text at 800 px: L0042, which was labelled `school library` and so
+  not in force. It is now `web pages`, its case reads each product's
+  surface (`fits`), and it passes on the library's and the pet shop's
+  builds. The person has not seen that change.
+- Three general cases were widened for a `textarea` and for `select`s
+  (0014, 0015, 0035), and `caselib.js` reads `{today+20}`.
+- This branch has not been brought to the base. `./bring` is the way, and
+  it will name L0042, the four cases, `caselib.js` and two surfaces as
+  changed here.
+
+To use the tracker: `python3 product/maintenance.py --sample`, then open
+http://127.0.0.1:8000/. `--today 2026-12-20` shows it on another day.
+
+Owed to the person from this run, in its record: thirteen things decided
+by the builder, and what was not verified.
+
 **Run 011 (2026-11-20) made it possible for two runs to work at the same
 time from one base and both come back.** It built no product. `./check`
 passes on this tree, which is the base; see `runs/011-parallel.md`.
