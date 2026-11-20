@@ -22,6 +22,7 @@ the lessons and the cases are what lasts.
 | `caselib.py`, `caselib.js` | What the cases share: start the product, put a fault in front of it. |
 | `surface/` | One file per product: what a case under a general label may know about it. |
 | `check` | Proves the lessons, their files and their cases stay linked, and runs the cases in force. |
+| `bring` | Takes into this branch what another branch learned, by rule; the only way a run's lessons reach the base (L1102). |
 | `HANDOFF.md` | State of the work and how to resume. Read it second. |
 | `product/` | Whatever a run builds. May be deleted and rebuilt at any time. |
 | `product/LABELS` | What the product is: the labels it chose, one per line. No product, no labels. |
@@ -38,7 +39,10 @@ the lessons and the cases are what lasts.
 - **When something is learned, it becomes a lesson before the work goes on.**
   Learned means: the person decides or corrects something, a defect is found,
   or an approach is tried and rejected. Write `lessons/NNNN-slug.md` and add
-  its line: below if it is `always`, in `LESSONS.md` if not.
+  its line: below if it is `always`, in `LESSONS.md` if not. Its number is
+  the run's and its place in it (L1101): the text at your start says the
+  next one, and so does `./check --next`. The run's record,
+  `runs/NNN-slug.md`, is begun with its first lesson.
 - **A lesson line is its number, its labels and its sentence**, and nothing
   its number gives: no link to its file or its cases (L0039). The labels are
   in square brackets after the number: `always`, or one or more plain labels
@@ -55,6 +59,9 @@ the lessons and the cases are what lasts.
 - **Run `./check` before saying the work is done**, and report its summary
   line. It runs each case once, in a copy of the tree without the product's
   source (L0038); a case run by hand is run from the repository root.
+- **Nothing is copied or merged by hand between branches** (L1102).
+  `./bring OTHER` takes in what another branch learned and says what it
+  refuses; `HANDOFF.md` has the steps.
 - **Keep this file short.** One line per lesson. Reasons live in `lessons/`.
 
 ## Lessons

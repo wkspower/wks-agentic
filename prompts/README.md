@@ -28,7 +28,8 @@ Add `runs/NNN-slug.md` on the run's branch with:
 
 Lessons a run produces are merged back into `lessons-and-cases` only by the
 person, after reading them. That merge is what lets the next run start from
-them.
+them. Since run 011 it is made with `./bring` and by no other means (L1102);
+`HANDOFF.md` has the steps, also for two runs at the same time.
 
 ## Comparing
 

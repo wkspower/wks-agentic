@@ -187,6 +187,10 @@ def both_orders(work):
         if os.path.exists(os.path.join(repo, "product")):
             fail("a product arrived on the base")
         checked(repo, 6)
+        tried = run(repo, "./bring", "--try", A)
+        if tried.returncode != 0 or "product: web pages" not in tried.stdout or state(repo)[1] or len(git(repo, "worktree", "list").splitlines()) != 1:
+            fail("./bring --try %s does not run the base's check with that branch's product and leave nothing: %s"
+                 % (A, (tried.stdout + tried.stderr).strip()[-300:]))
         if not results and ("L1202 and L1301" not in said.stdout or "L1201 and L1302" not in said.stdout):
             fail("lessons the two branches added under one label are not named to be read together: %s" % said.stdout.strip()[:300])
         results.append((read(repo, "CLAUDE.md"), read(repo, "LESSONS.md"), sorted(git(repo, "ls-files").split())))
@@ -317,6 +321,6 @@ finally:
     shutil.rmtree(work, ignore_errors=True)
 print("two branches from one base, 4 lessons with their cases between them, where a plain git merge stops at %d files: "
       "both brought by ./bring in either order to the same %d files, no number changed, every added file byte for byte, "
-      "no product, ./check passing with 6 lessons; the lessons both added under one label named to be read together; a helper both changed refused on the base, merged on the branch with "
+      "no product, ./check passing with 6 lessons; the lessons both added under one label named to be read together; the base's check run with a branch's product by --try, nothing kept; a helper both changed refused on the base, merged on the branch with "
       "its product and then brought; a branch begun with no history brought from its first commit, and refused when that is no tree the base had until --from names it; a tree copied over the base refused by --verify, naming L1201; %d of %d other wrong "
       "situations refused, each named, the base left as it was" % (conflicts, files, len(WRONG), len(WRONG)))

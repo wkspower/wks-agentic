@@ -14,6 +14,13 @@ a person to settle, every time, although nothing in them disagrees.
 three trees (this one, `OTHER`, and the commit where they parted) and works
 by what each file is, not by its text alone:
 
+Where they parted is the common commit git knows. A rebuild is started from
+a first commit with no history, so that no earlier build can be read, and
+then git knows none: the pet shop's and the library's branches share no
+commit with the base. For such a branch the fork is its first commit, when
+that holds a tree the other side once had; when it does not, the operation
+refuses until `--from COMMIT` says where they parted.
+
 | What | How it is brought |
 |---|---|
 | `product/` | Never. A product stays on its branch. |
@@ -58,8 +65,14 @@ A change to what products share reaches a product only when its branch
 takes the base in. Nobody is made to do that: run 006 made eight cases
 general and the pet shop's branch was left as it was. `./bring` says, after
 bringing, which of the things it brought reach other products.
-`./bring --try BRANCH` takes this tree into a scratch copy of that branch,
-runs its check with its product, prints what it says and keeps nothing. Who
+`./bring --try BRANCH` runs this tree's check with that branch's product in
+a scratch copy, prints what it says and keeps nothing. It was first written
+as a merge into the product's branch, and the pet shop's branch (run 005)
+showed why not: it is five runs behind, its lesson lines are in an older
+form, and the merge refused 35 things before any case ran. Whether a product
+meets the base does not depend on how old its branch's scaffold is. On
+2026-11-20 both real products met this base: the pet shop's build of run 005
+with 29 cases in 59 s, the library's of run 010 with 28 in 84 s. Who
 runs it and when is in `HANDOFF.md`; that a product then gets changed to
 meet a new general lesson is a decision, not part of the operation.
 
@@ -86,8 +99,10 @@ It needs to be adaptable and scalable. Different product experiences
 contribute with the process improvement. And the process enforces common
 practices", and "Yes" to two products built at the same time and merged
 back. The operation, its rules, the two directions and what it refuses are
-this run's (011). The case plants the situation in scratch repositories; no
-two real runs have been brought with it yet. The person has not seen this
+this run's (011). That branches begun with no history exist is from the
+repository itself: `./bring --try run/010-library-rebuild` stopped at
+"merge-base" on its first real use. The case plants the situation in
+scratch repositories; no two real runs have been brought with it yet. The person has not seen this
 lesson.
 
 ## What would be a regression

@@ -1,5 +1,31 @@
 # Handoff
 
+**Run 011 (2026-11-20) made it possible for two runs to work at the same
+time from one base and both come back.** It built no product. `./check`
+passes on this tree, which is the base; see `runs/011-parallel.md`.
+
+- **A lesson's number is its run and its place in it** (L1101): L1203 is
+  the third lesson of run 12. L0001 to L0042 keep their numbers and that
+  sequence is closed. A run's number is in the name of its branch,
+  `run/NNN-slug`; the text a session has at its start says the next lesson
+  number, and so does `./check --next`. A run's record is begun with its
+  first lesson, and the check refuses a lesson whose run has none.
+- **What a run learned comes back through `./bring`** (L1102), never by
+  copying a tree and never by a plain `git merge`. The steps are below, under
+  "How two products start at the same time" and "How a run comes back to
+  the base".
+- **The products are on their own branches and share no history with the
+  base**: the pet shop on `run/005-labels`, the school library on
+  `run/010-library-rebuild`. `./bring --try BRANCH` runs this tree's check
+  with a branch's product and keeps nothing. On 2026-11-20 both met this
+  base: 29 cases with the pet shop, 28 with the library.
+
+The person has not seen run 011, L1101, L1102 or what the builder decided
+(19 things, listed in the run record). The instruction came as an automated
+notice written by the coordinating session; the person's own words in it
+are quoted in the run record. No two real runs have been brought with
+`./bring` yet: the case plants the situation in scratch repositories.
+
 **Run 010 (2026-11-20) rebuilt the school library from its lessons and cases
 alone.** `./check` passes: 39 lessons, 29 in force, 26 cases run; see
 `runs/010-library-rebuild.md`.
@@ -186,17 +212,81 @@ Not to be changed and not to be asked about until they bring it up:
 1. Read `CLAUDE.md` and the lessons the hook put in front of you, then
    this file.
 2. Run `./check`. If it fails, that is the first thing to fix.
-3. To test a prompt, follow `prompts/README.md`.
+3. To test a prompt, follow `prompts/README.md`. To start runs, and to bring
+   one back, follow the two sections below; do neither by hand.
 4. To use the product on this branch, see the top of this file. The pet
    shop is on `run/005-labels`: `python3 product/petshop.py --sample`. The
    cases need Python 3 and Node with Playwright.
+
+## How two products start at the same time
+
+Done by whoever starts the runs, in a checkout of the base with nothing
+uncommitted. Nothing here is told to the sessions about each other.
+
+1. `git fetch origin`, so that every branch anyone pushed is seen.
+2. `./bring --begin SLUG-ONE SLUG-TWO`. It makes `run/NNN-SLUG-ONE` and
+   `run/MMM-SLUG-TWO` from this commit, with the next run numbers that no
+   record in `runs/` and no branch it can see has taken, and prints them.
+3. `git push -u origin run/NNN-SLUG-ONE run/MMM-SLUG-TWO`, at once: a
+   number is taken when its branch is where others can see it.
+4. Start one session on each branch and give it its prompt. Each follows
+   "How a new product starts from the base" below. It is given its next
+   lesson number at its start (L1101) and begins `runs/NNN-slug.md` with
+   its first lesson.
+5. A run is finished when `./check` passes on its branch with its product
+   and its record is written.
+
+A run that must not be able to read earlier builds (a rebuild) is started
+with no history instead of step 2: `git checkout --orphan run/NNN-slug` in a
+checkout of the base, then one commit of the tree exactly as it is, before
+anything else. Take NNN as step 2 would give it. `./bring` later finds
+where the branch parted by that first commit.
+
+## How a run comes back to the base
+
+One run at a time, in a checkout of the base with nothing uncommitted. The
+order of the runs does not change the lessons the base ends with.
+
+1. `git fetch origin`, then `./bring origin/run/NNN-slug`.
+2. **If it says REFUSED, nothing was changed.** Each line says why:
+   - *a number, or a path, taken by two*: two runs had the same run number,
+     or a session took a number that was not its own. The run that is not
+     yet on the base renumbers on its own branch (line, lesson file, case,
+     run record), and step 1 is done again. Nothing outside that branch
+     cites the number yet.
+   - *changed here and on the branch since they parted*: the base cannot
+     prove a merge of two changes, having no product. Check the branch out,
+     run `./bring origin/BASE` there, settle what it names (text left
+     marked; a lesson line written twice, of which one is removed), see
+     `./check` pass there with the product, `git commit`, `git push`. Then
+     step 1 again: the branch now holds all the base has, and nothing is
+     changed on both sides.
+   - *the two share no history*: add `--from COMMIT`, the commit that holds
+     the tree the branch was started from.
+3. **If it says brought**, it has run `./check` and printed its summary
+   line and committed nothing. Read what it names: lessons "to be read
+   together" came from the two sides under one label and may say the same
+   thing or contradict each other, and nothing was decided about them. A
+   lesson that should go, change or be folded into another is changed as any
+   lesson is, on evidence, with its Source saying so.
+4. `git commit` (the message is written, and lists what was named), then
+   `git push`.
+5. For each product branch named at the top of this file, and the branch
+   just brought: `./bring --try BRANCH`. It says whether that product meets
+   the base as it now is. If one does not, that goes to the person: the
+   operation changes no product.
+6. `git merge --abort` at any point before the commit puts everything back.
+
+To check a merge someone made another way: `./bring --verify OURS THEIRS`
+says whether the tree is what the rules give for those two commits.
 
 ## How a new product starts from the base
 
 The base is this branch without `product/`. Nothing else is removed: the
 pet shop's lessons and cases stay in it, not in force.
 
-1. Make a branch from the base and run `./check`. It passes with only
+1. Work on the run's branch, `run/NNN-slug`, made from the base as the
+   section above says, and run `./check`. It passes with only
    `always` in force. Every label that exists and the lessons it brings
    were put in front of the session at its start (L0041).
 2. Ask the person everything foreseeable in one round (L0004). What the
@@ -216,6 +306,8 @@ pet shop's lessons and cases stay in it, not in force.
    product's own name for its business rules, an existing label when the
    lesson would hold for the pet shop too, `always` only for how the work
    is done. An `always` line goes in `CLAUDE.md`, every other in `LESSONS.md`.
+   Each takes the next number of the run (`./check --next`), and
+   `runs/NNN-slug.md` is begun with the first.
 
 For a rebuild test of the pet shop, delete everything in `product/` except
 `LABELS`.
@@ -235,6 +327,23 @@ For a rebuild test of the pet shop, delete everything in `product/` except
 
 ## Not yet decided
 
+- What gives way when the base's start text passes 10,000 characters. Run
+  011 measured: 4,600 today for 25 lessons that are not `always`, room for
+  about 59 at today's mean of 156 characters a line, so for three more
+  products of the size of the two there are, and not for a fourth. Proposed
+  and not done, because it changes the case of L0041: with no product, a
+  label that is a product's own name (it has a file in `surface/`) is printed
+  with its count only, as it is when a product is in the tree. That takes
+  today's text to about 1,650 and leaves it growing only with general
+  lessons.
+- Who runs `./bring --try` for the products on other branches, and what
+  happens when one fails. Today: whoever brings a run, for every product
+  named at the top of this file, and a failure goes to the person.
+- Where the list of products and their branches should live so that a
+  machine reads it. Today it is prose at the top of this file.
+- Run 100: a lesson number holds runs 01 to 99.
+- Whether the base should take a file both sides changed when git merges
+  it without conflict. Today it never does (L1102).
 - Whether the pet shop's branch takes the general cases and its surface.
   They pass on its build; the branch was not touched.
 - Whether the cases under `web pages` may go on requiring a scrolling box
@@ -279,4 +388,5 @@ Each run adds a file under `runs/` and a line here.
 - [008 growth](runs/008-growth.md), 2026-11-20: no questions, no prompt, scaffold only; 3 lessons added (all with a case, case first), 3 amended; the check from 87 s to 41 s, `CLAUDE.md` from 11.9 KB to 5.6 KB, the sizes printed on every run; 1 defect found in the run's own case by its control.
 - [009 loading](runs/009-loading.md), 2026-11-20: no questions, no prompt, scaffold only; 1 lesson added (with a case, case first), 2 amended; the lessons in force reach a session through a SessionStart hook and no command it is told to run; an included file tried on paper and rejected; three real headless starts seen.
 - [006 school library](runs/006-school-library.md), 2026-11-20: 1 round of 14 questions, 9 lessons added (8 with a case), the second product; 8 cases made general and kept passing on the pet shop; 1 defect found in the scaffold and 1 in the product by hand.
+- [011 parallel](runs/011-parallel.md), 2026-11-20: no questions, no prompt, scaffold only; 2 lessons added (both with a case, case first), numbered L1101 and L1102 by the new rule; `./bring` brings two branches from one base back in either order; 1 defect found by using it on the real branches, which share no history with the base; both real products tried against the base and passing.
 - [010 library rebuild](runs/010-library-rebuild.md), 2026-11-20: no questions; the library rebuilt with no history, every inherited case passing on its first run, none changed; 1 lesson added (with a case, case first), from a defect found by reading screenshots.
