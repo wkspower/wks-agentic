@@ -71,9 +71,17 @@ def learn(repo, number, labels, slug):
     return home, line
 
 
-def branch(repo, name, lessons, spoil=None):
-    """A run on its own branch from the base: its lessons, a surface, a record, the handoff, a product."""
-    git(repo, "checkout", "-q", "-b", name, "base")
+def branch(repo, name, lessons, spoil=None, history=True):
+    """A run on its own branch from the base: its lessons, a surface, a record, the handoff, a product.
+
+    With no history, the branch begins at a first commit of its own that holds the base's tree, as runs 004 and 010 did."""
+    if history:
+        git(repo, "checkout", "-q", "-b", name, "base")
+    else:
+        git(repo, "checkout", "-q", "--orphan", name, "base")
+        if history is None:  # and that first commit is not the base as it ever was
+            write(repo, "caselib.py", HELPER + "# changed before the first commit\n")
+        commit(repo, "the base, with no history")
     run_number, slug = name[4:7], name[8:]
     lines = [learn(repo, number, labels, slug) for number, labels in lessons]
     write(repo, "surface/%s.json" % slug, '{"label": "%s"}\n' % slug)
@@ -90,7 +98,7 @@ def branch(repo, name, lessons, spoil=None):
 
 
 def plant(work, name, a=None, b=None, a_lessons=(("1201", "web pages"), ("1202", "always")), b_lessons=(("1301", "always"), ("1302", "web pages")),
-          b_name=B):
+          b_name=B, history=True):
     repo = os.path.join(work, name)
     if subprocess.run(["./check", "--plant", repo]).returncode != 0:
         fail("./check --plant could not write the small right tree")
@@ -102,7 +110,7 @@ def plant(work, name, a=None, b=None, a_lessons=(("1201", "web pages"), ("1202",
     write(repo, "runs/001-first.md", "# Run 001\n")
     git(repo, "init", "-q", "-b", "base")
     commit(repo, "the base")
-    lines = branch(repo, A, a_lessons, a) + branch(repo, b_name, b_lessons, b)
+    lines = branch(repo, A, a_lessons, a) + branch(repo, b_name, b_lessons, b, history)
     return repo, lines
 
 
@@ -110,10 +118,10 @@ def state(repo):
     return git(repo, "rev-parse", "HEAD"), git(repo, "status", "--porcelain"), os.path.exists(os.path.join(repo, ".git", "MERGE_HEAD"))
 
 
-def bring(repo, other, expect=True):
+def bring(repo, other, expect=True, *more):
     """Run the operation as the handoff says. Brought: commit it. Refused: the tree must be as it was."""
     before = state(repo)
-    done = run(repo, "./bring", other)
+    done = run(repo, "./bring", other, *more)
     if expect and done.returncode != 0:
         fail("./bring %s on %s is refused: %s" % (other, git(repo, "rev-parse", "--abbrev-ref", "HEAD"),
                                                  (done.stdout + done.stderr).strip()[-400:]))
@@ -212,6 +220,27 @@ def shared_by_both(work):
     checked(repo, 6)
 
 
+def no_history(work):
+    """A rebuild starts from a first commit with no history, so git knows no commit where it parted from the base."""
+    repo, lines = plant(work, "no-history", history=False)
+    bring(repo, A)
+    bring(repo, B)
+    held(repo, B, lines[2:])
+    held(repo, A, lines[:2])
+    checked(repo, 6)
+    repo, lines = plant(work, "no-history-moved", history=None)
+    bring(repo, A)
+    refused = bring(repo, B, False)
+    if refused.returncode == 0:
+        fail("wrong variant ACCEPTED: a branch with no history whose first commit is no tree the base ever had, brought "
+             "with nobody saying where they parted")
+    if "--from" not in refused.stdout:
+        fail("a branch with no common history was refused without saying how to name where they parted")
+    bring(repo, B, True, "--from", git(repo, "rev-list", "--max-parents=0", B))
+    held(repo, A, lines[:2])
+    checked(repo, 6)
+
+
 def copied_over(work):
     """What the coordinating session did by hand after runs 005, 007 and 010, now with two branches."""
     repo, _ = plant(work, "copied")
@@ -269,6 +298,7 @@ work = tempfile.mkdtemp()
 try:
     conflicts, files = both_orders(work)
     shared_by_both(work)
+    no_history(work)
     copied_over(work)
     for count, (name, (planted, which, word)) in enumerate(WRONG.items()):
         repo, _ = plant(work, "wrong-%d" % count, **planted)
@@ -288,5 +318,5 @@ finally:
 print("two branches from one base, 4 lessons with their cases between them, where a plain git merge stops at %d files: "
       "both brought by ./bring in either order to the same %d files, no number changed, every added file byte for byte, "
       "no product, ./check passing with 6 lessons; the lessons both added under one label named to be read together; a helper both changed refused on the base, merged on the branch with "
-      "its product and then brought; a tree copied over the base refused by --verify, naming L1201; %d of %d other wrong "
+      "its product and then brought; a branch begun with no history brought from its first commit, and refused when that is no tree the base had until --from names it; a tree copied over the base refused by --verify, naming L1201; %d of %d other wrong "
       "situations refused, each named, the base left as it was" % (conflicts, files, len(WRONG), len(WRONG)))
