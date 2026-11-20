@@ -2,6 +2,10 @@
 """check: every lesson has its reason and says when it applies, and every lesson
 in force that a machine can check has a case that runs and passes.
 
+The cases never run in the tree itself. The check copies it, compiles the
+product in the copy, takes the product's source out of it, and runs every
+case in force once, there (L0019, L0038).
+
 A lesson carries one or more labels. The product says what it is in
 product/LABELS, one label per line. A lesson is in force when it carries
 `always` or a label the product declared. Only cases of lessons in force run.
@@ -11,12 +15,14 @@ Usage: ./check [TREE]       check a tree (default: the one this file is in)
        ./check --selftest   run the check against wrong trees it must refuse
        ./check --plant DIR  write the small right tree of the selftest to DIR, for a case to spoil
 """
+import compileall
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 LINE = re.compile(r"^- \*\*(L\d{4})\*\* \[([^\]]*)\] (.+?) \[why\]\((lessons/[^)]+)\) · "
                   r"(?:cases?: (.+)|prose: (.*))$")
@@ -91,8 +97,38 @@ def declared(tree, carried, problems):
     return labels
 
 
+SKIPPED = shutil.ignore_patterns(".git", "__pycache__", "node_modules", "*.db*")
+
+
+def without_source(tree, work, problems):
+    """Copy the tree to where its cases will run: product/ there holds bytecode and no source.
+
+    Returns the copy, how many source files were compiled and removed, and what else is in product/."""
+    copy = os.path.join(work, "tree")
+    shutil.copytree(tree, copy, ignore=SKIPPED)
+    product = os.path.join(copy, "product")
+    compiled, kept = 0, []
+    if os.path.isdir(product):
+        compileall.compile_dir(product, legacy=True, quiet=2)
+    for base, _, names in os.walk(product):
+        for name in sorted(names):
+            path = os.path.join(base, name)
+            if not name.endswith(".py"):
+                if not name.endswith(".pyc") and os.path.relpath(path, copy) != DECLARED:
+                    kept.append(os.path.relpath(path, copy))
+                continue
+            os.remove(path)
+            if os.path.exists(path + "c"):
+                compiled += 1
+            else:
+                problems.append("%s could not be compiled, so no case can run it without its source"
+                                % os.path.relpath(path, copy))
+    return copy, compiled, kept
+
+
 def run_case(tree, lesson, case_file, problems):
     path = os.path.join(tree, case_file)
+    started = time.time()
     try:
         done = subprocess.run([path], cwd=tree, capture_output=True, text=True, timeout=300)
     except subprocess.TimeoutExpired:
@@ -105,7 +141,7 @@ def run_case(tree, lesson, case_file, problems):
     elif not said:
         problems.append("%s: %s passed without printing what it measured" % (lesson, case_file))
     else:
-        print("  %s %s: %s" % (lesson, case_file, said[-1]))
+        print("  %s %s: %s (%.1f s)" % (lesson, case_file, said[-1], time.time() - started))
 
 
 def check(tree, only_list=False):
@@ -122,6 +158,16 @@ def check(tree, only_list=False):
             if on & set(labels):
                 print("\n".join(cases), end="\n" if cases else "")
         return not problems
+    started = time.time()
+    work = tempfile.mkdtemp()
+    try:
+        return examine(tree, lines, carried, chosen, on, problems, work, started)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def examine(tree, lines, carried, chosen, on, problems, work, started):
+    copy, compiled, kept = without_source(tree, work, problems)
     listed = {"lessons": set(), "cases": {}}
     ran = not_run = prose = 0
     off = []
@@ -151,7 +197,7 @@ def check(tree, only_list=False):
                 problems.append("%s: %s is missing or not executable" % (lesson, case_file))
             elif in_force:
                 ran += 1
-                run_case(tree, lesson, case_file, problems)
+                run_case(copy, lesson, case_file, problems)
             else:
                 not_run += 1
     for folder, names in listed.items():
@@ -165,10 +211,13 @@ def check(tree, only_list=False):
         print("  label '%s': %s, %d lessons" % (word, "on" if word in on else "off", len(carried[word])))
     for lesson in off:
         print("  not in force: %s" % lesson)
+    print("  the cases ran in a copy of the tree: %d source files of the product compiled and taken out of it%s"
+          % (compiled, "; left in product/ as they are: " + ", ".join(kept) if kept else ""))
     print("lessons %d · in force %d · not in force %d · with a case %d · prose only %d · "
-          "cases run %d · cases not run %d · product: %s · CLAUDE.md %d bytes"
+          "cases run %d · cases not run %d · product: %s · CLAUDE.md %d bytes · %d s"
           % (len(lines), len(lines) - len(off), len(off), len(lines) - prose, prose, ran, not_run,
-             ", ".join(chosen) or "none", len(read(os.path.join(tree, "CLAUDE.md")).encode("utf-8"))))
+             ", ".join(chosen) or "none", len(read(os.path.join(tree, "CLAUDE.md")).encode("utf-8")),
+             round(time.time() - started)))
     for problem in problems:
         print("FAIL " + problem)
     return not problems

@@ -16,7 +16,7 @@ head='#!/bin/sh
 for tree in reads runs; do
   ./check --plant "$t/$tree" >/dev/null 2>&1 || { echo "./check --plant did not plant a tree"; exit 1; }
 done
-printf '%s\necho "$(wc -c < product/app.py) characters of the product read"\n' "$head" > "$t/reads/cases/0002-x"
+printf '%s\nread=$(wc -c < product/app.py) || exit 1\necho "$read characters of the product read"\n' "$head" > "$t/reads/cases/0002-x"
 printf '%s\npython3 product/app.pyc\n' "$head" > "$t/runs/cases/0002-x"
 reads=refused; runs=accepted
 out=$(./check "$t/reads" 2>&1) && reads=ACCEPTED

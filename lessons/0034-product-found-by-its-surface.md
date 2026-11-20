@@ -26,5 +26,6 @@ Accepted by the person on 2026-11-20 with one "ok", from a one-line summary of t
 ## What would be a regression
 A program name of some product in `caselib.py` or `caselib.js`; a case that
 starts a product without having asked for its surface; `product()` choosing
-one when `product/LABELS` names none or two; or the case of L0019 running
-the cases while a product's source is in its scratch tree.
+one when `product/LABELS` names none or two; or the cases running while a
+product's source is in the tree they run in (since run 008 that tree is the
+copy `./check` makes, L0038).

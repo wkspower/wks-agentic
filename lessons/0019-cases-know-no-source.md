@@ -48,10 +48,19 @@ its source away, because it looked for the first product's file by name.
 It now finds the product through `product/LABELS` and stops if any source
 is left in its scratch tree (L0034).
 
+Run 008, 2026-11-20, on the coordinating session's instruction: the case no
+longer runs the other cases a second time. `./check` runs every case in a
+copy of the tree that has no product source to begin with (L0038), so the
+ordinary run is the proof, and this case keeps the two planted cases.
+
 ## What would be a regression
 A case that opens a file under `product/` as text, copies it, or changes it;
 a wrong variant given as text to find and replace; a wrong variant counted
-as refused when its fault never acted. The case runs every other case in a
-tree whose `product/` holds compiled bytecode and no source. It does not
-catch a case that reaches the source some other way than through the tree
-it runs in.
+as refused when its fault never acted. `./check` runs every case in a copy
+of the tree whose `product/` holds compiled bytecode and no source, and fails
+if a source file could not be compiled. The case puts two planted trees
+through `./check`, one whose case reads a product's source and one whose
+case only runs the product, and looks for source in the tree it is itself
+run in. It does not catch a case that reaches the source some other way than
+through the tree it runs in, and a product not written in Python would keep
+its source: `./check` names what it left in `product/`.

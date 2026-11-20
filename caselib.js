@@ -40,7 +40,9 @@ const surface = product();
 exports.surface = surface;
 
 // The command line, as in caselib.py: no site-packages, and SHOP names another build.
-const COMMAND = ['-S', '-E', '-s', process.env.SHOP || surface.main];
+// ./check runs the cases where the product is bytecode with no source (L0019, L0038).
+const main = !fs.existsSync(surface.main) && fs.existsSync(surface.main + 'c') ? surface.main + 'c' : surface.main;
+const COMMAND = ['-S', '-E', '-s', process.env.SHOP || main];
 
 // A value in a surface file may say {today} for today's date and {80*W} for a letter repeated.
 const value = (text) => String(text).replace(/\{today\}/g, new Date().toLocaleDateString('en-CA'))
