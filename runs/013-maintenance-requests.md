@@ -164,3 +164,114 @@ two; "Every request of this place (2)" for "All 2 of its requests".
 - Printing a worker's list. A way to tell a contractor other than reading it to them.
 - A request cannot be split or merged with another.
 - No statistics: how long requests take, which place reports most.
+
+# The same run, later the same day: taking in the base that held run 012
+
+The instruction came as an automated notice written by the coordinating session. The person said
+nothing about this step; their last words on the matter, as that notice quotes them, were "Yes" to
+building two products at the same time and bringing both back. Nothing here was seen by the person.
+
+Run 012 (a school canteen) was built at the same time from the same base. Neither run knew of the
+other. Run 012 was brought to the base first. `./bring origin/run/013-maintenance-requests` there
+was then refused, as L1102 says: L0042's case and file and the surfaces of the pet shop and the
+library had been changed on both sides. Both runs had read the same defect in a screenshot of their
+own product at 800 px and made L0042 general, each in its own way. This step is the way out the
+handoff gives: the base taken in here, where a product can prove the result.
+
+The session had the text "Lessons at the start of this session" before its first action, but from
+a checkout four commits behind the pushed branch: it said "No product in this tree" and L1301 as
+the next lesson. After `git pull --ff-only`, `./check --start` said the tracker's labels and L1310.
+
+## What `./bring origin/lessons-and-cases` did
+
+27 files changed, L1201 to L1209 brought, in half a second. Taken whole from the base, and left as
+the base has them: the canteen's eight cases, nine lesson files, surface and record,
+`cases/0008-money-and-bounds`, `lessons/0008-money-and-bounds.md`. Named as reaching other
+products: L1209 [local web server] and the case of L0008. The tracker met L1209's case for the
+first time here and passed it (5 checks, 1 wrong variant refused); it does not declare `money`.
+
+Left marked, four files, and how each was settled:
+
+| Marked | The two sides | Settled as |
+|---|---|---|
+| `cases/0042-nothing-under-the-buttons` | Run 012 read `surface.under` (`posts`, `pages`, `cells`, `held`, `needs`) and put `{later}` into a restart itself. Run 013 read `surface.fits` (the same, with `shows` for `needs`), said in words when a surface has no such part, and left the day to `caselib.js` (`{today+20}`). What is measured was the same code on both sides. | One design: run 012's names. From run 013: the words for a surface without the part, `{today+20}`, and the wrong variant that names `td:last-child` and no class (git had merged that line without a mark). |
+| `lessons/0042-nothing-under-the-buttons.md` | Each run's paragraph in the Source, each run's regression. | Both histories, as one account of two runs meeting the defect apart; what was kept of each case and why; one regression that names the three products. |
+| `surface/pet-shop.json` | The same twelve forms on both sides. Run 012: four pages, 60 cells, 15 held, and a voided sale and a sale to a customer must be on the list. Run 013: five pages (the desk too), 40 cells, 8 held, nothing required. | Run 012's numbers and its requirement, the stronger; the desk kept among the pages; `money` as run 012 added it; one form to a line. |
+| `surface/school-library.json` | The same fifteen forms, pages and numbers; `{later}` or `{today+20}`; the marker ended inside a list. | `under` with `needs`, `{today+20}`, one form to a line. |
+
+Why run 012's names: a surface's part is called by its case's own word (`actions`, `cards`,
+`back`; the case is "nothing under the buttons"); `shows` already means something else in a
+surface (`one.shows`); and the base and the canteen's branch already held them, so the only
+surface that had to follow was this run's own. Keeping `fits` would have meant changing the
+canteen's surface, which is another run's.
+
+Not marked and changed all the same: `surface/maintenance-requests.json` (`fits` to `under`,
+`shows` to `needs`), and this run's own part of `HANDOFF.md`, where `./bring` had also set run
+012's paragraph against this run's with no line between.
+
+`./check` then passed with the tracker, and the merge was committed (`27b78d2`).
+
+## L1310, learned doing it (case first)
+
+`./bring --verify HEAD^1 HEAD^2` said of the settled tree: "this tree is NOT what the rules give",
+naming the tracker's surface and 12 lines of the handoff. Both were this side's own, and no tree
+that makes the two designs one can leave them alone. The same words are said of a tree that undid
+what the other run learned, and a file left with its markers was not looked at. So nothing could
+say that what `./bring` took had not been undone, which the instruction asked.
+
+- `f6fd6a1` L1310 [always] and `cases/1310-a-settled-bring-is-verified`, failing: "refuses a
+  settling that changed the marked helper, this side's own surface and this side's own lines of
+  the handoff".
+- `8158059` `--verify` changed. The case passes: the right settling accepted and its two changes
+  named, 4 wrong settlings refused by name, 1 change refused where nothing was left to settle.
+  One wrong variant was accepted on the first run of the fix for a mistake in the case itself
+  (its planted marker was never written), and once for a mistake in the fix (a pattern).
+
+Put to the real merge, in a scratch checkout of `27b78d2` with the new `bring`:
+
+    this tree is what the rules give for HEAD^1 and HEAD^2, parted at 1e27509: 140 files compared, 4 left to the cases or a reader
+    left to the cases or a reader, and holding no marker: cases/0042-nothing-under-the-buttons, lessons/0042-nothing-under-the-buttons.md, surface/pet-shop.json, surface/school-library.json
+    changed in the settling besides, each this side's own (the other side had not changed it since they parted): HANDOFF.md (12 of this side's lines), bring, surface/maintenance-requests.json
+    Everything taken from the other side is as that side has it (L1310).
+
+(`bring` is in that list because the new one was copied there to run it.)
+
+Also seen and put right, with no lesson of its own because L0001 already says it: `--try` printed
+the commit the checkout was at when the check ended, not the one it had tried. A commit made here
+while a try ran gave "as of f6fd6a1" for a tree of 59 lessons, which is `27b78d2`. It now names
+the commit before the check starts. No case measures this.
+
+Added to the handoff, under "How a run comes back to the base": after a settling, `--verify`, then
+`--try` for every other product (it tries the last commit, so after the commit), then push.
+
+## The other three products against this tree (`./bring --try`)
+
+TRY_RESULTS
+
+## Check at the end
+
+CHECK_LINE
+
+`./check --selftest` was not run: the check was not changed.
+
+## Time and agents
+
+TIME_LINE No sub-agents.
+
+## Not verified, and decided by the session
+
+- The person has seen none of it: not the choice of `under`, not L1310, not the change to `bring`.
+- That the two runs agreed on a remedy for L0042 is two sessions of one model agreeing (L0003).
+  What is evidence is that each met the defect.
+- The wrong variant of L0042's case with `td:last-child` was run against four products and is
+  refused by each; that it stays the first build's fault on a product whose buttons are not the
+  last cell is not known.
+- `--verify` after a settling does not look at lesson lines differently: one changed in the
+  settling would be refused. None was, here.
+- A settling that is wrong and touches only what it may is not caught by `--verify`. The cases and
+  `--try` are what there is for that.
+- At the start of a session with no product the hook now prints 8,861 characters of the 10,000 a
+  session is given; the handoff's "Not yet decided" foresaw room for three more products and not a
+  fourth. With the canteen and the tracker both in, a fifth product's lessons will not fit.
+- Both runs' records call their product "the third". The canteen's was brought first.
+
