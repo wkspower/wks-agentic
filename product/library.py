@@ -36,8 +36,14 @@ CREATE TABLE IF NOT EXISTS borrowers (id INTEGER PRIMARY KEY AUTOINCREMENT, name
     active INTEGER NOT NULL CHECK (active IN (0, 1)));
 CREATE TABLE IF NOT EXISTS loans (id INTEGER PRIMARY KEY AUTOINCREMENT,
     copy_id INTEGER NOT NULL REFERENCES copies(id), borrower_id INTEGER NOT NULL REFERENCES borrowers(id),
-    lent TEXT NOT NULL, due TEXT NOT NULL, renewals INTEGER NOT NULL, returned TEXT);
-CREATE UNIQUE INDEX IF NOT EXISTS one_open_loan_per_copy ON loans(copy_id) WHERE returned IS NULL;
+    lent TEXT NOT NULL, due TEXT NOT NULL, renewals INTEGER NOT NULL, returned TEXT, lost TEXT,
+    CHECK (returned IS NULL OR lost IS NULL));
+"""
+# A loan is out until it has a day of return or a day it was lost (L0031). A file made before loans
+# could end as lost gets the column, and the rule of one loan out per copy in its new words.
+INDEXES = """
+DROP INDEX IF EXISTS one_open_loan_per_copy;
+CREATE UNIQUE INDEX IF NOT EXISTS one_loan_out_per_copy ON loans(copy_id) WHERE returned IS NULL AND lost IS NULL;
 CREATE INDEX IF NOT EXISTS loans_of_borrower ON loans(borrower_id);
 CREATE INDEX IF NOT EXISTS copies_of_title ON copies(title_id);
 """
@@ -170,6 +176,9 @@ class Library:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
+        if "lost" not in [column["name"] for column in self.db.execute("PRAGMA table_info(loans)")]:
+            self.db.execute("ALTER TABLE loans ADD COLUMN lost TEXT")
+        self.db.executescript(INDEXES)
         self.fixed_today = today
         self.lock = threading.Lock()
 
@@ -214,10 +223,13 @@ class Library:
     def mark_copy(self, ident, form):
         copy = self.row("copies", ident, "copy")
         status = choice(form, "status", STATUSES, "The status of a copy")
-        out = self.one("SELECT b.name FROM loans l JOIN borrowers b ON b.id = l.borrower_id "
-                       "WHERE l.copy_id = ? AND l.returned IS NULL", ident)
-        if out is not None:
-            raise Refused("Copy %d is on loan to %s. Return it first; then it can be marked %s." % (ident, out["name"], status))
+        out = self.one("SELECT l.id, b.name FROM loans l JOIN borrowers b ON b.id = l.borrower_id "
+                       "WHERE l.copy_id = ? AND l.returned IS NULL AND l.lost IS NULL", ident)
+        if out is not None and status == "lost":  # lost while it is out: the loan ends today, as lost (L0031)
+            self.db.execute("UPDATE loans SET lost = ? WHERE id = ?", (self.today(), out["id"]))
+        elif out is not None:
+            raise Refused("Copy %d is on loan to %s. Return it first; then it can be marked %s. "
+                          "If it will not come back, mark it lost." % (ident, out["name"], status))
         self.db.execute("UPDATE copies SET status = ? WHERE id = ?", (status, ident))
         return "/titles/%d" % copy["title_id"]
 
@@ -251,15 +263,15 @@ class Library:
         if copy["status"] != "available":
             raise Refused("Copy %d (%s) is marked %s and cannot be lent." % (copy["id"], copy["title"], copy["status"]))
         out = self.one("SELECT b.name FROM loans l JOIN borrowers b ON b.id = l.borrower_id "
-                       "WHERE l.copy_id = ? AND l.returned IS NULL", copy["id"])
+                       "WHERE l.copy_id = ? AND l.returned IS NULL AND l.lost IS NULL", copy["id"])
         if out is not None:
             raise Refused("Copy %d (%s) is already on loan to %s. Return it first if it has come back."
                           % (copy["id"], copy["title"], out["name"]))
-        held = self.one("SELECT COUNT(*) AS n FROM loans WHERE borrower_id = ? AND returned IS NULL", who["id"])["n"]
+        held = self.one("SELECT COUNT(*) AS n FROM loans WHERE borrower_id = ? AND returned IS NULL AND lost IS NULL", who["id"])["n"]
         if held >= LIMIT[who["kind"]]:
             raise Refused("%s already has %d books out; the limit for %s is %d."
                           % (who["name"], held, "a pupil" if who["kind"] == "pupil" else "staff", LIMIT[who["kind"]]))
-        self.db.execute("INSERT INTO loans (copy_id, borrower_id, lent, due, renewals, returned) VALUES (?, ?, ?, ?, 0, NULL)",
+        self.db.execute("INSERT INTO loans (copy_id, borrower_id, lent, due, renewals) VALUES (?, ?, ?, ?, 0)",
                         (copy["id"], who["id"], self.today(), self.after(LOAN_DAYS)))
         return "/borrowers/%d" % who["id"]
 
@@ -267,6 +279,9 @@ class Library:
         loan = self.row("loans", ident, "loan")
         if loan["returned"] is not None:
             raise Refused("Copy %d was already returned on %s." % (loan["copy_id"], loan["returned"]))
+        if loan["lost"] is not None:
+            raise Refused("Copy %d was marked lost on %s, which ended this loan. If the book has turned up, "
+                          "mark the copy available on the page of its title." % (loan["copy_id"], loan["lost"]))
         self.db.execute("UPDATE loans SET returned = ? WHERE id = ?", (self.today(), ident))
         return "/loans"
 
@@ -274,6 +289,8 @@ class Library:
         loan = self.row("loans", ident, "loan")
         if loan["returned"] is not None:
             raise Refused("Copy %d was returned on %s; lend it again instead." % (loan["copy_id"], loan["returned"]))
+        if loan["lost"] is not None:
+            raise Refused("Copy %d was marked lost on %s, which ended this loan." % (loan["copy_id"], loan["lost"]))
         if loan["renewals"] >= RENEWALS:
             raise Refused("This loan has been renewed twice, which is the most. Return the book and lend it again "
                           "if nobody else is waiting for it.")
@@ -283,7 +300,7 @@ class Library:
     # -- everything, for /export.json --
 
     def export(self):
-        out = {loan["copy_id"] for loan in self.all("SELECT copy_id FROM loans WHERE returned IS NULL")}
+        out = {loan["copy_id"] for loan in self.all("SELECT copy_id FROM loans WHERE returned IS NULL AND lost IS NULL")}
         return {
             "today": self.today(),
             "titles": [dict(row) for row in self.all("SELECT * FROM titles ORDER BY id")],
@@ -435,8 +452,8 @@ class Pages:
 
     def desk(self, query):
         lib = self.lib
-        out_now = lib.one("SELECT COUNT(*) AS n FROM loans WHERE returned IS NULL")["n"]
-        late = lib.one("SELECT COUNT(*) AS n FROM loans WHERE returned IS NULL AND due < ?", lib.today())["n"]
+        out_now = lib.one("SELECT COUNT(*) AS n FROM loans WHERE returned IS NULL AND lost IS NULL")["n"]
+        late = lib.one("SELECT COUNT(*) AS n FROM loans WHERE returned IS NULL AND lost IS NULL AND due < ?", lib.today())["n"]
         return "Desk", (
             "<h1>Library desk</h1>"
             '<p>Today is %s. <a href="/loans">%d book%s out</a>, <a href="/overdue">%d overdue</a>.</p>'
@@ -456,7 +473,7 @@ class Pages:
         total = lib.one("SELECT COUNT(*) AS n FROM titles " + where, *values)["n"]
         found = lib.all("SELECT t.*, (SELECT COUNT(*) FROM copies c WHERE c.title_id = t.id) AS copies, "
                         "(SELECT COUNT(*) FROM copies c WHERE c.title_id = t.id AND c.status = 'available' AND NOT EXISTS "
-                        "(SELECT 1 FROM loans l WHERE l.copy_id = c.id AND l.returned IS NULL)) AS free "
+                        "(SELECT 1 FROM loans l WHERE l.copy_id = c.id AND l.returned IS NULL AND l.lost IS NULL)) AS free "
                         "FROM titles t %s ORDER BY title COLLATE NOCASE, id LIMIT %d" % (where, SHOWN), *values)
         rows = [("", [("", e(row["title"])), ("", e(row["author"])), ("num", e(row["isbn"])), ("tag", e(row["shelf"])),
                       ("num", "%d of %d" % (row["free"], row["copies"])),
@@ -472,13 +489,15 @@ class Pages:
         lib = self.lib
         row = lib.row("titles", ident, "title")
         copies = lib.all("SELECT c.*, l.id AS loan, l.due, l.renewals, l.borrower_id, b.name FROM copies c "
-                         "LEFT JOIN loans l ON l.copy_id = c.id AND l.returned IS NULL "
+                         "LEFT JOIN loans l ON l.copy_id = c.id AND l.returned IS NULL AND l.lost IS NULL "
                          "LEFT JOIN borrowers b ON b.id = l.borrower_id WHERE c.title_id = ? ORDER BY c.id", ident)
         rows = []
         for copy in copies:
             if copy["loan"] is not None:
                 status, who, due = "on loan", e(copy["name"]), self.due(copy)
-                acts = '<a href="/borrowers/%d">Borrower</a>' % copy["borrower_id"]
+                acts = ('<a href="/borrowers/%d">Borrower</a>' % copy["borrower_id"]
+                        + '<form method="post" action="/copies/%d/status"><input type="hidden" name="status" value="lost">'
+                          '<button type="submit">Mark lost</button></form>' % copy["id"])
             else:
                 status, who, due = copy["status"], "", ""
                 acts = "".join(
@@ -510,8 +529,8 @@ class Pages:
         if typed:
             where, values = "WHERE name LIKE ? ESCAPE '\\' OR class LIKE ? ESCAPE '\\'", [like(typed)] * 2
         total = lib.one("SELECT COUNT(*) AS n FROM borrowers " + where, *values)["n"]
-        found = lib.all("SELECT b.*, (SELECT COUNT(*) FROM loans l WHERE l.borrower_id = b.id AND l.returned IS NULL) AS held, "
-                        "(SELECT COUNT(*) FROM loans l WHERE l.borrower_id = b.id AND l.returned IS NULL AND l.due < ?) AS late "
+        found = lib.all("SELECT b.*, (SELECT COUNT(*) FROM loans l WHERE l.borrower_id = b.id AND l.returned IS NULL AND l.lost IS NULL) AS held, "
+                        "(SELECT COUNT(*) FROM loans l WHERE l.borrower_id = b.id AND l.returned IS NULL AND l.lost IS NULL AND l.due < ?) AS late "
                         "FROM borrowers b %s ORDER BY name COLLATE NOCASE, id LIMIT %d" % (where, SHOWN), lib.today(), *values)
         rows = []
         for row in found:
@@ -529,9 +548,10 @@ class Pages:
     def borrower(self, ident):
         lib = self.lib
         row = lib.row("borrowers", ident, "borrower")
-        loans = lib.all(OPEN_LOANS + "WHERE l.borrower_id = ? AND l.returned IS NULL ORDER BY l.due, l.id", ident)
+        loans = lib.all(OPEN_LOANS + "WHERE l.borrower_id = ? AND l.returned IS NULL AND l.lost IS NULL ORDER BY l.due, l.id", ident)
         late = [loan for loan in loans if loan["due"] < lib.today()]
         back = lib.one("SELECT COUNT(*) AS n FROM loans WHERE borrower_id = ? AND returned IS NOT NULL", ident)["n"]
+        gone = lib.one("SELECT COUNT(*) AS n FROM loans WHERE borrower_id = ? AND lost IS NOT NULL", ident)["n"]
         limit = LIMIT[row["kind"]]
         body = "<h1>%s</h1><p>%s%s%s. <a href=\"/borrowers/%d/edit\">Edit</a></p>" % (
             e(row["name"]), "Pupil" if row["kind"] == "pupil" else "Staff",
@@ -548,7 +568,8 @@ class Pages:
             body += ('<form class="card" method="post" action="/loans"><input type="hidden" name="borrower_id" value="%d">' % ident
                      + field("Copy number, typed or scanned", "copy", "", ' required inputmode="numeric" maxlength="9" autocomplete="off" autofocus')
                      + '<button type="submit">Lend</button></form>')
-        body += '<h2>Books out</h2><p class="note">%d of %d allowed. Returned so far: %d.</p>' % (len(loans), limit, back)
+        body += '<h2>Books out</h2><p class="note">%d of %d allowed. Returned so far: %d.%s</p>' % (
+            len(loans), limit, back, " Lost while out: %d." % gone if gone else "")
         if loans:
             body += table(["Copy", "Title", "Due", ""], self.loan_rows(loans, "/borrowers/%d" % ident, borrower=False))
         return row["name"], body
@@ -565,7 +586,7 @@ class Pages:
             where, values = "AND l.copy_id = ? ", [int(typed) if len(typed) <= 18 else -1]
         elif typed:
             where, values = "AND (t.title LIKE ? ESCAPE '\\' OR b.name LIKE ? ESCAPE '\\') ", [like(typed)] * 2
-        found = lib.all(OPEN_LOANS + "WHERE l.returned IS NULL " + where + "ORDER BY l.due, l.id", *values)
+        found = lib.all(OPEN_LOANS + "WHERE l.returned IS NULL AND l.lost IS NULL " + where + "ORDER BY l.due, l.id", *values)
         return "Loans", (
             "<h1>Books out</h1>" + search_form("/loans", "Search copy number, title or borrower", typed)
             + counted(len(found), len(found), "book out", "books out", typed)
@@ -573,7 +594,7 @@ class Pages:
 
     def overdue(self, query):
         lib = self.lib
-        found = lib.all(OPEN_LOANS + "WHERE l.returned IS NULL AND l.due < ? "
+        found = lib.all(OPEN_LOANS + "WHERE l.returned IS NULL AND l.lost IS NULL AND l.due < ? "
                         "ORDER BY b.class = '', b.class COLLATE NOCASE, b.name COLLATE NOCASE, l.due, l.id", lib.today())
         body = "<h1>Overdue</h1>" + counted(len(found), len(found), "book overdue", "books overdue", "")[:-5] + ", by class.</p>"
         groups = {}
@@ -585,18 +606,23 @@ class Pages:
         return "Overdue", body
 
     def returned(self, query):
+        """The loans that have ended: returned, or lost while out and shown as such (L0031)."""
         lib = self.lib
-        total = lib.one("SELECT COUNT(*) AS n FROM loans WHERE returned IS NOT NULL")["n"]
-        found = lib.all(OPEN_LOANS + "WHERE l.returned IS NOT NULL ORDER BY l.returned DESC, l.id DESC LIMIT %d" % SHOWN)
+        total = lib.one("SELECT COUNT(*) AS n FROM loans WHERE returned IS NOT NULL OR lost IS NOT NULL")["n"]
+        gone = lib.one("SELECT COUNT(*) AS n FROM loans WHERE lost IS NOT NULL")["n"]
+        found = lib.all(OPEN_LOANS + "WHERE l.returned IS NOT NULL OR l.lost IS NOT NULL "
+                        "ORDER BY COALESCE(l.returned, l.lost) DESC, l.id DESC LIMIT %d" % SHOWN)
         rows = [(' id="loan-%d"' % loan["id"],
                  [("num", str(loan["copy_id"])), ("", e(loan["title"])),
                   ("", e(loan["name"]) + (" (%s)" % e(loan["class"]) if loan["class"] else "")),
-                  ("num", e(loan["lent"])), ("num", e(loan["returned"]))]) for loan in found]
+                  ("num", e(loan["lent"])),
+                  ("tag", e(loan["returned"]) if loan["lost"] is None
+                   else e(loan["lost"]) + '<small class="late">lost, not returned</small>')]) for loan in found]
         return "Returned", (
-            "<h1>Returned</h1>" + counted(len(found), total, "returned loan", "returned loans", "", "latest").replace(
+            "<h1>Returned or lost</h1>" + counted(len(found), total, "loan that ended", "loans that ended", "", "latest").replace(
                 "Search to find the rest.", "The whole record is in <a href=\"/export.json\">/export.json</a>.")
-            + (table(["Copy", "Title", "Borrower", "Lent", "Returned"], rows) if rows else ""))
-
+            + ('<p class="note">%d of them ended with the book marked lost while it was out.</p>' % gone if gone else "")
+            + (table(["Copy", "Title", "Borrower", "Lent", "Ended"], rows) if rows else ""))
 
 GET = [(r"/", "desk"), (r"/titles", "titles"), (r"/titles/(\d{1,9})", "title"), (r"/titles/(\d{1,9})/edit", "title_edit"),
        (r"/borrowers", "borrowers"), (r"/borrowers/(\d{1,9})", "borrower"), (r"/borrowers/(\d{1,9})/edit", "borrower_edit"),
