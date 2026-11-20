@@ -14,12 +14,14 @@ the lessons and the cases are what lasts.
 
 | Path | Holds |
 |---|---|
-| `CLAUDE.md` | This file. Read at the start of every session. One line per lesson. |
+| `CLAUDE.md` | This file. Read at the start of every session. One line per lesson, with its labels. |
 | `lessons/` | One file per lesson: the reason, the source, what would be a regression. |
 | `cases/` | One executable per checkable lesson. Run from the repository root. |
-| `check` | Proves the two stay linked. `./check` and `./check --selftest`. |
+| `caselib.py`, `caselib.js` | What the pet shop cases share: start the shop, put a fault in front of it. |
+| `check` | Proves the two stay linked, and runs the cases in force. `./check` and `./check --selftest`. |
 | `HANDOFF.md` | State of the work and how to resume. Read it second. |
 | `product/` | Whatever a run builds. May be deleted and rebuilt at any time. |
+| `product/LABELS` | What the product is: the labels it chose, one per line. No product, no labels. |
 | `prompts/`, `runs/` | The prompts under test and what each run showed. |
 
 ## What a session does
@@ -28,6 +30,12 @@ the lessons and the cases are what lasts.
   Learned means: the person decides or corrects something, a defect is found,
   or an approach is tried and rejected. Write `lessons/NNNN-slug.md` and add
   its line below.
+- **A lesson says when it applies**, in square brackets after its number:
+  `always`, or one or more plain labels separated by commas. There is no
+  list to choose from; reuse a label when it fits and write a new one when
+  none does. A lesson is in force when it is `always` or the product declared
+  one of its labels in `product/LABELS`. Follow the lessons in force; the
+  others are kept for the product that switches them on (L0023).
 - **If a machine can check it, write the case first.** See it fail, then fix.
   If no machine can check it, mark the line `prose:` and say why not.
 - **A lesson or a case changes only on evidence from outside**: the person,
@@ -37,7 +45,26 @@ the lessons and the cases are what lasts.
 
 ## Lessons
 
-- **L0001** A check that measured nothing has failed; every check prints what it measured. [why](lessons/0001-empty-is-not-a-result.md) · case: [`cases/0001-empty-is-not-a-result`](cases/0001-empty-is-not-a-result)
-- **L0002** A wrong variant is kept as a small change applied when the check runs, never as a full copy. [why](lessons/0002-no-full-copies.md) · case: [`cases/0002-no-full-copies`](cases/0002-no-full-copies)
-- **L0003** Agreement between agents of the same model is not evidence that something is right. [why](lessons/0003-same-model-agreement.md) · prose: no program can tell where a claim's evidence came from
-- **L0004** Before building, ask the person everything foreseeable in one round, each question with a recommendation. [why](lessons/0004-ask-in-one-round.md) · prose: whether a later question could have been foreseen is a judgement
+- **L0001** [always] A check that measured nothing has failed; every check prints what it measured. [why](lessons/0001-empty-is-not-a-result.md) · case: [`cases/0001-empty-is-not-a-result`](cases/0001-empty-is-not-a-result)
+- **L0002** [always] A wrong variant is kept as a small change applied when the check runs, never as a full copy. [why](lessons/0002-no-full-copies.md) · case: [`cases/0002-no-full-copies`](cases/0002-no-full-copies)
+- **L0003** [always] Agreement between agents of the same model is not evidence that something is right. [why](lessons/0003-same-model-agreement.md) · prose: no program can tell where a claim's evidence came from
+- **L0004** [always] Before building, ask the person everything foreseeable in one round, each question with a recommendation. [why](lessons/0004-ask-in-one-round.md) · prose: whether a later question could have been foreseen is a judgement
+- **L0005** [pet shop] The pet shop system is for staff: products and stock, customers and their pets, counter sales, grooming appointments. [why](lessons/0005-scope-of-the-pet-shop.md) · prose: whether a feature is inside the scope is a reader's judgement
+- **L0006** [python stdlib and sqlite on localhost] The web app on localhost is the only way in, on Python's standard library and one SQLite file. [why](lessons/0006-one-way-in.md) · case: [`cases/0006-one-way-in`](cases/0006-one-way-in)
+- **L0007** [local web server] A request from another site, or to another host name, is refused. [why](lessons/0007-cross-site-refused.md) · case: [`cases/0007-cross-site-refused`](cases/0007-cross-site-refused)
+- **L0008** [money] Money is whole cents, and every input has a stated bound. [why](lessons/0008-money-and-bounds.md) · case: [`cases/0008-money-and-bounds`](cases/0008-money-and-bounds)
+- **L0009** [pet shop] A sale beyond stock is refused whole, stock never goes below zero, and low stock is listed. [why](lessons/0009-stock-never-negative.md) · case: [`cases/0009-stock-never-negative`](cases/0009-stock-never-negative)
+- **L0010** [pet shop] A sale records its method and the amount the server computed; it is never edited, only voided whole, once. [why](lessons/0010-sale-recorded-voided-whole.md) · case: [`cases/0010-sale-recorded-voided-whole`](cases/0010-sale-recorded-voided-whole)
+- **L0011** [pet shop] Grooming has one groomer and one-hour slots: an appointment belongs to a pet, and a taken slot is refused. [why](lessons/0011-appointments-no-double-booking.md) · case: [`cases/0011-appointments-no-double-booking`](cases/0011-appointments-no-double-booking)
+- **L0012** [web pages] What a person does in the forms is checked in a real browser, and a missing browser fails. [why](lessons/0012-forms-in-a-real-browser.md) · case: [`cases/0012-forms-in-a-real-browser`](cases/0012-forms-in-a-real-browser)
+- **L0013** [always] Done means every case in force passes, the agent drove the product by script as a person would and read what came out, and what was not verified is said; none of that is the person using it. [why](lessons/0013-done-means-used-by-hand.md) · prose: what the agent saw in its own screenshots is not a program's result
+- **L0014** [web pages] Every example a form shows is a value that form accepts. [why](lessons/0014-examples-are-accepted.md) · case: [`cases/0014-examples-are-accepted`](cases/0014-examples-are-accepted)
+- **L0016** [pet shop] Voiding a sale asks first, on a second page that shows the sale; no page voids on one click. [why](lessons/0016-void-asks-first.md) · case: [`cases/0016-void-asks-first`](cases/0016-void-asks-first)
+- **L0017** [pet shop] Customers and pets can be corrected, and nothing is removed. [why](lessons/0017-corrected-never-removed.md) · case: [`cases/0017-corrected-never-removed`](cases/0017-corrected-never-removed)
+- **L0019** [always] A wrong variant is a fault put at the product's interface when the case runs; no case names, reads or edits the product's source. [why](lessons/0019-cases-know-no-source.md) · case: [`cases/0019-cases-know-no-source`](cases/0019-cases-know-no-source)
+- **L0020** [pet shop] Cancelling an appointment is one click on the list: no question page, and opening an address never cancels. [why](lessons/0020-cancel-is-one-click.md) · case: [`cases/0020-cancel-is-one-click`](cases/0020-cancel-is-one-click)
+- **L0021** [pet shop] The sales page lists the latest 200 sales and says how many there are; appointments before today are on no page; `/export.json` holds everything. [why](lessons/0021-pages-show-recent-export-all.md) · case: [`cases/0021-pages-show-recent-export-all`](cases/0021-pages-show-recent-export-all)
+- **L0023** [always] A lesson says when it applies in plain labels, a product declares the labels it chose, and only `always` and those are in force. [why](lessons/0023-labels-switch-lessons.md) · case: [`cases/0023-labels-switch-lessons`](cases/0023-labels-switch-lessons)
+- **L0024** [always] A case is born in the product that needed it, and is made general only when a second product needs it. [why](lessons/0024-cases-born-in-a-product.md) · prose: whether a second product needs a case is a judgement
+- **L0025** [pet shop] The pet shop's prices include tax, and its inputs are refused outside the table of bounds in the lesson. [why](lessons/0025-pet-shop-bounds.md) · case: [`cases/0025-pet-shop-bounds`](cases/0025-pet-shop-bounds)
+- **L0026** [web pages] On a narrow screen a list is shown as stacked cards, not as a table: nothing scrolls sideways, is crushed or breaks in two, and each row's actions are in sight, from 320 px up with the longest names allowed. [why](lessons/0026-narrow-lists-are-cards.md) · cases: [`cases/0026-narrow-lists-are-cards`](cases/0026-narrow-lists-are-cards), [`cases/0015-no-sideways-scroll`](cases/0015-no-sideways-scroll), [`cases/0018-columns-not-crushed`](cases/0018-columns-not-crushed), [`cases/0022-row-actions-in-sight`](cases/0022-row-actions-in-sight)

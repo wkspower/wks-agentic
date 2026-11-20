@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Case of lesson L0020 (lessons/0020-cancel-is-one-click.md).
+Origin: the person's answer 1 in run 004, 2026-11-19: cancelling stays one click.
+Run from the repository root."""
+import sys
+from html.parser import HTMLParser
+
+sys.path.insert(0, ".")
+from caselib import fault, run
+
+DAY = "2099-06-01"
+
+
+class Reader(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.forms = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form":
+            self.forms.append(((attrs.get("method") or "get").lower(), attrs.get("action") or ""))
+
+
+def checks(shop):
+    ana = shop.add("customers", name="Ana Lima", phone="")
+    rex = shop.add("pets", customer_id=ana, name="Rex", species="dog")
+    first = shop.add("appointments", pet_id=rex, date=DAY, time="10:00")
+    second = shop.add("appointments", pet_id=rex, date=DAY, time="11:00")
+    cancel = "/appointments/%d/cancel"
+
+    def offered():
+        status, body = shop.request("GET", "/appointments")
+        shop.expect(status == 200, "GET /appointments answered %d" % status)
+        reader = Reader()
+        reader.feed(body)
+        return sorted(action for method, action in reader.forms if method == "post" and "/cancel" in action), body
+
+    def live():
+        return sorted(row["id"] for row in shop.export()["appointments"] if not row["cancelled"])
+
+    # The list itself carries the button of each live appointment.
+    forms, _ = offered()
+    shop.expect(forms == [cancel % first, cancel % second],
+                "the list offers %s, expected one cancel form for each of the two appointments" % forms)
+
+    # There is no page that asks, and opening the address cancels nothing.
+    for ident in (first, second):
+        status, _ = shop.request("GET", cancel % ident)
+        shop.expect(status >= 400, "GET %s answered %d: a page stands between the list and the cancel"
+                    % (cancel % ident, status))
+    shop.expect(live() == [first, second], "opening the cancel address cancelled: live are %s" % live())
+
+    # One post cancels; the appointment stays on the list, without its button.
+    shop.post(303, cancel % first)
+    shop.expect(live() == [second], "after one post the live appointments are %s" % live())
+    forms, body = offered()
+    shop.expect(forms == [cancel % second], "after the cancel the list offers %s" % forms)
+    shop.expect("cancelled" in body, "the list does not show the cancelled appointment as cancelled")
+
+
+@fault("GET", "/appointments")
+def asks_first(shop, ask):
+    """The button on the list leads to a question page, not to the cancel."""
+    status, body = ask.send()
+    if '/cancel"' in body:
+        body = body.replace('/cancel"', '/cancel/ask"')
+        shop.acted += 1
+    return status, body
+
+
+@fault("GET", r"/appointments/(\d+)/cancel")
+def opening_cancels(shop, ask, ident):
+    """Opening the cancel address is enough to cancel."""
+    if shop.real("POST", ask.path)[0] == 303:
+        shop.acted += 1
+    return 405, ""
+
+
+@fault("GET", "/appointments")
+def cancelled_offered_again(shop, ask):
+    """An appointment already cancelled still has its button."""
+    status, body = ask.send()
+    for row in shop.state()["appointments"]:
+        if row["cancelled"]:
+            body += '<form method="post" action="/appointments/%d/cancel"><button>Cancel</button></form>' % row["id"]
+            shop.acted += 1
+    return status, body
+
+
+run(checks, wrong=[
+    ("the list leads to a question before cancelling", asks_first),
+    ("opening the cancel address cancels", opening_cancels),
+    ("a cancelled appointment is offered for cancelling again", cancelled_offered_again),
+])

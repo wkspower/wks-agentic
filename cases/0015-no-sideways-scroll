@@ -1,0 +1,50 @@
+#!/usr/bin/env node
+// A check under lesson L0026 (lessons/0026-narrow-lists-are-cards.md); until run 005 the case of L0015.
+// Origin: run 001, 2026-11-19. Used by hand at 390 px wide, the sale form ran out of its
+// box and the sales list pushed the page sideways.
+// Looked at again after the first fix: the page no longer scrolled, and prices and button labels
+// were broken in two ("129.9 / 0", "Adjus / t") at every width. The case had passed.
+// Fills the shop with the longest names allowed, then measures every page at four widths:
+// two where the lists are cards, 800 px where they are tables with little room, and a wide one.
+// Run from the repository root.
+const { run, style } = require('../caselib.js');
+
+run(async (page, base, expect) => {
+  const post = async (path, fields) => {
+    const answer = await fetch(base + path, { method: 'POST', body: new URLSearchParams(fields), redirect: 'manual' });
+    if (answer.status !== 303) throw new Error('wrong: POST ' + path + ' answered ' + answer.status);
+  };
+  const long = (letter) => letter.repeat(80);
+  const words = 'Hypoallergenic grain-free salmon and sweet potato dry food for adult dogs 12 kg';
+  await post('/products', { name: long('W'), price: '99999.99', stock: '1000000', low_at: '1000000' });
+  await post('/products', { name: words, price: '18.90', stock: '12', low_at: '3' });
+  await post('/customers', { name: long('M'), phone: '5'.repeat(30) });
+  await post('/pets', { customer_id: '1', name: long('P'), species: 's'.repeat(40) });
+  await post('/sales', [['method', 'other'], ['customer_id', '1'], ['product_id', '1'], ['qty', '1000'], ['product_id', '2'], ['qty', '2']]);
+  await post('/sales/1/void', {});
+  await post('/sales', [['method', 'other'], ['customer_id', '1'], ['product_id', '1'], ['qty', '1000'], ['product_id', '2'], ['qty', '2']]);
+  await post('/appointments', { pet_id: '1', date: new Date().toLocaleDateString('en-CA'), time: '17:00' });
+  await post('/appointments', { pet_id: '1', date: '2099-06-01', time: '09:00' });
+  for (const width of [320, 390, 800, 1100]) {
+    await page.setViewportSize({ width, height: 800 });
+    for (const path of ['/', '/products', '/products/1/edit', '/customers', '/customers/1/edit', '/pets/1/edit', '/sales', '/sales/1/void', '/sales/2/void', '/sales/new', '/appointments', '/nowhere']) {
+      await page.goto(base + path);
+      const [content, room] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+      expect(content <= room, path + ' at ' + width + ' px is ' + content + ' px wide and scrolls sideways');
+      const out = await page.$$eval('form.card input, form.card select, form.card button', (els) => els.filter((el) => {
+        const box = el.getBoundingClientRect(); const card = el.closest('form.card').getBoundingClientRect();
+        return box.right > card.right + 1 || box.left < card.left - 1;
+      }).length);
+      expect(out === 0, path + ' at ' + width + ' px has ' + out + ' controls outside their form');
+      const broken = await page.$$eval('td.num, td.stock, button, td a', (els) => els.filter((el) => {
+        const range = document.createRange(); range.selectNodeContents(el);
+        return new Set([...range.getClientRects()].map((box) => Math.round(box.top))).size > 1;
+      }).map((el) => el.textContent.trim()));
+      expect(broken.length === 0, path + ' at ' + width + ' px breaks across lines: ' + broken.slice(0, 3).join(', '));
+    }
+  }
+}, [
+  ['a wide table pushes the page sideways', style('* { overflow: visible !important; }')],
+  ['a long name cannot break', style('* { overflow-wrap: normal !important; word-break: normal !important; }')],
+  ['any word may break anywhere, the first fix of run 001', style('* { overflow-wrap: anywhere !important; white-space: normal !important; }')],
+]);
