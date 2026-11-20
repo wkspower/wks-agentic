@@ -1,5 +1,33 @@
 # Handoff
 
+**Run 012 (2026-11-20) built the third product on this branch: the till of
+a school canteen.** `./check` passes with it; the summary line and what was
+not verified are in `runs/012-canteen-pos.md`.
+
+- The session had the text "Lessons at the start of this session" from the
+  hook before its first action (L0041), asked one round of 15 questions
+  (L0004) and was answered with one typed word, "Accepted".
+- Nine lessons, L1201 to L1209, eight with a case. L1201 to L1208 are the
+  canteen's own (`school canteen`); L1209 is under `local web server`: a
+  connection that is open and silent holds nobody up.
+- Two cases were made general because the canteen needed them (L0024): the
+  case of L0008 (`money`), which settles the line under "Not yet decided"
+  that asks whether it should be; and the case of L0042, whose lesson went
+  from `school library` to `web pages`. Each surface has a "money" or an
+  "under" section for them.
+- **What that means for the other two products is in the run record**, under
+  "The other products and the cases made general": `./bring --try` was run
+  for both from this branch.
+
+To use the till: `python3 product/canteen.py --sample`, then open
+http://127.0.0.1:8000/. `--today 2026-12-01` shows it on another day. It
+keeps everything in `canteen.db` beside where it is started.
+
+The person has not used the till and has not read L1201 to L1209 or the
+changes to L0008 and L0042. They saw fifteen recommendations of a line or a
+few each. The run record lists 13 things the builder decided that were not
+asked. Bringing this run to the base is theirs to do, with `./bring`.
+
 **Run 011 (2026-11-20) made it possible for two runs to work at the same
 time from one base and both come back.** It built no product. `./check`
 passes on this tree, which is the base; see `runs/011-parallel.md`.
@@ -390,3 +418,4 @@ Each run adds a file under `runs/` and a line here.
 - [006 school library](runs/006-school-library.md), 2026-11-20: 1 round of 14 questions, 9 lessons added (8 with a case), the second product; 8 cases made general and kept passing on the pet shop; 1 defect found in the scaffold and 1 in the product by hand.
 - [011 parallel](runs/011-parallel.md), 2026-11-20: no questions, no prompt, scaffold only; 2 lessons added (both with a case, case first), numbered L1101 and L1102 by the new rule; `./bring` brings two branches from one base back in either order; 1 defect found by using it on the real branches, which share no history with the base; both real products tried against the base and passing.
 - [010 library rebuild](runs/010-library-rebuild.md), 2026-11-20: no questions; the library rebuilt with no history, every inherited case passing on its first run, none changed; 1 lesson added (with a case, case first), from a defect found by reading screenshots.
+- [012 canteen till](runs/012-canteen-pos.md), 2026-11-20: 1 round of 15 questions, 9 lessons added (8 with a case), the third product; every general case in force passed on the first build; 2 cases made general (L0008, L0042); 2 defects found in the product, one by reading a screenshot and one by holding a connection open, each given its case before its fix.
