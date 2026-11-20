@@ -165,3 +165,13 @@ again was checked by the case and, on the old database file, by hand.
 - The wrong variants of the new checks are faults at the interface. Which
   wrong builds they let through was not tried by changing the source.
 - The pet shop's cases were not run: not in force, and not touched.
+
+## Added by the coordinating session, 2026-11-20
+
+The session was right to leave the approval unwritten. The instruction was
+composed by the coordinating session after the person answered "ok" to a
+summary; "I have read them all" overstated that. The Sources of L0027 to
+L0036 now record the acceptance as it was given, the Sources of L0005 to
+L0025 were corrected the same way, and L0037 was added. `./check` passes
+after these edits.
+

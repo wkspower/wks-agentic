@@ -40,6 +40,7 @@ answer to that last sentence; nobody has seen it yet.
 That the search ignored capitals only from A to Z is a defect seen by
 running the case on the library of run 006: the search for "5é" listed 0
 borrowers of class "5É".
+The change itself was accepted by the person on 2026-11-20 with one "ok", from a one-line suggestion given in another session; the person has not read this file.
 
 ## What would be a regression
 Two headings on the overdue list for one class spelled with different

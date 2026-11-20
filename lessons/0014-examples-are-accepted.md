@@ -11,7 +11,7 @@ A defect found using the app by hand, run 001, 2026-11-19: the stock
 adjustment field showed "+10 or -2" and answered "+10" with "Adjustment must
 be a whole number". All seven cases had passed. The case over HTTP for
 bounds had only ever sent "5" and "-2".
-Read as written and accepted by the person, 2026-11-19 (run 005).
+Accepted by the person on 2026-11-19 (run 005), from a one-line summary of this lesson given in another session; the person has not read this file.
 
 The case was made general in run 006, 2026-11-20, when the school library
 chose this label; what it needs to know of a product is in `surface/` (L0024).

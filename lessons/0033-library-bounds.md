@@ -26,7 +26,8 @@ one round before building (answer 13). Two rows are the builder's: the
 search text and the copy number, inputs the answer did not list. "The last
 of 10 may be X" is real data, not the person: about one ISBN-10 in eleven
 ends in X (ISO 2108), and the bound as asked, "10 or 13 digits", would have
-refused those books. The person has not seen these three.
+refused those books. The person had not seen these three when they were built.
+Accepted by the person on 2026-11-20 with one "ok", from a one-line summary of this lesson given in another session; the person has not read this file. The ISBN ending in X and the bounds for search text and copy number were named in that summary and kept.
 
 ## What would be a regression
 A value outside the table stored, or a new input added without a row in the

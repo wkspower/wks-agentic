@@ -21,7 +21,8 @@ there." After a refused loan the copy field was empty. The same sentence
 stood on the page for an address that does not exist, which has no form.
 All 19 cases had passed. That the scan field comes back empty is the
 builder's choice between the two ways of making the sentence true; the
-person has not seen it.
+person had not seen it when it was built.
+Accepted by the person on 2026-11-20 with one "ok", from a one-line summary of this lesson given in another session; the person has not read this file. That the scan field comes back empty was named in that summary and kept.
 
 ## What would be a regression
 A form that comes back empty after a refusal; a scanned field that comes

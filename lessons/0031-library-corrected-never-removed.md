@@ -41,6 +41,7 @@ plainly applies; say which you chose." It reached the session as an
 automated notice written in the person's voice, not as a typed message; see
 `runs/007-library-review.md`. Withdrawn was left as it was, for the reason
 above; that is the builder's choice.
+Accepted by the person on 2026-11-20 with one "ok", from a one-line summary of this lesson given in another session; the person has not read this file. The change to lost while out was the person's, by the same "ok" to that summary's suggestion.
 
 ## What would be a regression
 An edit that skips a bound, changes another row or gives the row a new id;

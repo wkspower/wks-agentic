@@ -12,6 +12,7 @@ no way to change a loan's copy, borrower or dates, and none to delete it.
 ## Source
 The person, run 006, 2026-11-20: "Ok" to the fourteen recommendations asked in
 one round before building (answer 10).
+Accepted by the person on 2026-11-20 with one "ok", from a one-line summary of this lesson given in another session; the person has not read this file.
 
 ## What would be a regression
 A list of loans without a form that posts to the return address of each

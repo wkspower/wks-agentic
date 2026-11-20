@@ -16,7 +16,8 @@ every page says so while it is set.
 ## Source
 The person, run 006, 2026-11-20: "Ok" to the fourteen recommendations asked in
 one round before building (answers 1, 3, 8 and 14). `--today` is the
-builder's addition, needed by the cases of L0029; the person has not seen it.
+builder's addition, needed by the cases of L0029; the person had not seen it when it was built.
+Accepted by the person on 2026-11-20 with one "ok", from a one-line summary of this lesson given in another session; the person has not read this file. `--today` and its notice were named in that summary and kept.
 
 ## What would be a regression
 A rebuild that adds one of the things named as out, or drops one named as in,

@@ -9,7 +9,7 @@ before today is refused.
 The person, run 001, 2026-11-19 (answer 11). The hours were the builder's
 choice; the person saw them and kept them in run 002, 2026-11-19 (answer 2
 of 4).
-Read as written and accepted by the person, 2026-11-19 (run 005).
+Accepted by the person on 2026-11-19 (run 005), from a one-line summary of this lesson given in another session; the person has not read this file.
 
 ## What would be a regression
 Two live appointments in one slot, an appointment with no pet or for a pet

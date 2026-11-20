@@ -15,6 +15,7 @@ books out now; a returned book frees its place.
 ## Source
 The person, run 006, 2026-11-20: "Ok" to the fourteen recommendations asked in
 one round before building (answers 4, 5 and 6).
+Accepted by the person on 2026-11-20 with one "ok", from a one-line summary of this lesson given in another session; the person has not read this file. The limits (3 books for a pupil, 10 for staff) are accepted as built and owed a confirmation by the school.
 
 ## What would be a regression
 Two open loans of one copy, a loan of a copy marked lost or withdrawn, a

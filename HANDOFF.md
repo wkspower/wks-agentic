@@ -7,29 +7,18 @@ cases run. The changes: a copy that is out can be marked lost, which ends
 its loan that day as lost (L0031, reversed); classes are compared without
 regard to capitals (L0036, new). See `runs/007-library-review.md`.
 
-## Owed: the person's review of L0027 to L0035, in their own message
+## The review of L0027 to L0036, as it really happened
 
-The instruction of run 007 says the person read L0027 to L0035 and accepts
-them with those two changes. It arrived as an automated notice that says it
-is not user input and carries no approval, and the session's permission
-check stopped the acceptance from being written into the lessons. Nothing
-in `lessons/` says the person accepted anything in run 007. **Do not merge
-this branch into the base as reviewed until the person has said so
-themselves.** When they do, write what the instruction asked for:
+The person accepted these lessons on 2026-11-20 with one "ok", in the
+coordinating session, to a table of one-line summaries and two suggested
+changes. They have not read the lesson files. Each Source now says exactly
+that. The same correction was made to L0005 to L0025, which run 005 had
+marked "Read as written and accepted" on an instruction that overstated
+what the person had done (L0037).
 
-- In the Source of each of L0027 to L0035: read and accepted by the person
-  on 2026-11-20 (or the day they say).
-- Kept as built, where a Source says "the person has not seen it": `--today`
-  with its notice (L0027); an ISBN of 10 that ends in X, and the bounds for
-  search text and copy number (L0033); the scan field that comes back empty
-  (L0035). Say they have seen it and kept it.
-- L0028 and L0029: the numbers (3 books for a pupil, 10 for staff, 14 days,
-  two renewals) are accepted as built and owed a confirmation by the school.
-  Mark them so; not to be asked about until the person brings it up.
-- Then look at what run 007's builder chose, listed in its run record:
-  withdrawn left as it was, how a class is shown when both spellings exist,
-  and ten smaller things.
-
+Still owed: the school's confirmation of the numbers in L0028 and L0029;
+the person's look at what run 007's builder chose (its run record lists
+them); and the person reading any lesson file at all.
 
 **Run 006 (2026-11-20) built the second product on this branch: a school
 library.** `./check` passed with it: 32 lessons, 22 in force, 20 cases run,

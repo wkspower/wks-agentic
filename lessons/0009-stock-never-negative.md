@@ -7,7 +7,7 @@ A product is low when its stock is at or below its own threshold.
 
 ## Source
 The person, run 001, 2026-11-19 (answer 10).
-Read as written and accepted by the person, 2026-11-19 (run 005).
+Accepted by the person on 2026-11-19 (run 005), from a one-line summary of this lesson given in another session; the person has not read this file.
 
 ## What would be a regression
 A sale recorded in part, two lines of one product passing because each alone

@@ -21,6 +21,7 @@ source (... no product in this tree, one planted)". It had looked for
 `product/petshop.py`, found none, and run every case with the library's
 source still in the tree. The case measured nothing about the library, and
 its summary line was the only sign.
+Accepted by the person on 2026-11-20 with one "ok", from a one-line summary of this lesson given in another session; the person has not read this file.
 
 ## What would be a regression
 A program name of some product in `caselib.py` or `caselib.js`; a case that

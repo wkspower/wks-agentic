@@ -16,6 +16,7 @@ The person, run 006, 2026-11-20: "Ok" to the fourteen recommendations asked in
 one round before building (answer 12). Run 007, 2026-11-20: the page of
 returned loans also holds the loans that ended as lost, which follows from
 the change to L0031 and has the same source.
+Accepted by the person on 2026-11-20 with one "ok", from a one-line summary of this lesson given in another session; the person has not read this file.
 
 ## What would be a regression
 More than 200 titles, borrowers or returned loans on one page, a page silent

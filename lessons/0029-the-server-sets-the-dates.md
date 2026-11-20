@@ -16,6 +16,7 @@ what they have overdue, and the person at the desk decides.
 ## Source
 The person, run 006, 2026-11-20: "Ok" to the fourteen recommendations asked in
 one round before building (answers 6, 7 and 9).
+Accepted by the person on 2026-11-20 with one "ok", from a one-line summary of this lesson given in another session; the person has not read this file. The numbers (14 days, two renewals) are accepted as built and owed a confirmation by the school.
 
 ## What would be a regression
 A date taken from a form, a book due today shown as overdue, a third
