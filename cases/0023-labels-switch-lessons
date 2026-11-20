@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Case of lesson L0023 (lessons/0023-labels-switch-lessons.md).
 Origin: the person's decision of 2026-11-19 (run 005).
-Works out from CLAUDE.md and product/LABELS, without the check's own code,
-which cases should be in force, and compares with what ./check says. Then
-takes product/ away in a scratch copy: that tree is the base every product
-starts from, and ./check must pass there with only `always` in force.
+Works out from the lesson lines, the first lines of each case and
+product/LABELS, without the check's own code, which cases should be in force,
+and compares with what ./check says. Then takes product/ away in a scratch
+copy: that tree is the base every product starts from, and ./check must pass
+there with only `always` in force.
 The wrong trees for these rules are in ./check --selftest (case of L0001).
-Run from the repository root."""
+Since run 008 the lines are in CLAUDE.md and LESSONS.md and a case names its
+lesson itself (L0039). Run from the repository root."""
 import os
 import re
 import shutil
@@ -16,17 +18,23 @@ import tempfile
 
 
 def expected(declared):
+    of = {}
+    for name in sorted(os.listdir("cases")):
+        with open(os.path.join("cases", name), encoding="utf-8", errors="replace") as handle:
+            named = re.search(r"\blesson (L\d{4})\b", "".join(handle.readlines()[:6]))
+        of.setdefault(named.group(1) if named else None, []).append("cases/" + name)
     cases, on, off = [], 0, []
-    for line in open("CLAUDE.md", encoding="utf-8"):
-        found = re.match(r"- \*\*(L\d{4})\*\* \[([^\]]+)\]", line)
-        if not found:
-            continue
-        labels = {" ".join(word.split()).lower() for word in found.group(2).split(",")}
-        if labels & (declared | {"always"}):
-            on += 1
-            cases += re.findall(r"\]\((cases/[^)]+)\)", line)
-        else:
-            off.append(found.group(1))
+    for home in ("CLAUDE.md", "LESSONS.md"):
+        for line in open(home, encoding="utf-8") if os.path.exists(home) else []:
+            found = re.match(r"- \*\*(L\d{4})\*\* \[([^\]]+)\]", line)
+            if not found:
+                continue
+            labels = {" ".join(word.split()).lower() for word in found.group(2).split(",")}
+            if labels & (declared | {"always"}):
+                on += 1
+                cases += of.get(found.group(1), [])
+            else:
+                off.append(found.group(1))
     return cases, on, off
 
 
@@ -48,9 +56,6 @@ if not cases:
 here = "%d lessons in force and %d not, %d cases, for the labels: %s" % (
     on, len(off), len(cases), ", ".join(sorted(declared)) or "none")
 
-if os.environ.get("INSIDE_THE_BASE_CHECK"):  # the case of L0019 runs this one again in there: once is enough
-    print(here + "; inside the check of the base, which is not taken apart again")
-    sys.exit(0)
 if not os.path.isdir("product"):
     if off and not declared:
         print(here + "; this tree has no product, so it is the base, and the check running this case is its check")
@@ -62,8 +67,7 @@ work = tempfile.mkdtemp()
 try:
     tree = os.path.join(work, "base")
     shutil.copytree(".", tree, ignore=shutil.ignore_patterns(".git", "__pycache__", "node_modules", "*.db*", "product"))
-    done = subprocess.run(["./check"], cwd=tree, capture_output=True, text=True, timeout=200,
-                          env=dict(os.environ, INSIDE_THE_BASE_CHECK="1"))
+    done = subprocess.run(["./check"], cwd=tree, capture_output=True, text=True, timeout=200)
 finally:
     shutil.rmtree(work, ignore_errors=True)
 said = done.stdout.strip().splitlines()

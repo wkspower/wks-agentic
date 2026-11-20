@@ -26,6 +26,12 @@ The person's decision, 2026-11-19 (run 005), after four runs on the pet
 shop: "I do not want the kinds defined up front. I want room for them to
 grow one lesson at a time."
 
+Run 008, 2026-11-20, on the coordinating session's instruction: the lines
+are no longer all in `CLAUDE.md`. That file holds the lines labelled
+`always`; every other line is in `LESSONS.md`, and `./check --lessons`
+prints the ones in force (L0039). What a label is, and when a lesson is in
+force, did not change.
+
 ## What would be a regression
 A lesson line with no label; a fixed list of labels that a new lesson must
 choose from; a case run for a lesson the product did not switch on, or not
