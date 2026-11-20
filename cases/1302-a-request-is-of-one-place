@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Case of lesson L1302 (lessons/1302-a-request-is-of-one-place.md).
+Origin: the person's answers 4, 5, 6 and 12 in run 013, 2026-11-20.
+Run from the repository root."""
+import re
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("maintenance requests")
+
+CATEGORIES = ["plumbing", "electrical", "heating", "appliance", "doors and windows", "pests", "other"]
+PRIORITIES = ["urgent", "normal", "low"]
+FORM = {"category": "plumbing", "priority": "normal", "description": "Kitchen tap drips",
+        "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}
+
+
+def checks(shop):
+    flat = shop.add("places", kind="apartment", name="12B", floor="3")
+    lobby = shop.add("places", kind="area", name="Lobby", floor="")
+    gone = shop.add("places", kind="apartment", name="9A", floor="2")
+    shop.post(303, "/places/%d/edit" % gone, kind="apartment", name="9A", floor="2", active="0")
+
+    def count():
+        return len(shop.export()["requests"])
+
+    first = shop.add("requests", place_id=flat, **FORM)
+    row = shop.row("requests", first)
+    shop.expect((row["place_id"], row["category"], row["priority"], row["description"], row["reporter"], row["phone"],
+                 row["may_enter"], row["state"], row["worker_id"])
+                == (flat, "plumbing", "normal", "Kitchen tap drips", "Ana Lima", "555 0101", True, "open", None),
+                "a request entered for 12B is stored as %s" % row)
+    for category in CATEGORIES:
+        for priority in PRIORITIES:
+            shop.post(303, "/requests", place_id=lobby, **dict(FORM, category=category, priority=priority, may_enter="0"))
+    shop.expect(count() == 22, "one request for the flat and 21 for the lobby make %d" % count())
+    shop.expect(shop.export()["requests"][-1]["may_enter"] is False, "a request entered with 'may not enter' is stored as may enter")
+
+    # Left out, outside its list, or of a place that takes none: refused, and nothing stored.
+    for what, fields in [
+        ("no place", dict(FORM, place_id="")),
+        ("a place that does not exist", dict(FORM, place_id="999")),
+        ("an inactive place", dict(FORM, place_id=gone)),
+        ("a category outside the list", dict(FORM, place_id=flat, category="gardening")),
+        ("no category", dict(FORM, place_id=flat, category="")),
+        ("a priority outside the list", dict(FORM, place_id=flat, priority="soon")),
+        ("no priority", dict(FORM, place_id=flat, priority="")),
+        ("no answer to 'may enter'", dict(FORM, place_id=flat, may_enter="")),
+        ("'may enter' that is neither yes nor no", dict(FORM, place_id=flat, may_enter="maybe")),
+    ]:
+        shop.post(400, "/requests", **fields)
+        shop.expect(count() == 22, "a request with %s was refused and stored" % what)
+
+    # A second request for the same place is taken, and the place's page shows both above its form.
+    second = shop.add("requests", place_id=flat, **dict(FORM, description="Bathroom tap drips too"))
+    shop.expect([row["state"] for row in shop.export()["requests"] if row["place_id"] == flat] == ["open", "open"],
+                "two requests for one place are not both open")
+    status, body = shop.request("GET", "/places/%d" % flat)
+    form = body.find('action="/requests"')
+    shop.expect(status == 200 and form > 0, "the page of a place has no form for a new request")
+    for text in ("Kitchen tap drips", "Bathroom tap drips too"):
+        shop.expect(0 <= body.find(text) < form, "the page of 12B does not show its open request '%s' above the form" % text)
+    shop.expect(re.search(r'<input[^>]*name="place_id"[^>]*value="%d"' % flat, body) is not None,
+                "the form on the page of 12B is not for 12B")
+    status, body = shop.request("GET", "/places/%d" % gone)
+    shop.expect(status == 200 and 'action="/requests"' not in body, "an inactive place still offers the form for a new request")
+    shop.expect(second > first, "the second request did not get a number after the first")
+
+
+def places(shop):
+    return {row["id"]: row for row in shop.state()["places"]}
+
+
+@fault("POST", "/requests")
+def no_place(shop, ask):
+    """A request that names no place is filed under the first one."""
+    if not ask.get("place_id"):
+        ask.put("place_id", min(ident for ident, row in places(shop).items() if row["active"]))
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/requests")
+def inactive_place(shop, ask):
+    """An inactive place is taken like any other."""
+    place = places(shop).get(int(ask.get("place_id") or 0) if ask.get("place_id").isdigit() else 0)
+    if place and not place["active"]:
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+@fault("POST", "/requests")
+def any_category(shop, ask):
+    """A category the list does not have is stored as 'other'."""
+    if ask.get("category") not in CATEGORIES:
+        ask.put("category", "other")
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/requests")
+def enter_assumed(shop, ask):
+    """No answer to 'may enter' is taken as yes."""
+    if ask.get("may_enter") == "":
+        ask.put("may_enter", "1")
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/requests")
+def one_per_place(shop, ask):
+    """A place with an open request takes no second one."""
+    place = ask.get("place_id")
+    if place.isdigit() and places(shop).get(int(place), {}).get("kind") == "apartment" and any(
+            row["place_id"] == int(place) and row["state"] == "open" for row in shop.state()["requests"]):
+        shop.acted += 1
+        return 400, ""
+    return ask.send()
+
+
+@fault("GET", r"/places/\d+")
+def form_first(shop, ask):
+    """The place's page does not show its open requests."""
+    status, body = ask.send()
+    cut = re.sub(r"<table.*?</table>", "", body, flags=re.S)
+    shop.acted += cut != body
+    return status, cut
+
+
+run(checks, wrong=[
+    ("a request with no place is stored", no_place),
+    ("an inactive place takes a request", inactive_place),
+    ("a category outside the list is stored", any_category),
+    ("'may enter' is assumed", enter_assumed),
+    ("a second request for a place is refused", one_per_place),
+    ("the place's page does not show its open requests", form_first),
+])

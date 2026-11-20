@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Case of lesson L1307 (lessons/1307-tracker-corrected-never-removed.md).
+Origin: the person's answer 11 in run 013, 2026-11-20.
+Run from the repository root."""
+import json
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("maintenance requests")
+
+FORM = {"category": "plumbing", "priority": "normal", "description": "Kitchen tap drips",
+        "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}
+BETTER = {"category": "electrical", "priority": "urgent", "description": "Kitchen socket sparks",
+          "reporter": "Bo Li", "phone": "555 0102", "may_enter": "0"}
+
+
+def checks(shop):
+    flat = shop.add("places", kind="apartment", name="12B", floor="3")
+    other = shop.add("places", kind="apartment", name="12C", floor="3")
+    joe = shop.add("workers", name="Joe Pipe", trade="plumber", phone="555 0199")
+    one = shop.add("requests", place_id=flat, **FORM)
+
+    def got(path):
+        status, body = shop.request("GET", path)
+        shop.expect(status == 200, "GET %s answered %d" % (path, status))
+        return body
+
+    # A request is corrected in every field, keeps its number, and the correction is in its history.
+    shop.expect('value="Ana Lima"' in got("/requests/%d/edit" % one), "the form to correct a request does not hold its reporter")
+    shop.post(303, "/requests/%d/edit" % one, place_id=other, **BETTER)
+    row = shop.row("requests", one)
+    shop.expect(dict((name, row[name]) for name in BETTER) == dict(BETTER, may_enter=False) and row["place_id"] == other,
+                "a corrected request is stored as %s" % row)
+    shop.expect([event["what"] for event in shop.export()["events"] if event["request_id"] == one] == ["reported", "corrected"],
+                "a correction is not in the history of the request")
+    shop.post(400, "/requests/%d/edit" % one, place_id=999, **BETTER)
+    shop.post(303, "/requests/%d/done" % one)
+    shop.post(303, "/requests/%d/edit" % one, place_id=flat, **FORM)
+    shop.expect(shop.row("requests", one)["description"] == FORM["description"] and shop.row("requests", one)["state"] == "done",
+                "a done request cannot be corrected, or the correction changed its state")
+
+    # A place and a worker are corrected, marked inactive and back; inactive, they are still on their pages.
+    shop.post(303, "/places/%d/edit" % flat, kind="area", name="Roof terrace", floor="", active="0")
+    row = shop.row("places", flat)
+    shop.expect((row["kind"], row["name"], row["floor"], row["active"]) == ("area", "Roof terrace", None, False),
+                "a corrected place is stored as %s" % row)
+    shop.expect("Roof terrace" in got("/places") and "Roof terrace" in got("/places/%d" % flat), "an inactive place is not on the pages of places")
+    shop.expect(shop.row("requests", one)["place_id"] == flat, "the request of a place marked inactive lost its place")
+    shop.post(303, "/places/%d/edit" % flat, kind="apartment", name="12B", floor="3", active="1")
+    shop.expect(shop.row("places", flat)["active"] is True, "a place marked active again is still inactive")
+    shop.post(303, "/workers/%d/edit" % joe, name="Joe Piper", trade="heating", phone="555 0200", active="0")
+    row = shop.row("workers", joe)
+    shop.expect((row["name"], row["trade"], row["phone"], row["active"]) == ("Joe Piper", "heating", "555 0200", False),
+                "a corrected worker is stored as %s" % row)
+    shop.expect("Joe Piper" in got("/workers"), "an inactive worker is not on the page of workers")
+    shop.post(303, "/workers/%d/edit" % joe, name="Joe Piper", trade="heating", phone="555 0200", active="1")
+    shop.expect(shop.row("workers", joe)["active"] is True, "a worker marked active again is still inactive")
+
+    # No two places have one name, whatever its capitals; a place keeps its own name when corrected.
+    shop.post(400, "/places", kind="apartment", name="12b", floor="4")
+    shop.post(400, "/places", kind="area", name=" 12C ", floor="")
+    shop.post(400, "/places/%d/edit" % other, kind="apartment", name="12B", floor="3", active="1")
+    shop.post(303, "/places/%d/edit" % other, kind="apartment", name="12c", floor="3", active="1")
+    shop.expect(sorted(row["name"] for row in shop.export()["places"]) == ["12B", "12c"], "the places are %s"
+                % sorted(row["name"] for row in shop.export()["places"]))
+
+    # No address removes anything.
+    before = shop.export()
+    for thing in ("/requests/%d" % one, "/places/%d" % flat, "/workers/%d" % joe, "/events/1", "/requests/%d/events/1" % one):
+        for end in ("", "/delete", "/remove"):
+            for method in ("POST", "DELETE"):
+                status, _ = shop.request(method, thing + end)
+                shop.expect(status >= 400, "%s %s%s answered %d" % (method, thing, end, status))
+    shop.expect(shop.export() == before, "something was changed or removed")
+
+
+@fault("POST", r"/requests/\d+/edit")
+def correction_dropped(shop, ask):
+    """The form to correct a request answers as if it had stored it."""
+    shop.acted += 1
+    return 303, ""
+
+
+@fault("POST", r"/requests/(\d+)/edit")
+def closed_not_corrected(shop, ask, ident):
+    """A closed request can no longer be corrected."""
+    if [row["state"] for row in shop.state()["requests"] if row["id"] == int(ident)][0] == "done":
+        shop.acted += 1
+        return 400, ""
+    return ask.send()
+
+
+def remade(change):
+    @fault("GET", "/export.json")
+    def wrong(shop, ask):
+        status, body = ask.send()
+        state = json.loads(body)
+        shop.acted += change(state)
+        return status, json.dumps(state)
+    return wrong
+
+
+def inactive_gone(table):
+    def change(state):
+        kept = [row for row in state[table] if row["active"]]
+        acted = len(state[table]) - len(kept)
+        state[table] = kept
+        return acted
+    return change
+
+
+def correction_untold(state):
+    kept = [row for row in state["events"] if row["what"] != "corrected"]
+    acted = len(state["events"]) - len(kept)
+    state["events"] = kept
+    return acted
+
+
+@fault("POST", r"/places(?:/\d+/edit)?")
+def name_twice(shop, ask):
+    """A name another place has is accepted."""
+    mine = ask.path.split("/")[2] if ask.path.count("/") > 1 else None
+    if any(row["name"].lower() == ask.get("name").lower() and str(row["id"]) != mine for row in shop.state()["places"]):
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+def removable(shop):
+    """A place has an address that removes it."""
+    removed = set()
+
+    def front(ask):
+        if ask.method in ("POST", "DELETE") and ask.path.startswith("/places/") and ask.path.endswith("/delete"):
+            removed.add(int(ask.path.split("/")[2]))
+            shop.acted += 1
+            return 303, ""
+        status, body = ask.send()
+        if ask.path == "/export.json":
+            state = json.loads(body)
+            state["places"] = [row for row in state["places"] if row["id"] not in removed]
+            body = json.dumps(state)
+        return status, body
+    return front
+
+
+run(checks, wrong=[
+    ("a correction of a request is not stored", correction_dropped),
+    ("a done request cannot be corrected", closed_not_corrected),
+    ("a correction leaves no row in the history", remade(correction_untold)),
+    ("an inactive place leaves the record", remade(inactive_gone("places"))),
+    ("an inactive worker leaves the record", remade(inactive_gone("workers"))),
+    ("two places have one name", name_twice),
+    ("a place can be removed", removable),
+])

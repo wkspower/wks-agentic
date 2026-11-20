@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Case of lesson L1304 (lessons/1304-a-change-is-one-click.md).
+Origin: the person's answer 10 in run 013, 2026-11-20: each change is one button on the list.
+Run from the repository root."""
+import re
+import sys
+from html.parser import HTMLParser
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("maintenance requests")
+
+FORM = {"category": "plumbing", "priority": "normal", "description": "Kitchen tap drips",
+        "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}
+CHANGE = re.compile(r"/requests/(\d+)/(start|done|cancel|reopen)")
+
+
+class Reader(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.posts = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        found = CHANGE.fullmatch(attrs.get("action") or attrs.get("formaction") or "")
+        if tag in ("form", "button") and found and (tag == "button" or (attrs.get("method") or "get").lower() == "post"):
+            self.posts.append((int(found.group(1)), found.group(2)))
+
+
+def checks(shop):
+    flat = shop.add("places", kind="apartment", name="12B", floor="3")
+    new = shop.add("requests", place_id=flat, **FORM)
+    begun = shop.add("requests", place_id=flat, **FORM)
+    shop.post(303, "/requests/%d/start" % begun)
+    lists = ("/requests", "/places/%d" % flat)
+
+    def offered(path):
+        status, body = shop.request("GET", path)
+        shop.expect(status == 200, "GET %s answered %d" % (path, status))
+        reader = Reader()
+        reader.feed(body)
+        return sorted(set(reader.posts))
+
+    def states():
+        return {row["id"]: row["state"] for row in shop.export()["requests"]}
+
+    # Each list carries, for each request, the buttons its state allows and no other.
+    for path in lists:
+        shop.expect(offered(path) == [(new, "cancel"), (new, "done"), (new, "start"), (begun, "cancel"), (begun, "done")],
+                    "%s offers %s for an open request and one in progress" % (path, offered(path)))
+    shop.expect(offered("/closed") == [], "the closed list offers %s with nothing closed" % offered("/closed"))
+
+    # There is no page that asks, and opening an address changes nothing.
+    before = states()
+    for ident in (new, begun):
+        for change in ("start", "done", "cancel", "reopen"):
+            for path in ("/requests/%d/%s" % (ident, change), "/requests/%d/%s/ask" % (ident, change)):
+                status, _ = shop.request("GET", path)
+                shop.expect(status >= 400, "GET %s answered %d: a page stands between the list and the change" % (path, status))
+    shop.expect(states() == before, "opening the addresses changed the requests to %s" % states())
+
+    # One post each: done, cancelled; their buttons leave the list and reopen is on the closed list.
+    shop.post(303, "/requests/%d/done" % new)
+    shop.post(303, "/requests/%d/cancel" % begun)
+    shop.expect(states() == {new: "done", begun: "cancelled"}, "after one post each the requests are %s" % states())
+    for path in lists:
+        shop.expect(offered(path) == [], "%s still offers %s for closed requests" % (path, offered(path)))
+    shop.expect(offered("/closed") == [(new, "reopen"), (begun, "reopen")], "the closed list offers %s" % offered("/closed"))
+    shop.expect(offered("/requests/%d" % new) == [(new, "reopen")], "the page of a done request offers %s" % offered("/requests/%d" % new))
+    shop.post(303, "/requests/%d/reopen" % new)
+    shop.expect(offered("/requests") == [(new, "cancel"), (new, "done"), (new, "start")],
+                "after reopening the list offers %s" % offered("/requests"))
+    shop.expect(offered("/requests/%d" % new) == [(new, "cancel"), (new, "done"), (new, "start")],
+                "the page of an open request offers %s" % offered("/requests/%d" % new))
+
+
+@fault("GET", r"/requests|/places/\d+")
+def asks_first(shop, ask):
+    """The Done button on the list leads to a question page, not to the change."""
+    status, body = ask.send()
+    if '/done"' in body:
+        body = body.replace('/done"', '/done/ask"')
+        shop.acted += 1
+    return status, body
+
+
+@fault("GET", r"/requests/\d+/(?:start|done|cancel|reopen)")
+def opening_changes(shop, ask):
+    """Opening the address is enough to make the change."""
+    if shop.real("POST", ask.path)[0] == 303:
+        shop.acted += 1
+    return 405, ""
+
+
+@fault("GET", "/requests")
+def closed_still_offered(shop, ask):
+    """A request that is done still has its Done button on the list."""
+    status, body = ask.send()
+    for row in shop.state()["requests"]:
+        if row["state"] == "done":
+            body += '<form method="post" action="/requests/%d/done"><button type="submit">Done</button></form>' % row["id"]
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", "/requests")
+def start_offered_twice(shop, ask):
+    """A request in progress still has its Start button."""
+    status, body = ask.send()
+    for row in shop.state()["requests"]:
+        if row["state"] == "in progress":
+            body += '<form method="post" action="/requests/%d/start"><button type="submit">Start</button></form>' % row["id"]
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", "/closed")
+def no_reopen(shop, ask):
+    """The closed list shows what is closed and offers nothing."""
+    status, body = ask.send()
+    cut = re.sub(r"/requests/(\d+)/reopen", r"/requests/\1", body)
+    shop.acted += cut != body
+    return status, cut
+
+
+@fault("GET", r"/places/\d+")
+def list_without_buttons(shop, ask):
+    """The requests on a place's page have no buttons: each change is two pages away."""
+    status, body = ask.send()
+    cut = re.sub(r"<form[^>]*/requests/\d+/(?:start|done|cancel)\"[^>]*>.*?</form>", "", body, flags=re.S)
+    shop.acted += cut != body
+    return status, cut
+
+
+run(checks, wrong=[
+    ("the list leads to a question before the change", asks_first),
+    ("opening the address of a change makes it", opening_changes),
+    ("a done request is offered Done again", closed_still_offered),
+    ("a request in progress is offered Start again", start_offered_twice),
+    ("the closed list offers no reopen", no_reopen),
+    ("a place's page lists its requests without their buttons", list_without_buttons),
+])

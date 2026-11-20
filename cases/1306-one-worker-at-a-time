@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Case of lesson L1306 (lessons/1306-one-worker-at-a-time.md).
+Origin: the person's answer 8 in run 013, 2026-11-20.
+Run from the repository root."""
+import json
+import re
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("maintenance requests")
+
+FORM = {"category": "plumbing", "priority": "normal", "description": "Kitchen tap drips",
+        "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}
+LINK = re.compile(r'href="/requests/(\d+)"')
+
+
+def checks(shop):
+    flat = shop.add("places", kind="apartment", name="12B", floor="3")
+    joe = shop.add("workers", name="Joe Pipe", trade="plumber", phone="555 0199")
+    eve = shop.add("workers", name="Eve Volt", trade="electrician", phone="555 0188")
+    left = shop.add("workers", name="Old Sam", trade="", phone="555 0177")
+    one = shop.add("requests", place_id=flat, **FORM)
+    two = shop.add("requests", place_id=flat, **FORM)
+    give = "/requests/%d/assign"
+
+    def holder(ident):
+        return shop.row("requests", ident)["worker_id"]
+
+    def held(worker):
+        status, body = shop.request("GET", "/workers/%d" % worker)
+        shop.expect(status == 200, "GET /workers/%d answered %d" % (worker, status))
+        return sorted(set(int(ident) for ident in LINK.findall(body)))
+
+    shop.expect(holder(one) is None, "a new request already has worker %s" % holder(one))
+    shop.post(303, give % one, worker_id=joe)
+    shop.post(303, give % two, worker_id=joe)
+    shop.expect((holder(one), holder(two)) == (joe, joe), "two requests given to one worker are held by %s and %s" % (holder(one), holder(two)))
+    shop.expect(held(joe) == [one, two] and held(eve) == [], "the pages of the workers list %s and %s" % (held(joe), held(eve)))
+    shop.post(303, give % one, worker_id=eve)
+    shop.expect(holder(one) == eve and held(joe) == [two] and held(eve) == [one], "given to another, the request is held by %s" % holder(one))
+    shop.post(303, give % one, worker_id="")
+    shop.expect(holder(one) is None and held(eve) == [], "taken off, the request is still held by %s" % holder(one))
+
+    # A worker who does not exist or is inactive is given nothing; what an inactive one held stays theirs.
+    shop.post(303, give % two, worker_id=left)
+    shop.post(303, "/workers/%d/edit" % left, name="Old Sam", trade="", phone="555 0177", active="0")
+    shop.expect(holder(two) == left, "a worker marked inactive lost the request they held")
+    for worker in (left, 999, "joe"):
+        shop.post(400, give % one, worker_id=worker)
+    shop.expect(holder(one) is None, "a refused assignment was stored: %s" % holder(one))
+
+    # A closed request takes no assignment, and keeps who had it; reopened, it takes one again.
+    shop.post(303, give % one, worker_id=joe)
+    shop.post(303, "/requests/%d/done" % one)
+    shop.post(400, give % one, worker_id=eve)
+    shop.post(400, give % one, worker_id="")
+    shop.expect(holder(one) == joe and held(joe) == [], "a done request is held by %s and the worker's page lists %s" % (holder(one), held(joe)))
+    shop.post(303, "/requests/%d/reopen" % one)
+    shop.post(303, give % one, worker_id=eve)
+    shop.expect(holder(one) == eve and held(eve) == [one], "reopened and given to another, the request is held by %s" % holder(one))
+    told = [row["what"] for row in shop.export()["events"] if row["request_id"] == one]
+    shop.expect(told == ["reported", "assigned", "assigned", "assigned", "assigned", "done", "reopened", "assigned"],
+                "the history of the request is %s" % told)
+
+
+def worker(shop, ask):
+    found = [row for row in shop.state()["workers"] if str(row["id"]) == ask.get("worker_id")]
+    return found[0] if found else None
+
+
+@fault("POST", r"/requests/\d+/assign")
+def inactive_given_work(shop, ask):
+    """A worker marked inactive is given work like any other."""
+    who = worker(shop, ask)
+    if who and not who["active"]:
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+@fault("POST", r"/requests/(\d+)/assign")
+def closed_given(shop, ask, ident):
+    """A closed request takes an assignment."""
+    if [row["state"] for row in shop.state()["requests"] if row["id"] == int(ident)][0] in ("done", "cancelled"):
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+@fault("POST", r"/requests/\d+/assign")
+def never_taken_off(shop, ask):
+    """Nobody cannot be chosen: once given, a request always has a worker."""
+    if ask.get("worker_id") == "":
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+@fault("GET", "/export.json")
+def untold(shop, ask):
+    """An assignment leaves no row in the history."""
+    status, body = ask.send()
+    state = json.loads(body)
+    kept = [row for row in state["events"] if row["what"] != "assigned"]
+    shop.acted += len(state["events"]) - len(kept)
+    state["events"] = kept
+    return status, json.dumps(state)
+
+
+@fault("GET", r"/workers/(\d+)")
+def page_lists_closed(shop, ask, ident):
+    """A worker's page lists everything they ever held."""
+    status, body = ask.send()
+    for row in shop.state()["requests"]:
+        if row["worker_id"] == int(ident) and row["state"] in ("done", "cancelled"):
+            body += '<a href="/requests/%d">Open</a>' % row["id"]
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", r"/workers/\d+")
+def page_lists_nothing(shop, ask):
+    """A worker's page does not list what they hold."""
+    status, body = ask.send()
+    cut = LINK.sub('href="/requests"', body)
+    shop.acted += cut != body
+    return status, cut
+
+
+run(checks, wrong=[
+    ("an inactive worker is given work", inactive_given_work),
+    ("a closed request is assigned", closed_given),
+    ("a worker cannot be taken off", never_taken_off),
+    ("an assignment leaves no row in the history", untold),
+    ("a worker's page lists closed requests", page_lists_closed),
+    ("a worker's page lists nothing", page_lists_nothing),
+])

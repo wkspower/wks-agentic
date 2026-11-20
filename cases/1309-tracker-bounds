@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Case of lesson L1309 (lessons/1309-tracker-bounds.md).
+Origin: the person's answer 14 in run 013, 2026-11-20. Sends each input at the edge of
+its bound and one step outside. Run from the repository root."""
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("maintenance requests")
+
+REQUEST = {"place_id": "1", "category": "plumbing", "priority": "normal", "description": "Kitchen tap drips",
+           "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}
+WORKER = {"name": "Joe Pipe", "trade": "", "phone": "555 0199"}
+
+
+def checks(shop):
+    shop.add("places", kind="apartment", name="12B", floor="3")
+    names = iter("%d" % number for number in range(100, 1000))
+
+    def count(table):
+        return len(shop.export()[table])
+
+    def tried(table, form, field, inside, outside):
+        for value in inside:
+            before = count(table)
+            shop.post(303, "/" + table, **dict(form() if callable(form) else form, **{field: value}))
+            shop.expect(count(table) == before + 1, "%s '%s' was accepted and nothing was stored" % (field, value[:30]))
+        for value in outside:
+            before = count(table)
+            shop.post(400, "/" + table, **dict(form() if callable(form) else form, **{field: value}))
+            shop.expect(count(table) == before, "%s '%s' (%d characters) was refused and stored" % (field, value[:30], len(value)))
+
+    tried("requests", REQUEST, "description", ["d", "d" * 1000, "  " + "d" * 1000 + "\n", "Ünïcödé 🔧"], ["", "  \n ", "d" * 1001])
+    tried("requests", REQUEST, "reporter", ["r", "r" * 60, " " + "r" * 60 + " "], ["", "  ", "r" * 61])
+    tried("requests", REQUEST, "phone", ["123", "+55 (11) 91234-5678", "1" * 20, "555.0101"],
+          ["", "12", "1" * 21, "call me", "555 0101 ext", "555\t0101", "five five five"])
+    tried("requests", REQUEST, "place_id", ["1", "001"], ["", "0", "-1", "1.0", "one", "1" * 10, "1 or 1"])
+    tried("workers", WORKER, "name", ["n", "n" * 60], ["", "   ", "n" * 61])
+    tried("workers", WORKER, "trade", ["", "t" * 40], ["t" * 41])
+    tried("workers", WORKER, "phone", ["123", "1" * 20], ["", "12", "1" * 21, "none"])
+
+    def apartment():
+        return {"kind": "apartment", "name": next(names), "floor": "1"}
+
+    def area():
+        return {"kind": "area", "name": "Area " + next(names), "floor": ""}
+
+    tried("places", apartment, "floor", ["-5", "0", "200", " 7 "], ["", "-6", "201", "1.5", "1e1", "ground", "+3", "٣"])
+    tried("places", area, "floor", ["", "-5", "200"], ["-6", "201", "top"])
+    tried("places", apartment, "name", ["a", "a" * 10, " " + "b" * 10 + " "], ["", "  ", "c" * 11])
+    tried("places", area, "name", ["g", "g" * 60], ["", "h" * 61])
+    tried("places", apartment, "kind", ["apartment", "area"], ["", "garage", "Apartment "])
+
+    # What was typed is stored with the spaces around it removed.
+    made = shop.add("requests", **dict(REQUEST, description="  Tap drips \n", reporter=" Bo Li ", phone=" 555 0102 "))
+    row = shop.row("requests", made)
+    shop.expect((row["description"], row["reporter"], row["phone"]) == ("Tap drips", "Bo Li", "555 0102"),
+                "a request typed with spaces around its fields is stored as %s" % row)
+    long = [row for row in shop.export()["requests"] if len(row["description"]) == 1000]
+    shop.expect(len(long) == 2, "%d descriptions of exactly 1000 characters are stored, expected 2" % len(long))
+
+    # The same bounds hold where a row is corrected.
+    for path, form, field, value in [
+        ("/requests/1/edit", REQUEST, "description", "d" * 1001), ("/requests/1/edit", REQUEST, "phone", "12"),
+        ("/places/1/edit", {"kind": "apartment", "name": "12B", "floor": "3", "active": "1"}, "floor", "201"),
+        ("/places/1/edit", {"kind": "apartment", "name": "12B", "floor": "3", "active": "1"}, "active", "2"),
+        ("/workers/1/edit", dict(WORKER, active="1"), "name", "n" * 61), ("/workers/1/edit", dict(WORKER, active="1"), "active", ""),
+    ]:
+        before = shop.export()
+        shop.post(400, path, **dict(form, **{field: value}))
+        shop.expect(shop.export() == before, "a correction with %s out of bounds was refused and stored" % field)
+
+    # Notes: 500 characters at most, with a change or alone; alone, at least one.
+    events = count("events")
+    shop.post(303, "/requests/1/note", note="n" * 500)
+    shop.post(303, "/requests/1/start", note="n" * 500)
+    for path, note in [("/requests/1/note", "n" * 501), ("/requests/1/note", ""), ("/requests/1/done", "n" * 501), ("/requests/1/assign", "x")]:
+        shop.post(400, path, note=note, worker_id="1" * 10)
+    shop.expect(count("events") == events + 2 and shop.row("requests", 1)["state"] == "in progress",
+                "a note out of bounds was stored, or the change it came with was made")
+
+    # Search text 100 characters at most; one form 65,536 bytes at most.
+    for path, fine in [("/requests?q=" + "q" * 100, 200), ("/requests?q=" + "q" * 101, 400), ("/places?q=" + "q" * 100, 200),
+                       ("/places?q=" + "q" * 101, 400), ("/requests?category=gardening", 400), ("/requests?state=lost", 400),
+                       ("/requests?place_id=" + "1" * 10, 400)]:
+        status, _ = shop.request("GET", path)
+        shop.expect(status == fine, "GET %s… answered %d, expected %d" % (path[:24], status, fine))
+    before = count("requests")
+    status, _ = shop.request("POST", "/requests", list(REQUEST.items()) + [("padding", "p" * 65536)])
+    shop.expect(status in (400, 413) and count("requests") == before, "a form of more than 65,536 bytes answered %d" % status)
+
+
+def clipped(path, field, fits, mend):
+    """A fault that makes one input fit its bound, where the product should have refused it."""
+    @fault("POST", path)
+    def wrong(shop, ask):
+        if not fits(ask.get(field)):
+            ask.put(field, mend(ask.get(field)))
+            shop.acted += 1
+        return ask.send()
+    return wrong
+
+
+@fault("GET", r"/(?:requests|places)\?q=.*")
+def long_search(shop, ask):
+    """A search text of any length is searched for."""
+    if len(ask.path.split("q=")[1]) > 100:
+        ask.path = ask.path[:len(ask.path.split("q=")[0]) + 102]
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/requests")
+def any_size(shop, ask):
+    """A form of any size is read."""
+    if sum(len(value) for _, value in ask.pairs) > 65536:
+        ask.pairs = [pair for pair in ask.pairs if pair[0] != "padding"]
+        shop.acted += 1
+    return ask.send()
+
+
+digits = lambda text: text.strip().lstrip("-").isascii() and text.strip().lstrip("-").isdigit()
+run(checks, wrong=[
+    ("a description that is too long is cut and stored", clipped("/requests", "description", lambda text: len(text.strip()) <= 1000, lambda text: text[:1000])),
+    ("an empty description is stored", clipped("/requests", "description", lambda text: text.strip(), lambda text: "-")),
+    ("a phone may be any text", clipped(r"/requests|/workers", "phone", lambda text: not text.strip() or all(sign in "0123456789 +-().\t" for sign in text.strip()) and len(text.strip()) > 2, lambda text: "000")),
+    ("a floor above 200 is stored as 200", clipped("/places", "floor", lambda text: not digits(text) or -5 <= int(text) <= 200, lambda text: "200")),
+    ("an apartment needs no floor", clipped("/places", "floor", lambda text: text.strip(), lambda text: "0")),
+    ("an apartment number may be as long as an area's name", clipped("/places", "name", lambda text: len(text.strip()) <= 10 or text.startswith("Area") or len(text.strip()) > 60 or set(text) <= set("gh"), lambda text: text[:10])),
+    ("a note that is too long is cut and stored", clipped(r"/requests/\d+/(?:note|done)", "note", lambda text: len(text) <= 500, lambda text: text[:500])),
+    ("a search text of any length is searched for", long_search),
+    ("a form of any size is read", any_size),
+])

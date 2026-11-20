@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Case of lesson L1305 (lessons/1305-the-server-sets-every-date.md).
+Origin: the person's answer 9 in run 013, 2026-11-20: due 1, 7 and 30 days after the report.
+The product is started again on later days to see requests fall due. Run from the repository root."""
+import datetime
+import json
+import re
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("maintenance requests")
+
+FORM = {"category": "plumbing", "description": "Kitchen tap drips", "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}
+DAYS = {"urgent": 1, "normal": 7, "low": 30}
+ROW = re.compile(r"<tr\b.*?</tr>", re.S)
+LINK = re.compile(r'href="/requests/(\d+)"')
+
+
+def after(day, days):
+    return (datetime.date.fromisoformat(day) + datetime.timedelta(days=days)).isoformat()
+
+
+def listed(body):
+    seen = []
+    for ident in LINK.findall(body):
+        if int(ident) not in seen:
+            seen.append(int(ident))
+    return seen
+
+
+def checks(shop):
+    flat = shop.add("places", kind="apartment", name="12B", floor="3")
+    start = shop.export()["today"]
+    shop.expect(start == datetime.date.today().isoformat(), "started with no day given, the product says today is %s" % start)
+    # Entered low first, so that the most overdue first is not the order of their numbers.
+    made = {priority: shop.add("requests", place_id=flat, priority=priority, reported="2000-01-01", due="2100-01-01",
+                               closed="2000-01-02", day="2000-01-01", **FORM) for priority in ("low", "normal", "urgent")}
+    for priority, ident in made.items():
+        row = shop.row("requests", ident)
+        shop.expect((row["reported"], row["due"], row["closed"]) == (start, after(start, DAYS[priority]), None),
+                    "a %s request reported on %s is reported %s, due %s, closed %s"
+                    % (priority, start, row["reported"], row["due"], row["closed"]))
+    shop.expect(all(row["day"] == start for row in shop.export()["events"]), "a history row took its day from the form")
+
+    def overdue(day):
+        shop.restart("--today", day)
+        shop.expect(shop.export()["today"] == day, "started on %s, the product says today is %s" % (day, shop.export()["today"]))
+        status, body = shop.request("GET", "/overdue")
+        shop.expect(status == 200, "GET /overdue answered %d" % status)
+        return listed(body)
+
+    shop.expect(listed(shop.request("GET", "/overdue")[1]) == [], "a request is overdue on the day it was reported")
+    for days, names in [(1, []), (2, ["urgent"]), (7, ["urgent"]), (8, ["urgent", "normal"]), (30, ["urgent", "normal"]),
+                        (31, ["urgent", "normal", "low"])]:
+        got = overdue(after(start, days))
+        shop.expect(got == [made[name] for name in names], "%d days after the reports the overdue list holds %s, expected %s in that order"
+                    % (days, got, [made[name] for name in names]))
+
+    # In progress is still overdue; done and cancelled are not, and take the server's day.
+    late = after(start, 31)
+    shop.post(303, "/requests/%d/start" % made["urgent"])
+    shop.post(303, "/requests/%d/done" % made["normal"], closed="2000-01-01")
+    shop.expect(shop.row("requests", made["normal"])["closed"] == late, "a request done on %s is closed on %s"
+                % (late, shop.row("requests", made["normal"])["closed"]))
+    got = listed(shop.request("GET", "/overdue")[1])
+    shop.expect(got == [made["urgent"], made["low"]], "with one in progress and one done the overdue list holds %s" % got)
+    shop.post(303, "/requests/%d/reopen" % made["normal"])
+    shop.expect(shop.row("requests", made["normal"])["due"] == after(start, 7), "reopening moved the day due")
+
+    # A corrected priority moves the day due, counted from the report.
+    shop.post(303, "/requests/%d/edit" % made["low"], place_id=flat, priority="urgent", **FORM)
+    row = shop.row("requests", made["low"])
+    shop.expect((row["reported"], row["due"]) == (start, after(start, 1)), "a low request corrected to urgent is reported %s and due %s"
+                % (row["reported"], row["due"]))
+
+
+def remade(change):
+    """A fault that changes what /export.json says."""
+    @fault("GET", "/export.json")
+    def wrong(shop, ask):
+        status, body = ask.send()
+        state = json.loads(body)
+        shop.acted += change(state)
+        return status, json.dumps(state)
+    return wrong
+
+
+def typed_date(shop):
+    """The day reported is the one the form sent."""
+    typed = {}
+
+    def front(ask):
+        if ask.method == "POST" and ask.path == "/requests":
+            status, body = ask.send()
+            if ask.get("reported") and status == 303:
+                typed[max(row["id"] for row in shop.state()["requests"])] = ask.get("reported")
+            return status, body
+        status, body = ask.send()
+        if ask.path == "/export.json":
+            state = json.loads(body)
+            for row in state["requests"]:
+                if row["id"] in typed:
+                    row["reported"] = typed[row["id"]]
+                    shop.acted += 1
+            body = json.dumps(state)
+        return status, body
+    return front
+
+
+def month_for_normal(state):
+    acted = 0
+    for row in state["requests"]:
+        if row["priority"] == "normal":
+            row["due"] = after(row["reported"], 30)
+            acted += 1
+    return acted
+
+
+def due_from_today(state):
+    acted = 0
+    for row in state["requests"]:
+        if state["today"] != row["reported"]:
+            row["due"] = after(state["today"], DAYS[row["priority"]])
+            acted += 1
+    return acted
+
+
+@fault("GET", "/overdue")
+def due_day_counts(shop, ask):
+    """A request is overdue on its day due, not after it."""
+    status, body = ask.send()
+    state = shop.state()
+    for row in state["requests"]:
+        if row["due"] == state["today"] and row["state"] in ("open", "in progress"):
+            body += '<a href="/requests/%d">Open</a>' % row["id"]
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", "/overdue")
+def by_number(shop, ask):
+    """The overdue list is in the order the requests were entered."""
+    status, body = ask.send()
+    rows = [row for row in ROW.findall(body) if LINK.search(row)]
+    if len(rows) > 1:
+        ordered = sorted(rows, key=lambda row: int(LINK.search(row).group(1)))
+        spots = iter(ordered)
+        body = ROW.sub(lambda found: next(spots) if LINK.search(found.group(0)) else found.group(0), body)
+        shop.acted += ordered != rows
+    return status, body
+
+
+@fault("GET", "/overdue")
+def done_still_overdue(shop, ask):
+    """A request done after its day due stays on the overdue list."""
+    status, body = ask.send()
+    for row in shop.state()["requests"]:
+        if row["state"] == "done" and row["closed"] > row["due"]:
+            body += '<a href="/requests/%d">Open</a>' % row["id"]
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", "/overdue")
+def started_not_overdue(shop, ask):
+    """Once work has started a request is never overdue."""
+    status, body = ask.send()
+    for row in shop.state()["requests"]:
+        if row["state"] == "in progress":
+            cut = "".join(part for part in re.split("(%s)" % ROW.pattern, body, flags=re.S)
+                          if not (ROW.fullmatch(part) and 'href="/requests/%d"' % row["id"] in part))
+            shop.acted += cut != body
+            body = cut
+    return status, body
+
+
+run(checks, wrong=[
+    ("the day reported is taken from the form", typed_date),
+    ("a normal request is given 30 days", remade(month_for_normal)),
+    ("the day due moves with today", remade(due_from_today)),
+    ("a request is overdue on its day due", due_day_counts),
+    ("the overdue list is in the order of entry", by_number),
+    ("a done request stays overdue", done_still_overdue),
+    ("a request in progress is not overdue", started_not_overdue),
+])

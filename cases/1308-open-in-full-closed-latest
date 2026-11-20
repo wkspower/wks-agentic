@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Case of lesson L1308 (lessons/1308-open-in-full-closed-latest.md).
+Origin: the person's answer 13 in run 013, 2026-11-20.
+Enters 230 requests, more than a capped list would show. Run from the repository root."""
+import json
+import re
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("maintenance requests")
+
+FORM = {"reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}
+ROW = re.compile(r"<tr\b.*?</tr>", re.S)
+LINK = re.compile(r'href="/requests/(\d+)"')
+RANK = {"urgent": 0, "normal": 1, "low": 2}
+MANY = 230
+
+
+def listed(body):
+    seen = []
+    for ident in LINK.findall(body):
+        if int(ident) not in seen:
+            seen.append(int(ident))
+    return seen
+
+
+def says(body, number, word):
+    return re.search(r"(?<![\d#])%d %s" % (number, word), re.sub(r"<[^>]+>", " ", body)) is not None
+
+
+def checks(shop):
+    flat = shop.add("places", kind="apartment", name="12B", floor="3")
+    lobby = shop.add("places", kind="area", name="Lobby", floor="")
+    for spot in range(MANY):
+        shop.post(303, "/requests", place_id=lobby if spot % 5 == 0 else flat, priority=("low", "normal", "urgent")[spot % 3],
+                  category="heating" if spot % 2 else "plumbing", description="Radiator %d is cold" % spot, **FORM)
+    rows = shop.export()["requests"]
+    shop.expect(len(rows) == MANY, "%d requests were entered and %d are stored" % (MANY, len(rows)))
+
+    def page(path):
+        status, body = shop.request("GET", path)
+        shop.expect(status == 200, "GET %s answered %d" % (path, status))
+        return body
+
+    # Open: every one, urgent first and then oldest. Entered on one day, oldest is the lowest number.
+    body = page("/requests")
+    order = [row["id"] for row in sorted(rows, key=lambda row: (RANK[row["priority"]], row["id"]))]
+    shop.expect(listed(body) == order, "the open list shows %d of %d requests, or not urgent first and then oldest: it begins %s"
+                % (len(listed(body)), MANY, listed(body)[:5]))
+    shop.expect(says(body, MANY, "open"), "the open list does not say '%d open'" % MANY)
+
+    # A search looks in everything, shows the first 200 matches, newest first, and says how many matched.
+    for query, match in [
+        ("q=radiator", lambda row: True),
+        ("q=RADIATOR+7", lambda row: "radiator 7" in row["description"].lower()),
+        ("category=heating", lambda row: row["category"] == "heating"),
+        ("place_id=%d" % lobby, lambda row: row["place_id"] == lobby),
+        ("state=open&category=plumbing&place_id=%d&q=1" % flat,
+         lambda row: row["category"] == "plumbing" and row["place_id"] == flat and "1" in row["description"]),
+        ("q=no+such+words", lambda row: False),
+    ]:
+        body = page("/requests?" + query)
+        found = sorted((row["id"] for row in rows if match(row)), reverse=True)
+        shop.expect(listed(body) == found[:200], "the search %s shows %d rows beginning %s, expected %d beginning %s"
+                    % (query, len(listed(body)), listed(body)[:3], min(200, len(found)), found[:3]))
+        shop.expect(says(body, len(found), "match"), "the search %s does not say that %d match" % (query, len(found)))
+
+    # Closed: the latest 200, and how many there are. Closed on a later day, the first 25 are the oldest.
+    for row in rows[:25]:
+        shop.post(303, "/requests/%d/%s" % (row["id"], "cancel" if row["id"] % 2 else "done"))
+    shop.restart("--today", "2099-06-01")
+    for row in rows[25:MANY - 5]:
+        shop.post(303, "/requests/%d/%s" % (row["id"], "cancel" if row["id"] % 2 else "done"))
+    body = page("/closed")
+    latest = [row["id"] for row in rows[25:MANY - 5]]
+    shop.expect(len(listed(body)) == 200 and set(listed(body)) <= set(latest), "the closed list shows %d rows, %d of them not among the latest closed"
+                % (len(listed(body)), len(set(listed(body)) - set(latest))))
+    shop.expect(says(body, MANY - 5, "closed"), "the closed list does not say '%d closed'" % (MANY - 5))
+    shop.expect(len(listed(page("/requests"))) == 5 and len(listed(page("/requests?state=done"))) == 200
+                and says(page("/requests?state=done"), (MANY - 5) // 2, "match"), "the open list or the search by state is wrong after closing")
+
+    # Everything is in the export.
+    state = shop.export()
+    shop.expect(len(state["requests"]) == MANY and len(state["events"]) == 2 * MANY - 5 and len(state["places"]) == 2,
+                "the export holds %d requests and %d history rows" % (len(state["requests"]), len(state["events"])))
+
+
+def rows_cut(pattern, keep):
+    @fault("GET", pattern)
+    def wrong(shop, ask):
+        status, body = ask.send()
+        seen = [0]
+
+        def one(found):
+            seen[0] += bool(LINK.search(found.group(0)))
+            return found.group(0) if seen[0] <= keep or not LINK.search(found.group(0)) else ""
+        cut = ROW.sub(one, body)
+        shop.acted += cut != body
+        return status, cut
+    return wrong
+
+
+@fault("GET", "/requests")
+def by_number(shop, ask):
+    """The open list is in the order of entry."""
+    status, body = ask.send()
+    rows = [row for row in ROW.findall(body) if LINK.search(row)]
+    ordered = sorted(rows, key=lambda row: int(LINK.search(row).group(1)))
+    spots = iter(ordered)
+    body = ROW.sub(lambda found: next(spots) if LINK.search(found.group(0)) else found.group(0), body)
+    shop.acted += ordered != rows
+    return status, body
+
+
+@fault("GET", "/closed")
+def closed_in_full(shop, ask):
+    """The closed list shows every closed request."""
+    status, body = ask.send()
+    for row in shop.state()["requests"]:
+        if row["closed"] and 'href="/requests/%d"' % row["id"] not in body:
+            body += '<a href="/requests/%d">Open</a>' % row["id"]
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", r"/closed|/requests\?.*")
+def count_unsaid(shop, ask):
+    """A list that is cut does not say how many there are."""
+    status, body = ask.send()
+    cut = re.sub(r"\d+ (closed|match)", r"\1", body)
+    shop.acted += cut != body
+    return status, cut
+
+
+@fault("GET", r"/requests\?.*")
+def search_open_only(shop, ask):
+    """The search looks only in what is open."""
+    if "state=" in ask.path and "state=open" not in ask.path and "state=&" not in ask.path:
+        shop.acted += 1
+        ask.path = re.sub(r"state=[^&]*", "state=open", ask.path)
+    return ask.send()
+
+
+@fault("GET", "/export.json")
+def export_open_only(shop, ask):
+    """The export holds what is not closed."""
+    status, body = ask.send()
+    state = json.loads(body)
+    kept = [row for row in state["requests"] if row["closed"] is None]
+    shop.acted += len(state["requests"]) - len(kept)
+    state["requests"] = kept
+    return status, json.dumps(state)
+
+
+run(checks, wrong=[
+    ("the open list stops at 200", rows_cut("/requests", 200)),
+    ("the open list is in the order of entry", by_number),
+    ("the closed list shows every closed request", closed_in_full),
+    ("a list does not say how many there are", count_unsaid),
+    ("the search looks only in open requests", search_open_only),
+    ("the export leaves out what is closed", export_open_only),
+])

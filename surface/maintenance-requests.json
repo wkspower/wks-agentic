@@ -1,0 +1,4 @@
+{
+ "label": "maintenance requests",
+ "main": "product/maintenance.py"
+}

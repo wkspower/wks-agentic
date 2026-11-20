@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Case of lesson L1303 (lessons/1303-states-and-history.md).
+Origin: the person's answer 7 in run 013, 2026-11-20.
+Run from the repository root."""
+import json
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("maintenance requests")
+
+FORM = {"category": "plumbing", "priority": "normal", "description": "Kitchen tap drips",
+        "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}
+CHANGES = ("start", "done", "cancel", "reopen")
+
+
+def checks(shop):
+    flat = shop.add("places", kind="apartment", name="12B", floor="3")
+    one = shop.add("requests", place_id=flat, **FORM)
+    today = shop.export()["today"]
+    at = "/requests/%d/" % one
+
+    def now():
+        row = shop.row("requests", one)
+        return row["state"], row["closed"]
+
+    def history():
+        return [row for row in shop.export()["events"] if row["request_id"] == one]
+
+    def refused(*changes):
+        before = now(), history()
+        for change in changes:
+            shop.post(400, at + change)
+        shop.expect((now(), history()) == before, "a refused %s changed the request or its history" % "/".join(changes))
+
+    shop.expect(now() == ("open", None), "a new request is %s" % (now(),))
+    refused("reopen")
+    shop.post(303, at + "start")
+    shop.expect(now() == ("in progress", None), "a started request is %s" % (now(),))
+    refused("start", "reopen")
+    shop.post(303, at + "done", note="  Replaced the washer ")
+    shop.expect(now() == ("done", today), "a request done today is %s" % (now(),))
+    refused("start", "done", "cancel")
+    shop.post(303, at + "reopen", note="Drips again")
+    shop.expect(now() == ("open", None), "a reopened request is %s" % (now(),))
+    shop.post(303, at + "cancel")
+    shop.expect(now() == ("cancelled", today), "a request cancelled today is %s" % (now(),))
+    refused("start", "done", "cancel")
+    shop.post(303, at + "reopen")
+    shop.post(303, at + "note", note="Waiting for a part")
+    shop.post(400, at + "note", note="   ")
+    shop.post(400, "/requests/999/start")
+
+    # The next day it is done straight from open; what was written before stays as it was.
+    before = history()
+    shop.restart("--today", "2099-06-01")
+    shop.post(303, at + "done")
+    shop.expect(now() == ("done", "2099-06-01"), "a request done on 2099-06-01 is %s" % (now(),))
+    rows = history()
+    shop.expect(rows[:len(before)] == before, "a later change rewrote the history before it")
+    shop.expect([(row["what"], row["note"], row["day"]) for row in rows] == [
+        ("reported", "", today), ("started", "", today), ("done", "Replaced the washer", today),
+        ("reopened", "Drips again", today), ("cancelled", "", today), ("reopened", "", today),
+        ("note", "Waiting for a part", today), ("done", "", "2099-06-01")],
+        "the history of the request is %s" % [(row["what"], row["note"], row["day"]) for row in rows])
+    status, body = shop.request("GET", "/requests/%d" % one)
+    shop.expect(status == 200 and all(text in body for text in ("Replaced the washer", "Drips again", "Waiting for a part")),
+                "the page of the request does not show the notes of its history")
+
+
+def state_of(shop, path):
+    ident = int(path.split("/")[2])
+    return [row["state"] for row in shop.state()["requests"] if row["id"] == ident][0]
+
+
+@fault("POST", r"/requests/\d+/(?:done|cancel)")
+def closed_twice(shop, ask):
+    """Closing what is closed is taken like the first time."""
+    if state_of(shop, ask.path) in ("done", "cancelled"):
+        shop.acted += 1
+        return 303, ""
+    return ask.send()
+
+
+@fault("POST", r"/requests/\d+/start")
+def started_from_anywhere(shop, ask):
+    """Work can start on a request that is closed: it is reopened without a word."""
+    if state_of(shop, ask.path) in ("done", "cancelled"):
+        shop.real("POST", ask.path.replace("start", "reopen"))
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", r"/requests/\d+/reopen")
+def never_reopened(shop, ask):
+    """What is closed stays closed."""
+    shop.acted += 1
+    return 400, ""
+
+
+@fault("POST", r"/requests/\d+/(?:start|done|cancel|reopen)")
+def note_lost(shop, ask):
+    """The note typed with a change is not kept."""
+    if ask.get("note").strip():
+        ask.put("note", "")
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("GET", "/export.json")
+def changes_forgotten(shop, ask):
+    """Only the report is on record."""
+    status, body = ask.send()
+    state = json.loads(body)
+    kept = [row for row in state["events"] if row["what"] in ("reported", "note")]
+    shop.acted += len(state["events"]) - len(kept)
+    state["events"] = kept
+    return status, json.dumps(state)
+
+
+@fault("GET", "/export.json")
+def still_closed(shop, ask):
+    """A reopened request keeps the day it was closed."""
+    status, body = ask.send()
+    state = json.loads(body)
+    for row in state["requests"]:
+        closing = [event["day"] for event in state["events"] if event["request_id"] == row["id"] and event["what"] in ("done", "cancelled")]
+        if row["closed"] is None and closing:
+            row["closed"] = closing[-1]
+            shop.acted += 1
+    return status, json.dumps(state)
+
+
+@fault("GET", "/export.json")
+def history_redated(shop, ask):
+    """Every row of the history says today."""
+    status, body = ask.send()
+    state = json.loads(body)
+    for row in state["events"]:
+        shop.acted += row["day"] != state["today"]
+        row["day"] = state["today"]
+    return status, json.dumps(state)
+
+
+run(checks, wrong=[
+    ("a closed request is closed again", closed_twice),
+    ("work starts on a closed request", started_from_anywhere),
+    ("a closed request cannot be reopened", never_reopened),
+    ("the note of a change is lost", note_lost),
+    ("a change of state leaves no row in the history", changes_forgotten),
+    ("a reopened request keeps its closing day", still_closed),
+    ("the history is dated again on a later day", history_redated),
+])
