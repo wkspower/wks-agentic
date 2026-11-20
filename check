@@ -26,6 +26,7 @@ Usage: ./check [TREE]       check a tree (default: the one this file is in)
        ./check --start      print what a session is given at its start; the hook runs this, and it always ends with 0
        ./check --lessons    print the lessons in force besides those in CLAUDE.md, and the labels that are off
        ./check --lessons LABEL ...   print the lessons a label brings
+       ./check --next       print the number the next lesson of this run takes; the start text says it too
        ./check --cases      print the cases in force, one per line, and run nothing
        ./check --selftest   run the check against wrong trees it must refuse
        ./check --plant DIR  write the small right tree of the selftest to DIR, for a case to spoil
@@ -48,6 +49,7 @@ DECLARED = os.path.join("product", "LABELS")
 SETTINGS = os.path.join(".claude", "settings.json")
 HOOK = '"${CLAUDE_PROJECT_DIR}"/check --start'  # run by Claude Code at every start of a session
 HEAD = "Lessons at the start of this session"  # CLAUDE.md says a session without this text was not given its lessons
+LAST_PLAIN = 42  # the plain sequence of lesson numbers ended at L0042; past it a number is a run and a place in it (L1101)
 CAP = 10000  # characters of a hook's output that Claude Code puts in the context; past it, a preview of 2,000 and a file's path
 
 
@@ -102,6 +104,52 @@ def lessons(tree, problems):
                                 "%s every other one" % (lesson, ", ".join(labels), home, ENTRY, REST))
             lines.append((lesson, labels, why_prose, line))
     return lines
+
+
+def numbering(tree, lines, problems):
+    """L1203 is the third lesson of run 12, and the tree has the record of run 12 (L1101)."""
+    records = names(tree, "runs")
+    for lesson, _, _, _ in lines:
+        number = int(lesson[1:])
+        if LAST_PLAIN < number < 100:
+            problems.append("%s: the plain sequence of numbers ended at L%04d. A lesson is numbered by its run and its "
+                            "place in it, L1203 for the third lesson of run 12; `./check --next` says the next one"
+                            % (lesson, LAST_PLAIN))
+        elif number >= 100 and not any(name.startswith("%03d-" % (number // 100)) for name in records):
+            problems.append("%s is a lesson of run %d, and there is no runs/%03d-*.md: a run's record is begun with its "
+                            "first lesson" % (lesson, number // 100, number // 100))
+
+
+def run_of(tree):
+    """The run this checkout is of, by the name of its branch run/NNN-slug: (number or None, branch or None)."""
+    try:
+        top = subprocess.run(["git", "-C", tree, "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"],
+                             capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, None
+    said = top.stdout.split("\n")
+    if top.returncode != 0 or len(said) < 2 or os.path.realpath(said[0]) != os.path.realpath(tree):
+        return None, None
+    found = re.match(r"run/(\d{3})-", said[1])
+    return (int(found.group(1)) if found else None), said[1]
+
+
+def next_number(tree):
+    """(the next lesson number of this run or None, a sentence that says it or says why there is none)."""
+    run, branch = run_of(tree)
+    if branch is None:
+        return None, ""
+    if run is None:
+        return None, ("The branch `%s` is no run's: a lesson has no number to take here. A run is on a branch "
+                      "`run/NNN-slug` (`./bring --begin SLUG` makes one)." % branch)
+    if not 1 <= run <= 99:
+        return None, "Run %03d has no block of lesson numbers: L and four digits hold runs 01 to 99 (L1101)." % run
+    places = [int(lesson[3:]) for lesson, _, _, _ in lessons(tree, []) if lesson[1:3] == "%02d" % run]
+    if max(places or [0]) >= 99:
+        return None, "Run %03d has used its 99 numbers (L1101)." % run
+    number = "L%02d%02d" % (run, max(places or [0]) + 1)
+    return number, ("This is run %03d, by the name of its branch (`%s`). A lesson learned here takes the next number of "
+                    "the run: %s. Its record is `runs/%03d-*.md`, begun with its first lesson." % (run, branch, number, run))
 
 
 def lesson_files(tree, lines, problems):
@@ -221,6 +269,7 @@ def record(tree):
         for word in labels:
             carried.setdefault(word, []).append(lesson)
     chosen = declared(tree, carried, problems)
+    numbering(tree, lines, problems)
     return problems, lines, carried, chosen, set(chosen) | {ALWAYS}
 
 
@@ -253,9 +302,10 @@ def print_lessons(tree, asked):
     return True
 
 
-def start_text(lines, carried, chosen, problems=()):
+def start_text(lines, carried, chosen, problems=(), run=""):
     """What the hook puts in front of a session: the lessons in force besides `always`, or every label with its lessons."""
     out = ["%s, printed by `./check --start` from the SessionStart hook in `%s`." % (HEAD, SETTINGS)]
+    out += [run] if run else []
     if problems:
         out.append("Wrong in the record, to be put right before anything else (`./check` says more):")
         out += ["  " + problem for problem in problems]
@@ -280,7 +330,7 @@ def print_start(tree):
     """Never fails: when a hook ends with an error, Claude Code shows the session nothing of what it printed."""
     try:
         problems, lines, carried, chosen, _ = record(tree)
-        sys.stdout.write(start_text(lines, carried, chosen, problems))
+        sys.stdout.write(start_text(lines, carried, chosen, problems, next_number(tree)[1]))
     except Exception as error:  # whatever is wrong, the session is told and goes on
         print("%s could not be printed (%s). Run `./check` and put that right first." % (HEAD, error))
     return 0
@@ -301,7 +351,8 @@ def hook_problems(tree, lines, carried, chosen):
     elif not any(found):
         problems.append("%s: the SessionStart hook has a matcher, so it does not fire at every start (a new session, "
                         "a resume, a clear, a compaction)" % SETTINGS)
-    sizes = [len(start_text(lines, carried, chosen)), len(start_text(lines, carried, []))]
+    run = next_number(tree)[1]  # on a run's branch the text also says the next lesson number, about 200 characters
+    sizes = [len(start_text(lines, carried, chosen, run=run)), len(start_text(lines, carried, [], run=run))]
     for size, where in zip(sizes, ("this tree", "this tree without its product")):
         if size > CAP:
             problems.append("`./check --start` prints %d characters for %s, and past %d Claude Code gives a session "
@@ -409,6 +460,13 @@ def good(tree):
     write(tree, "product/app.py", "print('a product')\n")
 
 
+def third(tree, number):
+    """One more lesson under `web pages`, with its file and its case."""
+    write(tree, REST, line("0002", "web pages") + line(number, "web pages"))
+    write(tree, "lessons/%s-x.md" % number, GOOD_LESSON)
+    write(tree, "cases/%s-x" % number, GOOD_CASE % number, True)
+
+
 def no_product(tree):
     shutil.rmtree(os.path.join(tree, "product"))
 
@@ -431,6 +489,9 @@ RIGHT = {
         "with a case 1 · prose only 1"),
     "a lesson with a second case, under another number": (
         lambda t: write(t, "cases/0007-y", GOOD_CASE % "0002", True), "cases run 3"),
+    # Since run 011 (L1101): a number is a run and a place in it.
+    "the first lesson of run 12, in a tree with the record of run 12": (
+        lambda t: third(t, "1201") or write(t, "runs/012-x.md", "# Run 012\n"), "in force 3 · not in force 0"),
 }
 
 WRONG = {
@@ -477,6 +538,10 @@ WRONG = {
     "lessons beyond what a hook may print once the product is taken away": lambda t: write(
         t, REST, line("0002", "web pages") + line("0003", "money").replace("One true thing", "One true thing " * 700))
     or write(t, "lessons/0003-x.md", GOOD_LESSON) or write(t, "cases/0003-x", GOOD_CASE % "0003", True),
+    # Since run 011 (L1101): the plain sequence ended at L0042, and a lesson past it belongs to a run the tree has a record of.
+    "a lesson that takes the next number of the plain sequence": lambda t: third(t, "0043"),
+    "a lesson of run 12 in a tree with no record of run 12": lambda t: third(t, "1201"),
+    "a lesson of run 12 when the tree has the record of another run": lambda t: third(t, "1201") or write(t, "runs/013-x.md", "# Run 013\n"),
 }
 
 NOT_CAUGHT = (
@@ -484,7 +549,9 @@ NOT_CAUGHT = (
     "a reason that is wrong; a label misspelt on a lesson, which only shows as a lesson not in force; "
     "two labels that mean the same thing; a lesson labelled too narrowly, which the next product never sees, "
     "or too widely; a product that leaves out a label it should have chosen; "
-    "a case under a general label that only works on the product it was born in")
+    "a case under a general label that only works on the product it was born in; "
+    "a lesson numbered in the block of a run that is in the tree and is not the run that learned it, which only "
+    "`./bring` can tell, from the branch that brings it; a lesson lost when two branches were put together by hand")
 
 
 def said(tree):
@@ -531,6 +598,10 @@ if __name__ == "__main__":
         sys.exit(good(args[1]))
     if args == ["--start"]:
         sys.exit(print_start(here()))
+    if args == ["--next"]:
+        number, why = next_number(here())
+        print("%s\n%s" % (number, why) if number else why or "This tree is no git checkout: a run's number comes from its branch.")
+        sys.exit(0 if number else 1)
     if args[:1] == ["--lessons"]:
         sys.exit(0 if print_lessons(here(), args[1:]) else 1)
     listing = args[:1] == ["--cases"]

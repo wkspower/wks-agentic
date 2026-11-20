@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+"""bring: take into this branch what another branch learned (L1102).
+
+Two branches made from one base each add lessons, cases, a surface and a run
+record, and each writes in the same lists. A plain git merge stops at those
+lists; copying one tree over the other loses a branch. This compares three
+trees (this checkout, OTHER, and the commit where they parted) and works by
+what each file is:
+
+  product/                  never brought: a product stays on its branch
+  lesson lines              by number, from CLAUDE.md and LESSONS.md; written in order of number
+  HANDOFF.md                every line either side added is kept
+  every other file          whole: a file only one side changed is taken as that side has it
+
+Refused, with nothing changed: a number or a path taken by both sides for
+different things; a lesson added in a block that is not its run's (L1101);
+and, where this tree has no product, anything both sides changed since they
+parted, because no case could prove the result. Where there is a product,
+such a file is merged by text and named, and ./check runs with the product.
+
+Usage: ./bring OTHER                 bring OTHER into this checkout, run ./check, leave the commit to you
+       ./bring --verify OURS THEIRS  is this tree what the rules give for those two? Changes nothing
+       ./bring --try BRANCH          take this commit into a scratch copy of BRANCH, run its check, keep nothing
+       ./bring --begin SLUG ...      make run/NNN-SLUG branches here, with the next run numbers nobody has
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+LINE = re.compile(r"^- \*\*(L\d{4})\*\* \[([^\]]*)\] ")
+NAMES = re.compile(r"\blesson (L\d{4})\b")
+LINED = ("CLAUDE.md", "LESSONS.md")  # the first holds the lines that are `always` in force, the second the others
+KEPT = ("HANDOFF.md",)  # both sides write here about themselves: every added line is kept
+LAST_PLAIN = 42  # the plain sequence of lesson numbers ended at L0042
+RUN = re.compile(r"run/(\d{3})-")
+
+
+class Stop(Exception):
+    pass
+
+
+def git(*args, cwd=None, ok=(0,), data=None, raw=False):
+    done = subprocess.run(["git"] + list(args), cwd=cwd, capture_output=True, input=data)
+    if done.returncode not in ok:
+        raise Stop("git %s: %s" % (" ".join(args), done.stderr.decode(errors="replace").strip() or done.returncode))
+    if raw:
+        return done.stdout
+    out = done.stdout.decode(errors="replace").strip()
+    return (done.returncode, out) if len(ok) > 1 else out
+
+
+def tree(ref):
+    """What a commit holds outside product/: path -> (mode, blob)."""
+    found = {}
+    for entry in git("ls-tree", "-r", "-z", ref, raw=True).decode().split("\0"):
+        if entry:
+            meta, path = entry.split("\t", 1)
+            mode, kind, blob = meta.split()
+            if kind == "blob" and not path.startswith("product/"):
+                found[path] = (mode, blob)
+    return found
+
+
+def text(entry):
+    return git("cat-file", "blob", entry[1], raw=True).decode("utf-8", errors="replace") if entry else None
+
+
+def split(whole):
+    """A file of lesson lines: what is not a lesson line, and the lines by number."""
+    rest, lines, twice = [], {}, []
+    for line in (whole or "").splitlines():
+        found = LINE.match(line)
+        if not found:
+            rest.append(line)
+        elif found.group(1) in lines:
+            twice.append(found.group(1))
+        else:
+            lines[found.group(1)] = line
+    return ("\n".join(rest).rstrip("\n") + "\n" if whole is not None else None), lines, twice
+
+
+def home(line):
+    labels = [" ".join(word.split()).lower() for word in LINE.match(line).group(2).split(",")]
+    return LINED[0] if "always" in labels else LINED[1]
+
+
+def labels(line):
+    return {" ".join(word.split()).lower() for word in LINE.match(line).group(2).split(",")}
+
+
+def three(fork, ours, theirs):
+    """(settled, value): what one side changed is taken; what both changed differently is not settled."""
+    if ours == theirs or theirs == fork:
+        return True, ours
+    if ours == fork:
+        return True, theirs
+    return False, None
+
+
+def by_text(fork, ours, theirs, keep_both=False):
+    """git's own merge of three texts: the result and whether it left conflicts marked."""
+    work = tempfile.mkdtemp()
+    try:
+        paths = []
+        for name, content in (("here", ours), ("fork", fork), ("other", theirs)):
+            paths.append(os.path.join(work, name))
+            with open(paths[-1], "w", encoding="utf-8") as handle:
+                handle.write(content or "")
+        done = subprocess.run(["git", "merge-file", "-p", "-L", "here", "-L", "where they parted", "-L", "the other"]
+                              + (["--union"] if keep_both else []) + paths, capture_output=True)
+        if done.returncode < 0 or done.returncode > 127:
+            raise Stop("git merge-file could not merge: %s" % done.stderr.decode(errors="replace").strip())
+        return done.stdout.decode("utf-8", errors="replace"), done.returncode != 0
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def lesson_of(path, *entries):
+    found = re.match(r"lessons/(\d{4})-", path)
+    if found:
+        return "L" + found.group(1)
+    if path.startswith("cases/"):
+        for entry in entries:
+            named = NAMES.search("\n".join((text(entry) or "").splitlines()[:6]))
+            if named:
+                return named.group(1)
+    return None
+
+
+class Plan:
+    """What the rules give for three trees: the files to hold, what is refused, what a reader must look at."""
+
+    def __init__(self, ours, theirs, strict, here="here", other="the other"):
+        self.fork_ref = git("merge-base", ours, theirs)
+        fork, mine, yours = tree(self.fork_ref), tree(ours), tree(theirs)
+        self.files = {path: ("blob", entry) for path, entry in mine.items()}  # path -> ("blob", entry) or ("text", content)
+        self.refused, self.by_text, self.marked, self.by_hand, self.together, self.reach = [], [], [], [], [], []
+        self.brought = []
+        both = "was changed %s and on %s since they parted" % (here, other)
+
+        # Lesson lines, by number.
+        sides = []
+        for name, side in (("the fork", fork), (here, mine), (other, yours)):
+            lines, rests = {}, {}
+            for lined in LINED:
+                rests[lined], found, twice = split(text(side.get(lined)))
+                for number in twice + [number for number in found if number in lines]:
+                    self.refused.append("%s lists %s twice: put that right there first" % (name, number))
+                lines.update(found)
+            sides.append((lines, rests))
+        (f_lines, f_rest), (o_lines, o_rest), (t_lines, t_rest) = sides
+        merged = {}
+        for number in sorted(set(f_lines) | set(o_lines) | set(t_lines)):
+            f, o, t = f_lines.get(number), o_lines.get(number), t_lines.get(number)
+            settled, line = three(f, o, t)
+            if settled:
+                merged[number] = [line] if line else []
+                if t and o != t:
+                    self.brought.append(number)
+            elif f is None:
+                self.refused.append("%s is the number of two lessons, one %s and one on %s: \"%s\" and \"%s\". Nothing can "
+                                    "merge them. One is renumbered on its own branch, in the block of its own run, before "
+                                    "it is brought" % (number, here, other, o.split("] ", 1)[1][:60], t.split("] ", 1)[1][:60]))
+            elif strict:
+                self.refused.append("%s: its line %s" % (number, both))
+            else:
+                merged[number] = [line for line in (o, t) if line]
+                self.by_hand.append("%s: its line %s; %s" % (number, both, "both lines are written, and the check refuses "
+                                    "the lesson listed twice until one is chosen" if o and t else "one side removed it, "
+                                    "and the line of the side that changed it is kept"))
+        for number in sorted(set(t_lines) - set(f_lines)):
+            value, block = int(number[1:]), "runs/%03d-" % (int(number[1:]) // 100)
+            if LAST_PLAIN < value < 100:
+                self.refused.append("%s, added on %s, is numbered in the plain sequence, which ended at L%04d: a lesson "
+                                    "is numbered by its run and its place in it" % (number, other, LAST_PLAIN))
+            elif value >= 100 and not any(path.startswith(block) and path not in fork for path in yours):
+                self.refused.append("%s, added on %s, is in the block of run %d, and %s brings no %s*.md of its own: a "
+                                    "run's lessons are numbered in the block of that run" % (number, other, value // 100, other, block))
+        new_here, new_there = set(o_lines) - set(f_lines), set(t_lines) - set(f_lines)
+        for a in sorted(new_here - new_there):
+            for b in sorted(new_there - new_here):
+                shared = labels(o_lines[a]) & labels(t_lines[b])
+                if shared:
+                    self.together.append("%s and %s, both under '%s': %s / %s" % (
+                        a, b, "', '".join(sorted(shared)), o_lines[a].split("] ", 1)[1][:70], t_lines[b].split("] ", 1)[1][:70]))
+        old_labels = set().union(*[labels(line) for line in f_lines.values()] or [set()])
+        for number in self.brought:
+            if number not in f_lines and labels(t_lines[number]) & old_labels:
+                self.reach.append("%s [%s]" % (number, ", ".join(sorted(labels(t_lines[number])))))
+
+        # The text around the lesson lines, then the two files put together again.
+        for lined in LINED:
+            settled, rest = three(f_rest[lined], o_rest[lined], t_rest[lined])
+            if not settled and strict:
+                self.refused.append("%s: its text around the lesson lines %s" % (lined, both))
+                rest = o_rest[lined]
+            elif not settled:
+                rest, marks = by_text(f_rest[lined], o_rest[lined], t_rest[lined])
+                (self.marked if marks else self.by_text).append(lined)
+            lines = [line for number in sorted(merged) for line in merged[number] if home(line) == lined]
+            if rest is None and not lines:
+                self.files.pop(lined, None)
+                continue
+            whole = (rest or "").rstrip("\n") + ("\n\n" if rest and rest.strip() and lines else "") + "\n".join(lines) + "\n"
+            mode = (mine.get(lined) or yours.get(lined) or ("100644",))[0]
+            self.files[lined] = ("blob", mine[lined]) if lined in mine and whole == text(mine[lined]) else ("text", (mode, whole))
+
+        # The handoff: every line either side added.
+        for kept in KEPT:
+            settled, entry = three(fork.get(kept), mine.get(kept), yours.get(kept))
+            if settled and entry:
+                self.files[kept] = ("blob", entry)
+            elif settled:
+                self.files.pop(kept, None)
+            else:
+                whole, _ = by_text(text(fork.get(kept)), text(mine.get(kept)), text(yours.get(kept)), keep_both=True)
+                self.files[kept] = ("text", ((mine.get(kept) or yours[kept])[0], whole))
+
+        # Every other file, whole.
+        for path in sorted((set(fork) | set(mine) | set(yours)) - set(LINED) - set(KEPT)):
+            f, o, t = fork.get(path), mine.get(path), yours.get(path)
+            settled, entry = three(f, o, t)
+            lesson = lesson_of(path, o, t, f)
+            what = "%s%s" % (lesson + ": " if lesson else "", path)
+            if settled:
+                if entry:
+                    self.files[path] = ("blob", entry)
+                else:
+                    self.files.pop(path, None)
+                if o != t and t != f and not lesson and not re.match(r"(runs|surface|lessons|cases)/", path):
+                    self.reach.append(path)
+                elif o != t and t != f and f and path.startswith("cases/"):
+                    self.reach.append(path)
+            elif f is None:
+                self.refused.append("%s was added %s and on %s with different contents: one of the two takes another "
+                                    "name on its own branch" % (what, here, other))
+            elif strict:
+                self.refused.append("%s %s" % (what, both))
+            elif o is None or t is None:
+                self.files[path] = ("blob", o or t)
+                self.by_hand.append("%s: one side removed it and the other changed it since they parted; the changed "
+                                    "file is kept" % what)
+            else:
+                whole, marks = by_text(text(f), text(o), text(t))
+                self.files[path] = ("text", (o[0] if o[0] != f[0] else t[0], whole))
+                (self.marked if marks else self.by_text).append(what)
+        if strict and self.refused and any(both in refusal for refusal in self.refused):
+            self.refused.append("this tree has no product, so no case could prove a merge of two changes. Take this "
+                                "branch into the other first, where its product is (`./bring` there, `./check`, commit), "
+                                "and bring it here after")
+
+    def content(self, path):
+        kind, value = self.files[path]
+        if kind == "text":
+            return value[0], value[1].encode("utf-8")
+        return value[0], git("cat-file", "blob", value[1], raw=True)
+
+    def unsettled(self):
+        """Paths whose content a reader or the cases settle, so no rule says what they must hold."""
+        return {what.split(": ")[-1] for what in self.by_text + self.marked} | (set(LINED) if self.by_hand else set())
+
+
+def on_disk(root, path):
+    full = os.path.join(root, path)
+    if not os.path.isfile(full):
+        return None
+    with open(full, "rb") as handle:
+        return ("100755" if os.access(full, os.X_OK) else "100644"), handle.read()
+
+
+def differences(plan, root):
+    """Where the tree on disk is not what the plan gives."""
+    wrong = []
+    for path in sorted(plan.files):
+        if path in plan.unsettled():
+            continue
+        want, have = plan.content(path), on_disk(root, path)
+        if have is None:
+            wrong.append("%s is not in the tree" % path)
+        elif path in LINED:
+            _, wanted, _ = split(want[1].decode("utf-8", errors="replace"))
+            rest, held, _ = split(have[1].decode("utf-8", errors="replace"))
+            for number in sorted(set(wanted) | set(held)):
+                if wanted.get(number) != held.get(number):
+                    wrong.append("%s: its line in %s is %s" % (number, path, "not in the tree" if number not in held else
+                                 "in the tree and should not be" if number not in wanted else "not the line the rules give"))
+            if split(want[1].decode("utf-8", errors="replace"))[0] != rest:
+                wrong.append("%s: its text around the lesson lines is not what the rules give" % path)
+        elif path in KEPT:
+            missing = [line for line in want[1].decode("utf-8", errors="replace").splitlines()
+                       if line.strip() and line not in have[1].decode("utf-8", errors="replace").splitlines()]
+            if missing:
+                wrong.append("%s: %d lines either side wrote are not in it, the first: %s" % (path, len(missing), missing[0][:60]))
+        elif have[1] != want[1]:
+            wrong.append("%s%s is not as the rules give it" % ((lesson_of(path, plan.files[path][1]) or "") and
+                                                           lesson_of(path, plan.files[path][1]) + ": ", path))
+        elif have[0] != want[0]:
+            wrong.append("%s %s be run, and it should%s" % (path, "can" if have[0] == "100755" else "cannot",
+                                                            " not" if have[0] == "100755" else ""))
+    return wrong
+
+
+def report(plan, other):
+    for name, found in (("merged by text, to be proven by the cases with the product", plan.by_text),
+                        ("left MARKED where the two changes meet, for you to settle", plan.marked),
+                        ("for a reader to settle", plan.by_hand),
+                        ("to be read together, since they came from the two sides under one label and may say the same "
+                         "thing or contradict each other; nothing was decided", plan.together),
+                        ("reaches every product that declares the label or runs the file, and a product on another "
+                         "branch has not met it (`./bring --try BRANCH` shows what one says)", plan.reach)):
+        if found:
+            print("%s:" % name)
+            for what in found:
+                print("  " + what)
+
+
+def bring(other):
+    root = git("rev-parse", "--show-toplevel")
+    os.chdir(root)
+    if git("status", "--porcelain"):
+        raise Stop("this checkout has changes that are not committed: commit them or put them away first")
+    code, theirs = git("rev-parse", "--verify", "--quiet", other + "^{commit}", ok=(0, 1))
+    if code:
+        raise Stop("there is no commit named %s here" % other)
+    if git("merge-base", "--is-ancestor", theirs, "HEAD", ok=(0, 1))[0] == 0:
+        print("nothing to bring: everything %s holds is already here" % other)
+        return 0
+    strict = not os.path.isdir("product")
+    here = git("rev-parse", "--abbrev-ref", "HEAD")
+    other = other[:7] if re.fullmatch(r"[0-9a-f]{40}", other) else other
+    here = "this checkout" if here == "HEAD" else here
+    plan = Plan("HEAD", theirs, strict, "on " + here if here != "this checkout" else "here", other)
+    if plan.refused:
+        print("REFUSED: %s is not brought into %s, and nothing was changed." % (other, here))
+        for refusal in plan.refused:
+            print("  " + refusal)
+        return 1
+    before = tree("HEAD")
+    git("merge", "-s", "ours", "--no-ff", "--no-commit", theirs)
+    for path in set(before) - set(plan.files):
+        os.remove(path)
+    for path in plan.files:
+        if plan.files[path] != ("blob", before.get(path)):
+            mode, data = plan.content(path)
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "wb") as handle:
+                handle.write(data)
+            os.chmod(path, 0o755 if mode == "100755" else 0o644)
+    git("add", "-A")
+    changed = git("diff", "--cached", "--name-only").split("\n")
+    with open(os.path.join(git("rev-parse", "--git-dir"), "MERGE_MSG"), "w", encoding="utf-8") as handle:
+        handle.write("Bring %s into %s\n\nBy ./bring (L1102). Lessons brought: %s.\n" % (other, here, ", ".join(plan.brought) or "none"))
+        for name, found in (("Merged by text", plan.by_text + plan.marked), ("Settled by a reader", plan.by_hand),
+                            ("To be read together", plan.together), ("Reaches other products", plan.reach)):
+            handle.write("".join(["\n%s:\n" % name] + ["- %s\n" % what for what in found]) if found else "")
+    wrong = differences(plan, root)
+    print("%s brought into %s: %d files changed, lessons brought: %s. %s"
+          % (other, here, len([path for path in changed if path]), ", ".join(plan.brought) or "none",
+             "No product here: only what one side changed was taken." if strict else
+             "The product here was kept, and what both sides changed was merged by text."))
+    report(plan, other)
+    for problem in wrong:
+        print("FAIL " + problem)
+    if plan.marked:
+        print("Settle what is marked, run ./check, then `git add -A` and `git commit`. `git merge --abort` puts it all back.")
+        return 1
+    passed = True
+    if os.access("check", os.X_OK):
+        done = subprocess.run(["./check"], capture_output=True, text=True)
+        said = done.stdout.strip().splitlines()
+        print("\n".join(line for line in said if line.startswith(("FAIL", "lessons "))))
+        passed = done.returncode == 0
+    if wrong or not passed:
+        print("Not done: put right what is said above, then `git add -A` and `git commit`; or `git merge --abort` puts it all back.")
+        return 1
+    print("Read what is named above, then `git commit` (the message is written). Nothing was committed.")
+    return 0
+
+
+def verify(ours, theirs):
+    root = git("rev-parse", "--show-toplevel")
+    os.chdir(root)
+    plan = Plan(ours, theirs, not os.path.isdir("product"), ours, theirs)
+    wrong = ["the rules refuse to bring these two together: " + refusal for refusal in plan.refused] or differences(plan, root)
+    if wrong:
+        print("this tree is NOT what the rules give for %s and %s, parted at %s:" % (ours, theirs, plan.fork_ref[:7]))
+        for problem in wrong:
+            print("  " + problem)
+        return 1
+    print("this tree is what the rules give for %s and %s, parted at %s: %d files compared, %d left to the cases or a reader"
+          % (ours, theirs, plan.fork_ref[:7], len(plan.files) - len(plan.unsettled()), len(plan.unsettled())))
+    return 0
+
+
+def attempt(branch):
+    """What a product on another branch says to this commit, in a scratch copy that is thrown away."""
+    root = git("rev-parse", "--show-toplevel")
+    here = git("rev-parse", "HEAD", cwd=root)
+    if git("status", "--porcelain", cwd=root):
+        print("note: what is tried is the last commit here; the changes not committed are left out")
+    work = tempfile.mkdtemp()
+    copy = os.path.join(work, "tree")
+    try:
+        git("worktree", "add", "--detach", copy, branch, cwd=root)
+        done = subprocess.run([sys.executable, os.path.abspath(__file__), here], cwd=copy, capture_output=True, text=True)
+        print("In a scratch copy of %s, taking in %s:" % (branch, here[:7]))
+        print("\n".join("  " + line for line in done.stdout.strip().splitlines()))
+        print("Nothing was kept: %s is as it was. %s" % (branch, "Its product meets what is here." if done.returncode == 0
+              else "It does NOT pass as it is; what to do about that is a decision, not part of bringing."))
+        return done.returncode
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", copy], cwd=root, capture_output=True)
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def begin(slugs):
+    """The next run numbers that no record and no branch this repository can see has taken."""
+    root = git("rev-parse", "--show-toplevel")
+    taken = [int(name[:3]) for name in os.listdir(os.path.join(root, "runs")) if re.match(r"\d{3}-", name)] \
+        if os.path.isdir(os.path.join(root, "runs")) else []
+    refs = git("for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes", cwd=root).split()
+    taken += [int(found.group(1)) for found in (RUN.search(ref) for ref in refs) if found]
+    number = max(taken or [0])
+    for slug in slugs:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
+            raise Stop("'%s' is no name for a run: small letters, digits and hyphens" % slug)
+    for slug in slugs:
+        number += 1
+        if number > 99:
+            raise Stop("run %d has no block of lesson numbers: L and four digits hold runs up to 99 (L1101)" % number)
+        git("branch", "run/%03d-%s" % (number, slug), "HEAD", cwd=root)
+        print("run/%03d-%s  made from %s; its lessons are L%02d01, L%02d02, ..." % (number, slug, git("rev-parse", "--short", "HEAD", cwd=root), number, number))
+    print("The numbers come from runs/ and from the %d branches seen here. A branch nobody fetched is not seen: "
+          "`git fetch` first, and push these before anyone else begins." % len(refs))
+    return 0
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    try:
+        if len(args) == 3 and args[0] == "--verify":
+            sys.exit(verify(args[1], args[2]))
+        if len(args) == 2 and args[0] == "--try":
+            sys.exit(attempt(args[1]))
+        if len(args) >= 2 and args[0] == "--begin":
+            sys.exit(begin(args[1:]))
+        if len(args) == 1 and not args[0].startswith("-"):
+            sys.exit(bring(args[0]))
+    except Stop as stop:
+        print("REFUSED: %s" % stop)
+        sys.exit(1)
+    print(__doc__.strip())
+    sys.exit(2)

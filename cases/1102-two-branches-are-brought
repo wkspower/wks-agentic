@@ -89,7 +89,7 @@ def branch(repo, name, lessons, spoil=None):
     return lines
 
 
-def plant(work, name, a=None, b=None, a_lessons=(("1201", "web pages"),), b_lessons=(("1301", "always"), ("1302", "web pages")),
+def plant(work, name, a=None, b=None, a_lessons=(("1201", "web pages"), ("1202", "always")), b_lessons=(("1301", "always"), ("1302", "web pages")),
           b_name=B):
     repo = os.path.join(work, name)
     if subprocess.run(["./check", "--plant", repo]).returncode != 0:
@@ -155,19 +155,19 @@ def both_orders(work):
             git(repo, "merge", "-q", "--no-edit", A)
             stopped = run(repo, "git", "merge", "--no-edit", B)
             conflicts = git(repo, "diff", "--name-only", "--diff-filter=U").split()
-            if stopped.returncode == 0 or not {"LESSONS.md", "HANDOFF.md"} <= set(conflicts):
+            if stopped.returncode == 0 or not {"CLAUDE.md", "LESSONS.md", "HANDOFF.md"} <= set(conflicts):
                 fail("a plain git merge of the two planted branches does not conflict: nothing was planted")
             git(repo, "merge", "--abort")
             git(repo, "reset", "-q", "--hard", "base~1")
         for side in order:
-            bring(repo, side)
+            said = bring(repo, side)
             if not run(repo, "git", "merge-base", "--is-ancestor", side, "HEAD").returncode == 0:
                 fail("after ./bring %s and a commit, git does not know the branch was brought" % side)
         verify = run(repo, "./bring", "--verify", "HEAD~1", order[1])
         if verify.returncode != 0:
             fail("./bring --verify refuses the tree ./bring made: %s" % verify.stdout.strip()[-300:])
         for side in order:
-            held(repo, side, lines[:1] if side == A else lines[1:])
+            held(repo, side, lines[:2] if side == A else lines[2:])
         for home, old in (("CLAUDE.md", "- **L0001** [always] One true thing.\n"), ("LESSONS.md", "- **L0002** [web pages] One true thing.\n")):
             if read(repo, home).count(old) != 1:
                 fail("a lesson the base had before, %s, is not once in %s" % (old[4:9], home))
@@ -178,7 +178,9 @@ def both_orders(work):
                 fail("the handoff holds '%s' %d times after both branches were brought" % (text, handoff.count(text)))
         if os.path.exists(os.path.join(repo, "product")):
             fail("a product arrived on the base")
-        checked(repo, 5)
+        checked(repo, 6)
+        if not results and ("L1202 and L1301" not in said.stdout or "L1201 and L1302" not in said.stdout):
+            fail("lessons the two branches added under one label are not named to be read together: %s" % said.stdout.strip()[:300])
         results.append((read(repo, "CLAUDE.md"), read(repo, "LESSONS.md"), sorted(git(repo, "ls-files").split())))
     if results[0] != results[1]:
         fail("the lessons on the base depend on which branch was brought first")
@@ -207,7 +209,7 @@ def shared_by_both(work):
     helper = read(repo, "caselib.py")
     if "'started by the shop'" not in helper or "'stopped by the library'" not in helper:
         fail("the helper on the base does not hold both products' changes")
-    checked(repo, 5)
+    checked(repo, 6)
 
 
 def copied_over(work):
@@ -283,8 +285,8 @@ try:
             fail("%s: after the refusal the base no longer passes its check" % name)
 finally:
     shutil.rmtree(work, ignore_errors=True)
-print("two branches from one base, 3 lessons with their cases between them, where a plain git merge stops at %d files: "
+print("two branches from one base, 4 lessons with their cases between them, where a plain git merge stops at %d files: "
       "both brought by ./bring in either order to the same %d files, no number changed, every added file byte for byte, "
-      "no product, ./check passing with 5 lessons; a helper both changed refused on the base, merged on the branch with "
+      "no product, ./check passing with 6 lessons; the lessons both added under one label named to be read together; a helper both changed refused on the base, merged on the branch with "
       "its product and then brought; a tree copied over the base refused by --verify, naming L1201; %d of %d other wrong "
-      "situations refused, each named, the base left as it was" % (conflicts, files, len(WRONG) + 2 - 2, len(WRONG)))
+      "situations refused, each named, the base left as it was" % (conflicts, files, len(WRONG), len(WRONG)))
