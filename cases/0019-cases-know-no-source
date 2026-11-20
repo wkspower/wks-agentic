@@ -67,6 +67,11 @@ try:
 
     if has_product:
         strip_source()
+    left = [name for base, _, names in os.walk(product) for name in names if name.endswith(".py")]
+    if left:  # run 006: the library's source stayed here, because this case only knew the pet shop's name (L0034)
+        print("the scratch tree still holds the product's source (%s): the cases would be run on a tree that is not "
+              "the one this case is about" % ", ".join(left))
+        sys.exit(1)
     env = dict(os.environ, SHOP=caselib.MAIN + "c") if has_product else dict(os.environ)
     passed, failed, verdict = 0, [], {}
     for name in in_force:
