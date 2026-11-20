@@ -29,4 +29,4 @@ the product in `product/`, or with no product every label and its lines
 - **L0033** [school library] The school library's inputs are refused outside the table of bounds in the lesson.
 - **L0035** [web pages] After a refusal, going back shows the form with what was typed, except a field that is scanned into, which comes back empty; the refusal page promises only what holds.
 - **L0036** [school library] Classes are compared without regard to capitals: "7b" and "7B" are one class on the overdue list and in search, shown under the spelling most of its borrowers have.
-- **L0042** [school library] On a wide screen the library's lists fit their box with ordinary names: no text of a row is under the column of buttons held in sight.
+- **L0042** [school library] Where the library's lists are tables they fit their box with ordinary names: no text of a row is under the column of buttons held in sight.

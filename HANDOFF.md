@@ -1,5 +1,24 @@
 # Handoff
 
+**Run 010 (2026-11-20) rebuilt the school library from its lessons and cases
+alone.** `./check` passes: 39 lessons, 29 in force, 26 cases run; see
+`runs/010-library-rebuild.md`.
+
+- The session had the text "Lessons at the start of this session" from the
+  hook before its first action, with no step of its own (L0041).
+- It asked no question: the lessons answered all fourteen of run 006.
+- All 16 cases that needed the product passed on their first run against
+  the new build. No case, surface or helper was changed for it.
+- One defect, found by the agent reading its screenshots with every case
+  passing: the buttons held in sight covered the state of a loan at 1100 px,
+  and after the first fix at 800 px. L0042, case first both times.
+
+To use the library: `python3 product/library.py --sample`, then open
+http://127.0.0.1:8000/. `--today 2026-12-20` shows it on another day.
+
+The person has not seen run 010, L0042, or what the builder decided (listed
+in the run record). The prompt came as an automated notice.
+
 **Run 009 (2026-11-20) changed how the lessons reach a session, and nothing
 else.** `./check` passes: 38 lessons, 28 in force, 25 cases run; without
 `product/`, 14 in force and 9 cases run. See `runs/009-loading.md`.
@@ -260,3 +279,4 @@ Each run adds a file under `runs/` and a line here.
 - [008 growth](runs/008-growth.md), 2026-11-20: no questions, no prompt, scaffold only; 3 lessons added (all with a case, case first), 3 amended; the check from 87 s to 41 s, `CLAUDE.md` from 11.9 KB to 5.6 KB, the sizes printed on every run; 1 defect found in the run's own case by its control.
 - [009 loading](runs/009-loading.md), 2026-11-20: no questions, no prompt, scaffold only; 1 lesson added (with a case, case first), 2 amended; the lessons in force reach a session through a SessionStart hook and no command it is told to run; an included file tried on paper and rejected; three real headless starts seen.
 - [006 school library](runs/006-school-library.md), 2026-11-20: 1 round of 14 questions, 9 lessons added (8 with a case), the second product; 8 cases made general and kept passing on the pet shop; 1 defect found in the scaffold and 1 in the product by hand.
+- [010 library rebuild](runs/010-library-rebuild.md), 2026-11-20: no questions; the library rebuilt with no history, every inherited case passing on its first run, none changed; 1 lesson added (with a case, case first), from a defect found by reading screenshots.

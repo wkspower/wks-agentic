@@ -68,7 +68,7 @@ input,select{width:100%;padding:.4rem .5rem;border:1px solid var(--line);border-
 button{white-space:nowrap;padding:.4rem .8rem;border:1px solid var(--link);border-radius:4px;background:var(--link);color:var(--bg);cursor:pointer}
 .scroll{overflow-x:auto;margin:0 0 1rem}
 table{border-collapse:collapse;width:100%}
-th,td{text-align:left;vertical-align:top;padding:.45rem .6rem;border-bottom:1px solid var(--line)}
+th,td{text-align:left;vertical-align:top;padding:.45rem .4rem;border-bottom:1px solid var(--line)}
 th{font-size:.85rem;color:var(--soft);white-space:nowrap}
 td{min-width:150px;overflow-wrap:break-word}
 td.num,td.short{min-width:0;white-space:nowrap}
@@ -79,6 +79,7 @@ td.act form{display:inline-block;margin:0}
 td.act span>*{margin:0 .4rem .2rem 0}
 td.act button{padding:.15rem .55rem}
 td a{white-space:nowrap}
+@media (min-width:761px) and (max-width:999px){.gone{display:none}}
 @media (max-width:760px){
 .scroll{overflow:visible}
 table,tbody,tr,td{display:block}
@@ -228,7 +229,7 @@ class Library:
         if not rows:
             return ""
         out = ['<div class="scroll"><table><thead><tr>']
-        out += ['<th%s>%s</th>' % (' class="act"' if not head else "", e(head)) for head, _ in heads]
+        out += ['<th%s>%s</th>' % (' class="%s"' % kind if kind else "", e(head)) for head, kind in heads]
         out.append("</tr></thead><tbody>")
         for ident, cells in rows:
             out.append("<tr%s>" % (' id="%s"' % ident if ident else ""))
@@ -293,7 +294,7 @@ class Library:
         rows = [(None, [e(row["title"]), e(row["author"]), e(row["isbn"]), e(row["shelf"]), row["held"], row["free"],
                         self.acts(['<a href="/titles/%d">Copies</a>' % row["id"], '<a href="/titles/%d/edit">Edit</a>' % row["id"]])])
                 for row in found]
-        heads = [("Title", ""), ("Author", ""), ("ISBN", "num"), ("Shelf", ""), ("Copies", "num"), ("On the shelf", "num"), ("", "act")]
+        heads = [("Title", ""), ("Author", ""), ("ISBN", "num"), ("Shelf", "short"), ("Copies", "num"), ("In", "num"), ("", "act")]
         return self.page("Catalogue", (
             "<h1>Catalogue</h1>%s%s%s<h2>A new title</h2>%s"
             % (self.search("/titles", "sachar or F SAC", "Title, author, ISBN or shelf mark", typed),
@@ -484,22 +485,24 @@ class Library:
 
     def loan_table(self, loans, who=True):
         today = datetime.date.fromisoformat(self.today())
-        # The day it was lent is last: where the list is wider than its window, that is what goes under the buttons.
-        heads = [("Copy", "num"), ("Title", "")] + ([("Borrower", ""), ("Class", "short")] if who else []) + [
-            ("Due", "num"), ("State", ""), ("Lent", "num"), ("", "act")]
+        # The class stands beside the name, as typed, and the day lent is left out of a list of everybody's
+        # loans between 761 and 999 px: with both as columns the state of a loan was under the buttons.
+        heads = [("Copy", "num"), ("Title", "")] + ([("Borrower", "")] if who else []) + [
+            ("Due", "num"), ("State", ""), ("Lent", "num gone" if who else "num"), ("", "act")]
         rows = []
         for loan in loans:
             days = (today - datetime.date.fromisoformat(loan["due"])).days
             state = ['<span class="late">%s overdue</span>' % plural(days, "day")] if days > 0 else []
             if loan["renewals"]:
                 state.append("renewed once" if loan["renewals"] == 1 else "renewed twice")
+            name = e(loan["name"]) + (' <span class="soft">(%s)</span>' % e(loan["class"]) if loan["class"] else "")
             buttons = [self.button("/loans/%d/return" % loan["id"], "Return")]
             if loan["renewals"] < RENEWALS:
                 buttons.append(self.button("/loans/%d/renew" % loan["id"], "Renew"))
             links = ['<a href="/titles/%d">Copies</a>' % loan["title_id"]]
             if who:
                 links.append('<a href="/borrowers/%d">Borrower</a>' % loan["borrower_id"])
-            rows.append(("loan-%d" % loan["id"], [loan["copy_id"], e(loan["title"])] + ([e(loan["name"]), e(loan["class"])] if who else [])
+            rows.append(("loan-%d" % loan["id"], [loan["copy_id"], e(loan["title"])] + ([name] if who else [])
                          + [loan["due"], ", ".join(state), loan["lent"], self.acts(buttons, links)]))
         return self.table(heads, rows)
 

@@ -1,4 +1,4 @@
-# L0042 — On a wide screen the library's lists fit their box with ordinary names: no text of a row is under the column of buttons held in sight
+# L0042 — Where the library's lists are tables they fit their box with ordinary names: no text of a row is under the column of buttons held in sight
 
 ## Reason
 Where a list is a table, its last column, the one with the buttons, is held
@@ -15,22 +15,34 @@ box because a class of two letters and a state of three words were each
 given the 150 px of a column of words, and four buttons and links stood on
 one line.
 
-So at 1100 px, with names of ordinary length, every list fits its box and
-nothing is under the buttons. What it took: a short column (the class) takes
-the room of what it holds and no more; the buttons and links of a row may
-stand on two lines when room is short; and the day a book was lent, the
-least needed, is the last column before the buttons, so that on a narrower
-window it is the first to go under them, and the state is the last.
+So at 1100 px and at 800 px, with names of ordinary length, every list
+fits its box and nothing is under the buttons. What it took:
 
-Below 1100 px and above the width where the lists become cards, a list of
-loans may still scroll in its box, and what is under the buttons then is
-the day it was lent first. That is not measured here.
+- a short column (shelf mark, kind, status) takes the room of what it holds
+  and no more;
+- the buttons and links of a row may stand on two lines when room is short;
+- in a list of everybody's loans the class stands beside the borrower's
+  name, as it was typed ("Bo Li (7b)"), and is not a column;
+- the day a book was lent is the last column before the buttons, and from
+  761 to 999 px a list of everybody's loans leaves it out. It is on the
+  borrower's own page, in the cards of a narrow screen and in
+  `/export.json` at every width.
+
+The first fix was made for 1100 px only, where the defect had been seen,
+and the lesson said that on a narrower window the day lent would be the
+first to go under the buttons. The next screenshot, at 800 px, read
+"13 days o": the state was under them again. The case was given 800 px
+before the second fix.
+
+Between 761 and 799 px, and with a name of 200 letters and no space at any
+width where a list is a table, a list may still scroll in its box. The
+first is not measured; the second is L0026's ground.
 
 ## Source
 A defect found in run 010, 2026-11-20, by the agent reading its own
 screenshots of the first build, driven by script on the sample data (L0013):
-`/overdue` and `/loans` at 1100 px. All 25 cases in force had passed on
-their first run. The case of L0026 that looks at the buttons
+`/overdue` and `/loans` at 1100 px, and after the first fix `/loans` at
+800 px. All 25 cases in force had passed on their first run. The case of L0026 that looks at the buttons
 (`cases/0022-row-actions-in-sight`) requires that they be in sight; nothing
 asked what they were in front of.
 
@@ -38,12 +50,9 @@ Which columns give way, and in what order, is the builder's choice. The
 person has not seen it.
 
 ## What would be a regression
-At 1100 px, with titles and names of several words, a class of a few
-letters and a loan both overdue and renewed: a cell of a list whose text
+At 1100 px or 800 px, with titles and names of several words, a class of a
+few letters and a loan both overdue and renewed: a cell of a list whose text
 runs under the column held in sight, or past the edge of the box the list
 is in.
 
-The case measures Chromium only, the sample of names it enters, and 1100 px.
-A name with no space in it of 200 letters still makes the list scroll in
-its box at any width where it is a table; that is L0026's ground, not this
-lesson's.
+The case measures Chromium only, the names it enters, and those two widths.
