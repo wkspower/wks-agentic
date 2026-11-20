@@ -2,35 +2,20 @@
 // Case of lesson L0042 (lessons/0042-nothing-under-the-buttons.md).
 // Origin: run 010, 2026-11-20. Read in a screenshot at 1100 px, the overdue page said "6 da"
 // beside Return and Renew: the column of buttons held in sight covered the state of each loan.
-// Enters titles and names of several words, lends, renews one loan and starts the library 20
-// days later, so that loans are overdue and one of them renewed. Then, at 1100 px and at 800 px
-// (read in a second screenshot after the first fix: "13 days o"), looks at every cell of every
-// list that is shown: its text ends before the column held in sight begins, and inside the box
-// the list is in. The pages are the library's own; this case is put to no other product.
+// Enters names of several words and what makes a row say the most it can, then, at 1100 px and
+// at 800 px (read in a second screenshot after the first fix: "13 days o"), looks at every cell
+// of every list that is shown: its text ends before the column held in sight begins, and inside
+// the box the list is in.
+// Made general in run 012, 2026-11-20, when the school canteen's list of sales hid the state of
+// a sale under Open and Void at 800 px: what is entered, which pages are measured and what must
+// be there to measure are the product's, in its surface ("under"). A restart may ask for
+// "{later}", the day 20 days from now.
 // Run from the repository root.
 const { run, style, surface } = require('../caselib.js');
 
-if (surface.label !== 'school library') { console.log('this case is of the school library, and the product here is ' + surface.label); process.exit(1); }
-
 const later = new Date(Date.now() + 20 * 864e5).toLocaleDateString('en-CA');
-const POSTS = [
-  ['/titles', { title: 'Noughts & Crosses', author: 'Malorie Blackman', isbn: '9780552555708', shelf: 'F BLA', copies: '3' }],
-  ['/titles', { title: 'A Short History of Nearly Everything', author: 'Bill Bryson', isbn: '9780552997041', shelf: '500 BRY', copies: '2' }],
-  ['/borrowers', { name: 'Maria Aparecida de Souza', kind: 'pupil', class: '7B' }],
-  ['/borrowers', { name: 'Bo Li', kind: 'pupil', class: 'Year 9 A' }],
-  ['/borrowers', { name: 'Ms Kay', kind: 'staff', class: '' }],
-  ['/loans', { borrower_id: '1', copy: '1' }],
-  ['/loans', { borrower_id: '1', copy: '4' }],
-  ['/loans', { borrower_id: '2', copy: '2' }],
-  ['/loans', { borrower_id: '3', copy: '5' }],
-  ['/loans/1/renew', {}],
-  ['/loans/3/renew', {}],
-  ['/loans/3/renew', {}],
-  { restart: ['--today', later] },
-  ['/loans', { borrower_id: '2', copy: '3' }],
-  ['/copies/5/status', { status: 'lost' }],
-];
-const PAGES = ['/titles', '/titles/1', '/borrowers', '/borrowers/1', '/loans', '/overdue', '/returned'];
+const { pages: PAGES, needs, cells: CELLS, held: HELD } = surface.under;
+const POSTS = surface.under.posts.map((post) => (Array.isArray(post) ? post : { restart: post.restart.map((word) => (word === '{later}' ? later : word)) }));
 
 run(async (page, base, expect, fill) => {
   await fill(POSTS);
@@ -60,10 +45,12 @@ run(async (page, base, expect, fill) => {
     expect(seen.under.length === 0, path + ' at ' + width + ' px has text under the buttons held in sight, or past its box: ' + seen.under.slice(0, 3).join('; '));
     cells += seen.cells; held += seen.held;
   }
-  expect(cells >= 150 && held >= 30, 'only ' + cells + ' cells were looked at, beside ' + held + ' cells held in sight');
-  await page.goto(base + '/overdue');
-  const late = await page.textContent('main');
-  expect(/\d+ days overdue, renewed once/.test(late) && late.includes('renewed twice'), 'the overdue page has no loan that is both overdue and renewed to measure');
+  expect(cells >= CELLS && held >= HELD, 'only ' + cells + ' cells were looked at, beside ' + held + ' cells held in sight');
+  for (const need of needs) {
+    await page.goto(base + need.page);
+    const said = await page.textContent('main');
+    expect(need.patterns.every((pattern) => new RegExp(pattern).test(said)), need.what);
+  }
 }, [
   ['the first build of run 010: every column 150 px wide whatever it holds, and the buttons on one line',
     style('td { min-width: 150px !important; } td.act { white-space: nowrap !important; }')],

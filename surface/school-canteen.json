@@ -1581,5 +1581,224 @@
     ]
    }
   ]
+ },
+ "under": {
+  "posts": [
+   [
+    "/items",
+    {
+     "name": "Cheese & tomato roll",
+     "category": "Food",
+     "price": "2.35"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "A warm bowl of the soup of the day with a buttered wholemeal roll and a piece of",
+     "category": "Meals of the day and their sides",
+     "price": "4.20"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "Apple juice",
+     "category": "Drinks",
+     "price": "1.10"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Maria Aparecida de Souza Albuquerque",
+     "kind": "pupil",
+     "class": "Year 7 Blue",
+     "card": "LIB-2026-000001-7B"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Bo Li",
+     "kind": "pupil",
+     "class": "9A",
+     "card": "1002"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Ms Kay",
+     "kind": "staff",
+     "class": "",
+     "card": ""
+    }
+   ],
+   [
+    "/accounts/1/topup",
+    {
+     "amount": "500.00"
+    }
+   ],
+   [
+    "/accounts/1/topup",
+    {
+     "amount": "20.00"
+    }
+   ],
+   [
+    "/accounts/2/topup",
+    {
+     "amount": "5.00"
+    }
+   ],
+   [
+    "/accounts/2/topup",
+    {
+     "amount": "3.00"
+    }
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "2"
+     ],
+     [
+      "item_id",
+      "2"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "item_id",
+      "3"
+     ],
+     [
+      "qty",
+      "3"
+     ],
+     [
+      "given",
+      "20.00"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "2"
+     ],
+     [
+      "qty",
+      "12"
+     ],
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "10"
+     ],
+     [
+      "account_id",
+      "1"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "3"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "LIB-2026-000001-7B"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "1002"
+     ]
+    ]
+   ],
+   [
+    "/sales/1/void",
+    {}
+   ],
+   [
+    "/movements/2/void",
+    {}
+   ],
+   [
+    "/accounts/2/payout",
+    {
+     "amount": "1.00"
+    }
+   ],
+   [
+    "/items/3/available",
+    {
+     "available": "0"
+    }
+   ]
+  ],
+  "pages": [
+   "/items",
+   "/accounts",
+   "/accounts/1",
+   "/accounts/2",
+   "/sales",
+   "/sales/2",
+   "/day"
+  ],
+  "cells": 150,
+  "held": 30,
+  "needs": [
+   {
+    "page": "/sales",
+    "patterns": [
+     "voided",
+     "balance of Maria Aparecida de Souza Albuquerque"
+    ],
+    "what": "the list of sales has no voided sale and no sale from a balance to measure"
+   },
+   {
+    "page": "/accounts/1",
+    "patterns": [
+     "voided on \\d{4}-\\d\\d-\\d\\d"
+    ],
+    "what": "the account's page has no voided top-up to measure"
+   }
+  ]
  }
 }
