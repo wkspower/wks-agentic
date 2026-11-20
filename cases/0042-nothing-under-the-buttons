@@ -3,9 +3,10 @@
 // Origin: run 010, 2026-11-20. Read in a screenshot at 1100 px, the overdue page said "6 da"
 // beside Return and Renew: the column of buttons held in sight covered the state of each loan.
 // Enters titles and names of several words, lends, renews one loan and starts the library 20
-// days later, so that loans are overdue and one of them renewed. Then, at 1100 px, looks at
-// every cell of every list: its text ends before the column held in sight begins, and inside
-// the box the list is in. The pages are the library's own; this case is put to no other product.
+// days later, so that loans are overdue and one of them renewed. Then, at 1100 px and at 800 px
+// (read in a second screenshot after the first fix: "13 days o"), looks at every cell of every
+// list that is shown: its text ends before the column held in sight begins, and inside the box
+// the list is in. The pages are the library's own; this case is put to no other product.
 // Run from the repository root.
 const { run, style, surface } = require('../caselib.js');
 
@@ -33,9 +34,9 @@ const PAGES = ['/titles', '/titles/1', '/borrowers', '/borrowers/1', '/loans', '
 
 run(async (page, base, expect, fill) => {
   await fill(POSTS);
-  await page.setViewportSize({ width: 1100, height: 800 });
   let cells = 0; let held = 0;
-  for (const path of PAGES) {
+  for (const width of [1100, 800]) for (const path of PAGES) {
+    await page.setViewportSize({ width, height: 800 });
     await page.goto(base + path);
     const seen = await page.$$eval('tbody tr', (trs) => {
       const out = { cells: 0, held: 0, under: [] };
@@ -46,7 +47,7 @@ run(async (page, base, expect, fill) => {
         const edge = Math.min(innerWidth, box ? box.getBoundingClientRect().right : innerWidth, ...fixed.map((td) => td.getBoundingClientRect().left));
         out.held += fixed.length;
         for (const td of tr.cells) {
-          if (fixed.includes(td) || !td.textContent.trim()) continue;
+          if (fixed.includes(td) || !td.textContent.trim() || !td.getClientRects().length) continue;
           const range = document.createRange(); range.selectNodeContents(td);
           const right = Math.max(...[...range.getClientRects()].map((at) => at.right));
           out.cells += 1;
@@ -56,10 +57,10 @@ run(async (page, base, expect, fill) => {
       return out;
     });
     expect(seen.cells > 0, path + ' has no cell of a list to look at');
-    expect(seen.under.length === 0, path + ' at 1100 px has text under the buttons held in sight, or past its box: ' + seen.under.slice(0, 3).join('; '));
+    expect(seen.under.length === 0, path + ' at ' + width + ' px has text under the buttons held in sight, or past its box: ' + seen.under.slice(0, 3).join('; '));
     cells += seen.cells; held += seen.held;
   }
-  expect(cells >= 80 && held >= 15, 'only ' + cells + ' cells were looked at, beside ' + held + ' cells held in sight');
+  expect(cells >= 150 && held >= 30, 'only ' + cells + ' cells were looked at, beside ' + held + ' cells held in sight');
   await page.goto(base + '/overdue');
   const late = await page.textContent('main');
   expect(/\d+ days overdue, renewed once/.test(late) && late.includes('renewed twice'), 'the overdue page has no loan that is both overdue and renewed to measure');
