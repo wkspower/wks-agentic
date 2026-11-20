@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Case of lesson L1205 (lessons/1205-canteen-corrected-never-removed.md).
+Origin: the person's "Accepted" to answers 5, 6 and 9 of run 012, 2026-11-20.
+Run from the repository root."""
+import json
+import re
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("school canteen")  # this case was born in the canteen and knows its pages (L0024, L0034)
+
+
+def on_till(body, item):
+    return re.search(r'name="item_id"[^>]*value="%d"|value="%d"[^>]*name="item_id"' % (item, item), body) is not None
+
+
+def checks(shop):
+    roll = shop.add("items", name="Cheese rol", category="Fod", price="2.35")
+    soup = shop.add("items", name="Soup", category="Food", price="3.00")
+    ana = shop.add("accounts", ("class", "7b"), name="Ana Lime", kind="staff", card="1001")
+    bo = shop.add("accounts", ("class", "9A"), name="Bo Li", kind="pupil", card="1002")
+    shop.post(303, "/accounts/%d/topup" % ana, amount="10.00")
+    sale = shop.add("sales", ("item_id", roll), ("qty", "2"), card="1001")
+
+    def page(path):
+        status, body = shop.request("GET", path)
+        shop.expect(status == 200, "GET %s answered %d" % (path, status))
+        return body
+
+    # An item is corrected, and the sale already made keeps the name and price of its moment.
+    body = page("/items/%d/edit" % roll)
+    shop.expect('value="Cheese rol"' in body and 'value="2.35"' in body, "the form to correct an item does not hold its name and price")
+    shop.post(303, "/items/%d/edit" % roll, name="Cheese roll", category="Food", price="2.50")
+    row = shop.row("items", roll)
+    shop.expect((row["name"], row["category"], row["price_cents"]) == ("Cheese roll", "Food", 250), "the corrected item is %s" % row)
+    past = shop.row("sales", sale)
+    shop.expect((past["total_cents"], past["lines"][0]["name"], past["lines"][0]["price_cents"]) == (470, "Cheese rol", 235),
+                "a sale made before the correction now reads %s" % past)
+    shop.expect(shop.row("accounts", ana)["balance_cents"] == 530, "correcting a price moved a balance")
+    again = shop.add("sales", ("item_id", roll), ("qty", "2"), card="1001")
+    shop.expect(shop.row("sales", again)["total_cents"] == 500, "a sale after the correction is not at the new price")
+
+    # Sold out and back: one click on the menu, by sending the form only; a sold-out item is not on the till.
+    body = page("/items")
+    shop.expect('action="/items/%d/available"' % soup in body, "the menu has no form that marks the soup sold out")
+    shop.expect(on_till(page("/"), soup), "the soup is on sale and not on the till")
+    for path in ["/items/%d/available" % soup, "/items/%d/available?available=0" % soup]:
+        shop.request("GET", path)
+        shop.expect(shop.row("items", soup)["available"] is True, "opening %s marked the soup sold out" % path)
+    shop.post(303, "/items/%d/available" % soup, available="0")
+    shop.expect(shop.row("items", soup)["available"] is False, "the soup is not marked sold out")
+    shop.expect(not on_till(page("/"), soup) and on_till(page("/"), roll), "a sold-out item is on the till, or the other one is not")
+    shop.expect("sold out" in page("/items"), "the menu does not show the soup as sold out")
+    shop.post(303, "/items/%d/available" % soup, available="1")
+    shop.expect(shop.row("items", soup)["available"] is True and on_till(page("/"), soup), "the soup did not come back on sale")
+
+    # An account is corrected and marked as having left; its balance stays.
+    body = page("/accounts/%d/edit" % ana)
+    shop.expect('value="Ana Lime"' in body and 'value="1001"' in body, "the form to correct an account does not hold its name and card")
+    shop.post(303, "/accounts/%d/edit" % ana, ("class", "7B"), name="Ana Lima", kind="pupil", card="1001", active="0")
+    row = shop.row("accounts", ana)
+    shop.expect((row["name"], row["kind"], row["class"], row["card"], row["active"], row["balance_cents"])
+                == ("Ana Lima", "pupil", "7B", "1001", False, 30), "the corrected account is %s" % row)
+    shop.expect("has left" in page("/accounts/%d" % ana), "the page of an account that left does not say so")
+
+    # A card number belongs to one account.
+    shop.post(400, "/accounts", ("class", ""), name="Cy", kind="pupil", card="1002")
+    shop.post(400, "/accounts/%d/edit" % ana, ("class", "7B"), name="Ana Lima", kind="pupil", card="1002", active="0")
+    shop.post(303, "/accounts", ("class", ""), name="Cy", kind="pupil", card="")
+    shop.post(303, "/accounts", ("class", ""), name="Di", kind="pupil", card="")
+    shop.expect([row["card"] for row in shop.export()["accounts"]] == ["1001", "1002", "", ""], "the cards are %s"
+                % [row["card"] for row in shop.export()["accounts"]])
+
+    # Nothing is removed.
+    for path in ["/items/%d" % roll, "/accounts/%d" % bo, "/sales/%d" % sale]:
+        for method, where in [("POST", path + "/delete"), ("POST", path + "/remove"), ("DELETE", path)]:
+            status, _ = shop.request(method, where)
+            shop.expect(status >= 400, "%s %s answered %d" % (method, where, status))
+    state = shop.export()
+    shop.expect((len(state["items"]), len(state["accounts"]), len(state["sales"])) == (2, 4, 2), "something was removed")
+    for body in [page("/items"), page("/accounts"), page("/accounts/%d" % bo), page("/items/%d/edit" % roll)]:
+        shop.expect(not re.search(r"delete|remove", body, re.I), "a page offers to delete or remove")
+
+
+@fault("GET", r"/items/(\d+)/available(\?.*)?")
+def opening_marks(shop, ask, ident, _):
+    """Opening the address marks the item sold out."""
+    shop.real("POST", "/items/%s/available" % ident, [("available", "0")])
+    shop.acted += 1
+    return ask.send()
+
+
+@fault("GET", "/export.json")
+def past_follows_the_menu(shop, ask):
+    """A sale is kept as items and quantities, and shown at the menu's names and prices of today."""
+    status, body = ask.send()
+    state = json.loads(body)
+    items = {item["id"]: item for item in state["items"]}
+    for sale in state["sales"]:
+        for line in sale["lines"]:
+            now = items[line["item_id"]]
+            if (line["name"], line["price_cents"]) != (now["name"], now["price_cents"]):
+                line["name"], line["price_cents"] = now["name"], now["price_cents"]
+                shop.acted += 1
+        sale["total_cents"] = sum(line["qty"] * line["price_cents"] for line in sale["lines"])
+    return status, json.dumps(state)
+
+
+@fault("POST", r"/accounts(/\d+/edit)?")
+def one_card_twice(shop, ask, edit):
+    """A card number another account has is taken, with a mark to tell the two apart."""
+    mine = int(edit.split("/")[1]) if edit else None
+    if ask.get("card") and any(row["card"] == ask.get("card") and row["id"] != mine for row in shop.state()["accounts"]):
+        ask.put("card", ask.get("card") + "-2")
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("GET", "/")
+def sold_out_on_the_till(shop, ask):
+    """The till lists every item, sold out or not."""
+    status, body = ask.send()
+    for item in shop.state()["items"]:
+        if not item["available"]:
+            body += '<input type="hidden" name="item_id" value="%d">' % item["id"]
+            shop.acted += 1
+    return status, body
+
+
+@fault("POST", r"/accounts/(\d+)/edit")
+def leaving_empties(shop, ask, ident):
+    """An account marked as having left loses its balance."""
+    held = [row["balance_cents"] for row in shop.state()["accounts"] if row["id"] == int(ident)]
+    if ask.get("active") == "0" and held and held[0]:
+        shop.real("POST", "/accounts/%s/payout" % ident, [("amount", "%d.%02d" % divmod(held[0], 100))])
+        shop.acted += 1
+    return ask.send()
+
+
+run(checks, wrong=[
+    ("opening an address marks an item sold out", opening_marks),
+    ("past sales follow the menu's corrections", past_follows_the_menu),
+    ("one card number on two accounts", one_card_twice),
+    ("a sold-out item is on the till", sold_out_on_the_till),
+    ("an account that leaves loses its balance", leaving_empties),
+])

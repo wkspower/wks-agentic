@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Case of lesson L1202 (lessons/1202-a-sale-is-paid-whole.md).
+Origin: the person's "Accepted" to answers 3, 4, 6 and 7 of run 012, 2026-11-20.
+Run from the repository root."""
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("school canteen")  # this case was born in the canteen and knows its pages (L0024, L0034)
+
+
+def checks(shop):
+    roll = shop.add("items", name="Cheese roll", category="Food", price="2.35")
+    juice = shop.add("items", name="Apple juice", category="Drinks", price="1.10")
+    soup = shop.add("items", name="Soup", category="Food", price="3.00")
+    gum = shop.add("items", name="Gum", category="Sweets", price="0.90")
+    ana = shop.add("accounts", ("class", "7B"), name="Ana Lima", kind="pupil", card="1001")
+    bo = shop.add("accounts", ("class", "9A"), name="Bo Li", kind="pupil", card="")
+    shop.post(303, "/accounts/%d/topup" % ana, amount="10.00")
+
+    def stored():
+        state = shop.export()
+        return len(state["sales"]), [row["balance_cents"] for row in state["accounts"]]
+
+    def refused(what, *pairs, **fields):
+        before = stored()
+        shop.post(400, "/sales", *pairs, **fields)
+        shop.expect(stored() == before, "a sale refused because %s left something behind: %s, before %s" % (what, stored(), before))
+
+    # Cash: the total and the change are the server's, whatever the form says, and an empty quantity is no line.
+    sale = shop.add("sales", ("item_id", roll), ("qty", "2"), ("item_id", juice), ("qty", "3"), ("item_id", soup), ("qty", ""),
+                    given="10", total="0.01", total_cents="1", price="0.01", change="9.99")
+    row = shop.row("sales", sale)
+    shop.expect((row["method"], row["total_cents"], row["given_cents"], row["change_cents"], row["account_id"])
+                == ("cash", 800, 1000, 200, None), "2 rolls and 3 juices for 10.00 in cash are recorded as %s" % row)
+    shop.expect([(line["item_id"], line["qty"], line["price_cents"]) for line in row["lines"]] == [(roll, 2, 235), (juice, 3, 110)],
+                "the lines of the sale are %s" % row["lines"])
+    status, body = shop.request("GET", "/sales/%d" % sale)
+    shop.expect(status == 200 and "8.00" in body and "2.00" in body and "Cheese roll" in body,
+                "the page of the sale does not show its total, its change and what was sold")
+    refused("the cash is a cent short", ("item_id", roll), ("qty", "2"), ("item_id", juice), ("qty", "3"), given="7.99")
+    exact = shop.add("sales", ("item_id", roll), ("qty", "2"), ("item_id", juice), ("qty", "3"), given="8.00")
+    shop.expect(shop.row("sales", exact)["change_cents"] == 0, "the exact amount in cash leaves change")
+
+    # How it is paid follows from which field was filled: one of the two, never both, never neither.
+    refused("neither cash nor a card was given", ("item_id", roll), ("qty", "1"))
+    refused("both cash and a card were given", ("item_id", roll), ("qty", "1"), given="5.00", card="1001")
+    refused("no quantity was typed", ("item_id", roll), ("qty", ""), given="5.00")
+    refused("the item does not exist", ("item_id", "999"), ("qty", "1"), given="5.00")
+    refused("no account has the card", ("item_id", roll), ("qty", "1"), card="9999")
+    refused("the account does not exist", ("item_id", roll), ("qty", "1"), account_id="999")
+
+    # From a balance: the whole total or nothing.
+    sale = shop.add("sales", ("item_id", roll), ("qty", "2"), ("item_id", juice), ("qty", "3"), card="1001")
+    row = shop.row("sales", sale)
+    shop.expect((row["method"], row["total_cents"], row["given_cents"], row["change_cents"], row["account_id"])
+                == ("account", 800, None, None, ana), "a sale by card 1001 is recorded as %s" % row)
+    shop.expect(shop.row("accounts", ana)["balance_cents"] == 200, "8.00 from a balance of 10.00 does not leave 2.00")
+    refused("the balance of 2.00 does not cover 2.35", ("item_id", roll), ("qty", "1"), account_id=ana)
+    status, body = shop.request("POST", "/sales", [("item_id", roll), ("qty", "1"), ("account_id", ana)])
+    shop.expect("2.00" in body and "2.35" in body, "the refusal does not say the balance and the total")
+    shop.add("sales", ("item_id", juice), ("qty", "1"), account_id=ana)
+    shop.add("sales", ("item_id", gum), ("qty", "1"), card="1001")
+    shop.expect(shop.row("accounts", ana)["balance_cents"] == 0, "2.00 less 1.10 and 0.90 is not a balance of zero")
+    refused("the balance is zero", ("item_id", gum), ("qty", "1"), card="1001")
+    refused("the account never had money", ("item_id", gum), ("qty", "1"), account_id=bo)
+
+    # A sold-out item refuses the whole sale, and is sold again once it is back.
+    shop.post(303, "/items/%d/available" % soup, available="0")
+    refused("one of its items is sold out", ("item_id", roll), ("qty", "1"), ("item_id", soup), ("qty", "1"), given="10.00")
+    shop.post(303, "/items/%d/available" % soup, available="1")
+    shop.add("sales", ("item_id", roll), ("qty", "1"), ("item_id", soup), ("qty", "1"), given="10.00")
+
+    # An account that has left buys nothing, whatever it holds.
+    shop.post(303, "/accounts/%d/topup" % bo, amount="5.00")
+    shop.post(303, "/accounts/%d/edit" % bo, ("class", "9A"), name="Bo Li", kind="pupil", card="", active="0")
+    refused("the account has left", ("item_id", gum), ("qty", "1"), account_id=bo)
+
+
+def lines(shop, ask):
+    """The lines of the sale being asked for: (the item as the shop holds it, the quantity)."""
+    items = {str(item["id"]): item for item in shop.state()["items"]}
+    return [(items.get(ident), qty) for ident, qty in zip(ask.all("item_id"), ask.all("qty")) if qty.isdigit()]
+
+
+def total(shop, ask):
+    return sum(item["price_cents"] * int(qty) for item, qty in lines(shop, ask) if item)
+
+
+def account(shop, ask):
+    found = [row for row in shop.state()["accounts"]
+             if str(row["id"]) == ask.get("account_id") or (ask.get("card") and row["card"] == ask.get("card"))]
+    return found[0] if found else None
+
+
+@fault("POST", "/sales")
+def on_credit(shop, ask):
+    """A balance that does not cover the sale is lent the rest."""
+    who, owed = account(shop, ask), total(shop, ask)
+    if who and who["active"] and owed and who["balance_cents"] < owed:
+        shop.real("POST", "/accounts/%d/topup" % who["id"], [("amount", "%d.%02d" % divmod(owed - who["balance_cents"], 100))])
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/sales")
+def short_cash(shop, ask):
+    """Cash short of the total is taken as if it were enough."""
+    owed = total(shop, ask)
+    given = ask.get("given").replace(".", "")
+    if owed and "." in ask.get("given") and given.isdigit() and int(given) < owed:
+        ask.put("given", "%d.%02d" % divmod(owed, 100))
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/sales")
+def sold_in_part(shop, ask):
+    """The sold-out lines are left out and the rest is sold."""
+    kept = [(item, qty) for item, qty in lines(shop, ask) if item and item["available"]]
+    if kept and len(kept) < len(lines(shop, ask)):
+        ask.pairs = [pair for pair in ask.pairs if pair[0] not in ("item_id", "qty")]
+        for item, qty in kept:
+            ask.pairs += [("item_id", str(item["id"])), ("qty", qty)]
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/sales")
+def both_ways(shop, ask):
+    """Cash and a card on one sale: the card is charged and the cash is forgotten."""
+    if ask.get("given") and (ask.get("card") or ask.get("account_id")):
+        ask.put("given", "")
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/sales")
+def cash_by_default(shop, ask):
+    """A sale with neither cash nor a card is taken as paid in cash, exactly."""
+    if not (ask.get("given") or ask.get("card") or ask.get("account_id")) and total(shop, ask):
+        ask.put("given", "%d.%02d" % divmod(total(shop, ask), 100))
+        shop.acted += 1
+    return ask.send()
+
+
+run(checks, wrong=[
+    ("a balance too low is given credit", on_credit),
+    ("cash short of the total is taken", short_cash),
+    ("a sale with a sold-out item is sold in part", sold_in_part),
+    ("a sale takes cash and a card at once", both_ways),
+    ("a sale with no payment is cash by default", cash_by_default),
+])

@@ -172,7 +172,11 @@
    {"page": "/products", "form": "form[action=\"/products\"]", "type": {"name": "Kibble 2 kg", "price": "19,90", "stock": "4", "low_at": "1"}, "says": "rice", "kept": ["name", "price", "stock", "low_at"], "emptied": []}
   ]
  },
- "fits": {
+ "money": {
+  "price": {"path": "/products", "faulted": "/products(/\\d+/edit)?", "table": "products", "named": "name", "field": "price", "cents": "price_cents", "most": "99999.99", "fields": {"stock": "50", "low_at": "0"}},
+  "sale": {"path": "/sales", "line": ["product_id", "qty"], "fields": {"method": "cash"}, "table": "sales", "total": "total_cents"}
+ },
+ "under": {
   "posts": [
    ["/products", {"name": "Cat litter 10 L", "price": "8.90", "stock": "3", "low_at": "5"}],
    ["/products", {"name": "Flea collar, small", "price": "19.99", "stock": "6", "low_at": "2"}],
@@ -188,8 +192,10 @@
    ["/appointments", {"pet_id": "2", "date": "{today}", "time": "16:00"}]
   ],
   "pages": ["/", "/products", "/customers", "/sales", "/appointments"],
-  "cells": 40,
-  "held": 8,
-  "shows": []
+  "cells": 60,
+  "held": 15,
+  "needs": [
+   {"page": "/sales", "patterns": ["voided", "Maria Aparecida de Souza Albuquerque"], "what": "the list of sales has no voided sale and no sale to a customer to measure"}
+  ]
  }
 }

@@ -1,29 +1,59 @@
 # Handoff
 
-**Run 013 (2026-11-20) built the third product on its own branch: a
-maintenance request tracker for an apartment building.** `./check` passes
-with it: 50 lessons, 32 in force, 29 cases run; see
-`runs/013-maintenance-requests.md`.
+**Run 013 (2026-11-20) built a maintenance request tracker for an
+apartment building on its own branch, at the same time as run 012 built the
+canteen, and then took in the base that held run 012.** `./check` passes
+with the tracker; the summary line is in `runs/013-maintenance-requests.md`.
 
 - The person answered one round of 16 questions with one typed word,
   "Accepted". L1301 to L1309 come from those answers; the person has not
   read their files, and has not used the tracker.
-- **A recorded mistake came back.** The buttons held in sight covered a
-  row's text at 800 px: L0042, which was labelled `school library` and so
-  not in force. It is now `web pages`, its case reads each product's
-  surface (`fits`), and it passes on the library's and the pet shop's
-  builds. The person has not seen that change.
+- **A recorded mistake came back, in both runs.** The buttons held in sight
+  covered a row's text at 800 px: L0042, which was labelled `school library`
+  and so not in force. Each run made it `web pages` and its case general, in
+  its own way, and `./bring` refused the second at the base. The two were
+  made one on this branch: the case reads each surface's `under`, as run 012
+  had it. `lessons/0042-*.md` says what was kept of each and why. The person
+  has not seen that.
 - Three general cases were widened for a `textarea` and for `select`s
   (0014, 0015, 0035), and `caselib.js` reads `{today+20}`.
-- This branch has not been brought to the base. `./bring` is the way, and
-  it will name L0042, the four cases, `caselib.js` and two surfaces as
-  changed here.
+- This branch holds all the base has. Bringing it to the base is the
+  coordinating session's to do; `./bring` will name L0042's case and file,
+  three more cases, `caselib.js` and the surfaces as changed here only.
 
 To use the tracker: `python3 product/maintenance.py --sample`, then open
 http://127.0.0.1:8000/. `--today 2026-12-20` shows it on another day.
 
 Owed to the person from this run, in its record: thirteen things decided
 by the builder, and what was not verified.
+
+**Run 012 (2026-11-20) built the third product on this branch: the till of
+a school canteen.** `./check` passes with it; the summary line and what was
+not verified are in `runs/012-canteen-pos.md`.
+
+- The session had the text "Lessons at the start of this session" from the
+  hook before its first action (L0041), asked one round of 15 questions
+  (L0004) and was answered with one typed word, "Accepted".
+- Nine lessons, L1201 to L1209, eight with a case. L1201 to L1208 are the
+  canteen's own (`school canteen`); L1209 is under `local web server`: a
+  connection that is open and silent holds nobody up.
+- Two cases were made general because the canteen needed them (L0024): the
+  case of L0008 (`money`), which settles the line under "Not yet decided"
+  that asks whether it should be; and the case of L0042, whose lesson went
+  from `school library` to `web pages`. Each surface has a "money" or an
+  "under" section for them.
+- **What that means for the other two products is in the run record**, under
+  "The other products and the cases made general": `./bring --try` was run
+  for both from this branch.
+
+To use the till: `python3 product/canteen.py --sample`, then open
+http://127.0.0.1:8000/. `--today 2026-12-01` shows it on another day. It
+keeps everything in `canteen.db` beside where it is started.
+
+The person has not used the till and has not read L1201 to L1209 or the
+changes to L0008 and L0042. They saw fifteen recommendations of a line or a
+few each. The run record lists 13 things the builder decided that were not
+asked. Bringing this run to the base is theirs to do, with `./bring`.
 
 **Run 011 (2026-11-20) made it possible for two runs to work at the same
 time from one base and both come back.** It built no product. `./check`
@@ -415,3 +445,4 @@ Each run adds a file under `runs/` and a line here.
 - [006 school library](runs/006-school-library.md), 2026-11-20: 1 round of 14 questions, 9 lessons added (8 with a case), the second product; 8 cases made general and kept passing on the pet shop; 1 defect found in the scaffold and 1 in the product by hand.
 - [011 parallel](runs/011-parallel.md), 2026-11-20: no questions, no prompt, scaffold only; 2 lessons added (both with a case, case first), numbered L1101 and L1102 by the new rule; `./bring` brings two branches from one base back in either order; 1 defect found by using it on the real branches, which share no history with the base; both real products tried against the base and passing.
 - [010 library rebuild](runs/010-library-rebuild.md), 2026-11-20: no questions; the library rebuilt with no history, every inherited case passing on its first run, none changed; 1 lesson added (with a case, case first), from a defect found by reading screenshots.
+- [012 canteen till](runs/012-canteen-pos.md), 2026-11-20: 1 round of 15 questions, 9 lessons added (8 with a case), the third product; every general case in force passed on the first build; 2 cases made general (L0008, L0042); 2 defects found in the product, one by reading a screenshot and one by holding a connection open, each given its case before its fix.

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Case of lesson L0008 (lessons/0008-money-and-bounds.md).
 Origin: the person's answer 6 in run 001, 2026-11-19. Split in run 005: this
-is the cents half, written against the pet shop (L0024); the pet shop's
-bounds are the case of L0025.
+is the cents half; the pet shop's bounds are the case of L0025.
+Made general in run 012, 2026-11-20, when the school canteen chose the label:
+the form that takes a price, the sale that adds prices up and where the cents
+are read are the product's, from its surface ("money").
 Run from the repository root."""
 import sys
 
@@ -10,53 +12,60 @@ sys.path.insert(0, ".")
 import caselib
 from caselib import fault, run
 
-caselib.product("pet shop")  # this case was born in the pet shop and knows its pages (L0024, L0034)
+MONEY = caselib.product()["money"]
+PRICE, SALE = MONEY["price"], MONEY["sale"]
 
 # 0.29 and 19.99 are prices that lose a cent when multiplied by 100 as floating point.
 PRICES = [("12.50", 1250), ("12.5", 1250), ("7", 700), ("0.29", 29), ("19.99", 1999), ("1.15", 115),
-          ("0.01", 1), ("99999.99", 9999999)]
+          ("0.01", 1), (PRICE["most"], int(PRICE["most"].replace(".", "")))]
 
 
 def checks(shop):
+    table, named = PRICE["table"], PRICE["named"]
+
+    def priced(status, name, text):
+        shop.post(status, PRICE["path"], **dict(PRICE["fields"], **{named: name, PRICE["field"]: text}))
+
     for text, cents in PRICES:
-        shop.post(303, "/products", name="Priced " + text, price=text, stock="50", low_at="0")
-        got = [row["price_cents"] for row in shop.export()["products"] if row["name"] == "Priced " + text]
+        priced(303, "Priced " + text, text)
+        got = [row[PRICE["cents"]] for row in shop.export()[table] if row[named] == "Priced " + text]
         shop.expect(got == [cents] and type(got[0]) is int,
                     "price %s stored as %s, expected %d whole cents" % (text, got, cents))
-    count = len(shop.export()["products"])
+    count = len(shop.export()[table])
     for text in ["12.345", "0.001", "1e3", "abc", "", "NaN", "inf", "12,50", "1 2", "+5", ".5", "5.", "0x10"]:
-        shop.post(400, "/products", name="Not money", price=text, stock="5", low_at="0")
-    shop.expect(len(shop.export()["products"]) == count, "a refused price was stored anyway")
+        priced(400, "Not money", text)
+    shop.expect(len(shop.export()[table]) == count, "a refused price was stored anyway")
 
-    by_name = {row["name"]: row["id"] for row in shop.export()["products"]}
-    shop.post(303, "/sales", ("product_id", by_name["Priced 0.29"]), ("qty", "3"),
-              ("product_id", by_name["Priced 19.99"]), ("qty", "7"), ("product_id", by_name["Priced 1.15"]), ("qty", "1"),
-              method="cash")
-    total = shop.export()["sales"][-1]["total_cents"]
+    by_name = {row[named]: row["id"] for row in shop.export()[table]}
+    what, how_many = SALE["line"]
+    shop.post(303, SALE["path"], (what, by_name["Priced 0.29"]), (how_many, "3"),
+              (what, by_name["Priced 19.99"]), (how_many, "7"), (what, by_name["Priced 1.15"]), (how_many, "1"),
+              **SALE["fields"])
+    total = shop.export()[SALE["table"]][-1][SALE["total"]]
     shop.expect(total == 3 * 29 + 7 * 1999 + 115 and type(total) is int,
                 "3 × 0.29 + 7 × 19.99 + 1.15 is recorded as %r cents, expected 14195" % total)
 
 
-@fault("POST", r"/products(/\d+/edit)?")
+@fault("POST", PRICE["faulted"])
 def through_float(shop, ask, _):
     """The price goes through floating point on its way to cents, and is cut, not rounded."""
-    text = ask.get("price")
+    text = ask.get(PRICE["field"])
     try:
         cut = int(float(text) * 100)
     except (ValueError, OverflowError):
         return ask.send()
     if "." in text and text.replace(".", "").isdigit() and cut != round(float(text) * 100):
-        ask.put("price", "%d.%02d" % divmod(cut, 100))
+        ask.put(PRICE["field"], "%d.%02d" % divmod(cut, 100))
         shop.acted += 1
     return ask.send()
 
 
-@fault("POST", r"/products(/\d+/edit)?")
+@fault("POST", PRICE["faulted"])
 def cut_decimals(shop, ask, _):
     """A price with more than two decimals is taken, and cut to two."""
-    whole, point, decimals = ask.get("price").partition(".")
+    whole, point, decimals = ask.get(PRICE["field"]).partition(".")
     if whole.isdigit() and decimals.isdigit() and len(decimals) > 2:
-        ask.put("price", whole + "." + decimals[:2])
+        ask.put(PRICE["field"], whole + "." + decimals[:2])
         shop.acted += 1
     return ask.send()
 

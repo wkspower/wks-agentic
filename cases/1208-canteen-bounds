@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Case of lesson L1208 (lessons/1208-canteen-bounds.md).
+Origin: the person's "Accepted" to answer 14 of run 012, 2026-11-20.
+Run from the repository root."""
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("school canteen")  # this case was born in the canteen and knows its pages (L0024, L0034)
+
+
+def checks(shop):
+    def item(price="1.00", name="Roll", category="Food", status=303):
+        shop.post(status, "/items", name=name, category=category, price=price)
+
+    def account(name="Ana", kind="pupil", klass="7B", card="", status=303):
+        shop.post(status, "/accounts", ("class", klass), name=name, kind=kind, card=card)
+
+    for price in ["0.01", "999.99"]:
+        item(price, name="Priced " + price)
+    for price in ["0", "0.00", "-1", "1000.00", "1000", "1000000000000", "12.345", "", "abc", "1,50", "+5", ".5", "5."]:
+        item(price, status=400)
+    for name in ["", "   ", "x" * 81]:
+        item(name=name, status=400)
+    for category in ["", "  ", "c" * 41]:
+        item(category=category, status=400)
+    item(name="x" * 80, category="c" * 40)
+    shop.expect(len(shop.export()["items"]) == 3, "a refused item was stored anyway")
+    shop.post(400, "/items/1/edit", name="Roll", category="Food", price="1000.00")
+    shop.post(400, "/items/1/available", available="2")
+
+    for name, kind, klass, card in [("", "pupil", "", ""), ("y" * 81, "pupil", "", ""), ("Ana", "parent", "", ""), ("Ana", "", "", ""),
+                                    ("Ana", "pupil", "k" * 21, ""), ("Ana", "pupil", "", "9" * 21), ("Ana", "pupil", "", "12 34"),
+                                    ("Ana", "pupil", "", "12_34"), ("Ana", "pupil", "", "<1>")]:
+        account(name, kind, klass, card, status=400)
+    account("y" * 80, "staff", "k" * 20, "A1-" + "9" * 17)
+    account("Bo", "pupil", "", "")
+    shop.expect(len(shop.export()["accounts"]) == 2, "a refused account was stored anyway")
+    shop.post(400, "/accounts/1/edit", ("class", ""), name="Ana", kind="pupil", card="", active="maybe")
+
+    for amount in ["0", "0.00", "-5", "500.01", "1000", "5.001", "", "five"]:
+        shop.post(400, "/accounts/2/topup", amount=amount)
+    shop.post(303, "/accounts/2/topup", amount="500.00")
+    shop.post(303, "/accounts/2/topup", amount="0.01")
+    for amount in ["0", "0.00", "-5", "500.02", "5.001", "", "all"]:
+        shop.post(400, "/accounts/2/payout", amount=amount)
+    shop.post(303, "/accounts/2/payout", amount="0.01")
+    shop.expect(shop.row("accounts", 2)["balance_cents"] == 50000 and len(shop.export()["movements"]) == 3, "a refused amount moved a balance")
+
+    for qty in ["0", "-1", "100", "1.5", "two", "+1"]:
+        shop.post(400, "/sales", ("item_id", "1"), ("qty", qty), given="9999.99")
+    shop.post(303, "/sales", ("item_id", "1"), ("qty", "99"), given="9999.99")
+    shop.post(400, "/sales", ("item_id", "1"), ("qty", "1"), given="10000.00")
+    shop.post(400, "/sales", ("item_id", "1"), ("qty", "1"), given="1e3")
+    shop.post(400, "/sales", ("item_id", "1"), ("qty", "1"), card="9" * 21)
+    shop.post(400, "/sales", *[("item_id", "1"), ("qty", "1")] * 51, given="100.00")
+    shop.post(303, "/sales", *[("item_id", "1"), ("qty", "1")] * 50, given="100.00")
+    shop.expect(len(shop.export()["sales"]) == 2, "a refused sale was stored anyway")
+
+    status, _ = shop.request("GET", "/accounts?q=" + "q" * 101)
+    shop.expect(status == 400, "a search text of 101 characters answered %d" % status)
+    status, _ = shop.request("GET", "/accounts?q=" + "q" * 100)
+    shop.expect(status == 200, "a search text of 100 characters answered %d" % status)
+    status, _ = shop.request("POST", "/accounts", [("name", "z" * 70000)])
+    shop.expect(status == 413, "a form of 70,000 bytes answered %d, expected 413" % status)
+
+
+def over(text, most):
+    try:
+        return float(text) > most
+    except ValueError:
+        return False
+
+
+@fault("POST", r"/items(/\d+/edit)?")
+def any_price(shop, ask, _):
+    """A price above the bound is taken, and stored as the highest price there is."""
+    if over(ask.get("price"), 999.99):
+        ask.put("price", "999.99")
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/sales")
+def any_quantity(shop, ask):
+    """A line of more than 99 is sold, as 99."""
+    if ask.all("qty") and ask.all("qty")[0].isdigit() and int(ask.all("qty")[0]) > 99:
+        ask.pairs = [(name, "99" if name == "qty" else value) for name, value in ask.pairs]
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", "/sales")
+def any_number_of_lines(shop, ask):
+    """A sale of more than 50 lines is sold, its first 50."""
+    if len(ask.all("qty")) > 50:
+        rest = [pair for pair in ask.pairs if pair[0] not in ("item_id", "qty")]
+        ask.pairs = [pair for pair in ask.pairs if pair[0] in ("item_id", "qty")][:100] + rest
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", ".*")
+def any_name(shop, ask):
+    """A name of more than 80 characters is taken, and cut."""
+    if len(ask.get("name")) > 80 and len(ask.get("name")) < 1000:
+        ask.put("name", ask.get("name")[:80])
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", r"/accounts/\d+/topup")
+def any_top_up(shop, ask):
+    """A top-up above 500.00 is taken, as 500.00."""
+    if over(ask.get("amount"), 500.00):
+        ask.put("amount", "500.00")
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", r"/accounts(/\d+/edit)?")
+def any_card(shop, ask, _):
+    """A card number with other signs in it is taken, without them."""
+    plain = "".join(sign for sign in ask.get("card") if sign.isalnum() or sign == "-")
+    if plain and plain != ask.get("card"):
+        ask.put("card", plain)
+        shop.acted += 1
+    return ask.send()
+
+
+run(checks, wrong=[
+    ("no upper bound on prices", any_price),
+    ("no upper bound on a quantity", any_quantity),
+    ("no upper bound on the lines of a sale", any_number_of_lines),
+    ("names of any length", any_name),
+    ("no upper bound on a top-up", any_top_up),
+    ("a card number of any signs", any_card),
+])

@@ -2,19 +2,22 @@
 // Case of lesson L0042 (lessons/0042-nothing-under-the-buttons.md).
 // Origin: run 010, 2026-11-20. Read in a screenshot at 1100 px, the overdue page said "6 da"
 // beside Return and Renew: the column of buttons held in sight covered the state of each loan.
-// Made general in run 013, 2026-11-20, when the same was read in a screenshot of a second product:
-// the maintenance tracker's open list at 800 px said "+10 c" for "+10 d" and hid two columns
-// behind its buttons, with every case passing. What fills the product with names of ordinary
-// length, which pages are measured and what they must hold to be worth measuring are the
-// product's, in its surface ("fits").
-// At 1100 px and at 800 px (read in a second screenshot after the library's first fix:
-// "13 days o"), looks at every cell of every list that is shown: its text ends before the
-// column held in sight begins, and inside the box the list is in.
+// Enters names of several words and what makes a row say the most it can, then, at 1100 px and
+// at 800 px (read in a second screenshot after the library's first fix: "13 days o"), looks at
+// every cell of every list that is shown: its text ends before the column held in sight begins,
+// and inside the box the list is in.
+// Made general twice on 2026-11-20, by two runs that did not know of each other, each on the same
+// defect in its own product with every case passing: run 012, when the school canteen's list of
+// sales hid the state of a sale under Open and Void at 800 px, and run 013, when the maintenance
+// tracker's open list said "+10 c" for "+10 d" and hid two columns behind its buttons. What is
+// entered, which pages are measured and what must be there to measure are the product's, in its
+// surface ("under": the names are run 012's; that a surface without it is said, and that a day
+// after today is `{today+20}` as anywhere in a surface, are run 013's).
 // Run from the repository root.
 const { run, style, surface } = require('../caselib.js');
 
-if (!surface.fits) { console.log('the surface of ' + surface.label + ' does not say what fills its lists with ordinary names ("fits")'); process.exit(1); }
-const { posts, pages, cells: least, held: fixed, shows } = surface.fits;
+if (!surface.under) { console.log('the surface of ' + surface.label + ' does not say what this case enters and measures ("under")'); process.exit(1); }
+const { posts, pages, cells: least, held: fixed, needs } = surface.under;
 
 run(async (page, base, expect, fill) => {
   await fill(posts);
@@ -45,10 +48,10 @@ run(async (page, base, expect, fill) => {
     cells += seen.cells; held += seen.held;
   }
   expect(cells >= least && held >= fixed, 'only ' + cells + ' cells were looked at, beside ' + held + ' cells held in sight');
-  for (const show of shows) {
-    await page.goto(base + show.page);
+  for (const need of needs) {
+    await page.goto(base + need.page);
     const said = await page.textContent('main');
-    expect(show.patterns.every((pattern) => new RegExp(pattern).test(said)), show.what);
+    expect(need.patterns.every((pattern) => new RegExp(pattern).test(said)), need.what);
   }
 }, [
   ['the first build of run 010: every column 150 px wide whatever it holds, and the buttons on one line',

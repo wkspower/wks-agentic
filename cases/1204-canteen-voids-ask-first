@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Case of lesson L1204 (lessons/1204-canteen-voids-ask-first.md).
+Origin: the person's "Accepted" to answers 8 and 10 of run 012, 2026-11-20.
+Run from the repository root."""
+import sys
+from html.parser import HTMLParser
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("school canteen")  # this case was born in the canteen and knows its pages (L0024, L0034)
+
+
+class Reader(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.forms, self.links = [], []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form":
+            self.forms.append(((attrs.get("method") or "get").lower(), attrs.get("action") or ""))
+        elif tag == "a":
+            self.links.append(attrs.get("href") or "")
+
+
+def checks(shop):
+    roll = shop.add("items", name="Cheese roll", category="Food", price="2.35")
+    ana = shop.add("accounts", ("class", "7B"), name="Ana Lima", kind="pupil", card="1001")
+    shop.post(303, "/accounts/%d/topup" % ana, amount="10.00")
+    shop.post(303, "/accounts/%d/topup" % ana, amount="3.00")
+    shop.post(303, "/accounts/%d/payout" % ana, amount="1.00")
+    first, second, payout = [row["id"] for row in shop.export()["movements"]]
+    cash = shop.add("sales", ("item_id", roll), ("qty", "2"), given="5.00")
+    card = shop.add("sales", ("item_id", roll), ("qty", "3"), card="1001")
+
+    def read(path, status=200):
+        got, body = shop.request("GET", path)
+        shop.expect(got == status, "GET %s answered %d, expected %d" % (path, got, status))
+        reader = Reader()
+        reader.feed(body)
+        return reader, body
+
+    def balance():
+        return shop.row("accounts", ana)["balance_cents"]
+
+    shop.expect(balance() == 495, "13.00 less 1.00 paid out and 7.05 spent is not 4.95")
+
+    # No page but the question itself carries a form that voids; the lists link to the question.
+    for path in ["/", "/items", "/accounts", "/accounts/%d" % ana, "/accounts/%d/edit" % ana, "/sales", "/sales/%d" % card, "/day"]:
+        reader, _ = read(path)
+        voiding = [action for _, action in reader.forms if action.rstrip("/").endswith("/void")]
+        shop.expect(voiding == [], "%s voids on one click: it has a form to %s" % (path, voiding))
+    reader, _ = read("/sales")
+    for sale in (cash, card):
+        shop.expect("/sales/%d/void" % sale in reader.links, "the list of sales has no link to the void of sale %d" % sale)
+    reader, _ = read("/accounts/%d" % ana)
+    shop.expect("/movements/%d/void" % first in reader.links, "the account's page has no link to the void of its top-up")
+    shop.expect("/movements/%d/void" % payout not in reader.links, "the account's page offers to void a pay-out")
+    read("/movements/%d/void" % payout, 404)
+    read("/sales/999/void", 404)
+    read("/movements/999/void", 404)
+
+    # The question shows what it asks about, has the one form, and opening it changes nothing.
+    ask = "/sales/%d/void" % card
+    for _ in range(2):
+        reader, body = read(ask)
+        shop.expect(reader.forms == [("post", ask)], "%s has the forms %s, expected one post to itself" % (ask, reader.forms))
+        shop.expect("7.05" in body and "Cheese roll" in body and "Ana Lima" in body, "%s does not show the sale it asks about" % ask)
+        shop.expect((shop.row("sales", card)["voided"], balance()) == (False, 495), "opening %s changed the sale or the balance" % ask)
+
+    # The void: whole, once, the money back once, the sale still on record.
+    shop.post(303, ask)
+    row = shop.row("sales", card)
+    shop.expect((row["voided"], row["voided_day"], row["total_cents"], len(row["lines"]), balance())
+                == (True, shop.export()["today"], 705, 1, 1200), "after the void the sale is %s and the balance %d" % (row, balance()))
+    shop.post(400, ask)
+    shop.expect(balance() == 1200, "a second void returned the money again: the balance is %d" % balance())
+    reader, body = read(ask)
+    shop.expect(reader.forms == [] and "voided" in body, "a sale already voided is offered for voiding again, or its page does not say voided")
+    reader, body = read("/sales")
+    shop.expect(ask not in reader.links and "voided" in body, "the list still links to the void of a voided sale, or does not show it as voided")
+    shop.post(303, "/sales/%d/void" % cash)
+    shop.expect(shop.row("sales", cash)["voided"] and balance() == 1200, "the void of a cash sale touched a balance or did not void")
+    for path in ["/sales/%d/edit" % cash, "/sales/%d" % cash]:
+        status, _ = shop.request("POST", path, [("item_id", roll), ("qty", "9"), ("given", "50.00")])
+        shop.expect(status in (404, 405), "POST %s answered %d: a sale can be edited" % (path, status))
+    shop.expect(shop.row("sales", cash)["total_cents"] == 470, "a sale changed after it was made")
+
+    # A top-up is voided the same way, and only while the balance still covers it.
+    ask = "/movements/%d/void" % second
+    reader, body = read(ask)
+    shop.expect(reader.forms == [("post", ask)] and "3.00" in body and "Ana Lima" in body, "%s does not show the top-up and one form" % ask)
+    shop.expect(balance() == 1200, "opening %s changed the balance" % ask)
+    shop.post(303, ask)
+    shop.expect(shop.row("movements", second)["voided"] and balance() == 900, "after the void of a top-up of 3.00 the balance is %d" % balance())
+    shop.post(400, ask)
+    shop.expect(balance() == 900, "a top-up was voided twice")
+    shop.add("sales", ("item_id", roll), ("qty", "1"), card="1001")
+    shop.post(400, "/movements/%d/void" % first)
+    shop.expect(not shop.row("movements", first)["voided"] and balance() == 665, "a top-up already spent in part was voided")
+    reader, _ = read("/accounts/%d" % ana)
+    shop.expect("/movements/%d/void" % second not in reader.links, "a voided top-up is still offered for voiding")
+
+
+BUTTON = '<form method="post" action="%s"><button type="submit">Void</button></form>'
+
+
+@fault("GET", "/sales")
+def list_voids_at_once(shop, ask):
+    """Beside every link to the question, the list carries a button that voids at once."""
+    status, body = ask.send()
+    reader = Reader()
+    reader.feed(body)
+    for link in reader.links:
+        if link.endswith("/void"):
+            body += BUTTON % link
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", r"/sales/(\d+)/void")
+def voided_offered_again(shop, ask, ident):
+    """The page of a sale already voided still has the button."""
+    status, body = ask.send()
+    if any(sale["voided"] for sale in shop.state()["sales"] if sale["id"] == int(ident)):
+        body += BUTTON % ask.path
+        shop.acted += 1
+    return status, body
+
+
+@fault("POST", r"/sales/(\d+)/void")
+def money_back_twice(shop, ask, ident):
+    """A sale already voided is voided again, and its money goes back again."""
+    for sale in shop.state()["sales"]:
+        if sale["id"] == int(ident) and sale["voided"] and sale["account_id"]:
+            shop.real("POST", "/accounts/%d/topup" % sale["account_id"], [("amount", "%d.%02d" % divmod(sale["total_cents"], 100))])
+            shop.acted += 1
+            return 303, ""
+    return ask.send()
+
+
+@fault("POST", r"/movements/(\d+)/void")
+def spent_and_voided(shop, ask, ident):
+    """A top-up whose money was spent is voided all the same: the till lends what is missing."""
+    state = shop.state()
+    for move in state["movements"]:
+        held = [row["balance_cents"] for row in state["accounts"] if row["id"] == move["account_id"]][0]
+        if move["id"] == int(ident) and not move["voided"] and held < move["amount_cents"]:
+            shop.real("POST", "/accounts/%d/topup" % move["account_id"], [("amount", "%d.%02d" % divmod(move["amount_cents"] - held, 100))])
+            shop.acted += 1
+    return ask.send()
+
+
+@fault("GET", r"/sales/(\d+)/void")
+def opening_voids(shop, ask, ident):
+    """Opening the question is taken for the answer."""
+    if not any(sale["voided"] for sale in shop.state()["sales"] if sale["id"] == int(ident)):
+        shop.real("POST", ask.path)
+        shop.acted += 1
+        return 200, '<form method="post" action="%s"></form> 7.05 Cheese roll Ana Lima' % ask.path
+    return ask.send()
+
+
+run(checks, wrong=[
+    ("the list voids on one click", list_voids_at_once),
+    ("a voided sale is offered for voiding again", voided_offered_again),
+    ("a second void returns the money again", money_back_twice),
+    ("a top-up already spent is voided", spent_and_voided),
+    ("opening the question voids", opening_voids),
+])

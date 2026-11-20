@@ -229,7 +229,7 @@
    {"page": "/workers/1/edit", "form": "form[action=\"/workers/1/edit\"]", "type": {"phone": "call me"}, "says": "The phone may hold", "kept": ["phone"], "emptied": []}
   ]
  },
- "fits": {
+ "under": {
   "posts": [
    ["/places", {"kind": "apartment", "name": "4C", "floor": "2"}],
    ["/places", {"kind": "area", "name": "Second floor landing", "floor": "2"}],
@@ -255,7 +255,7 @@
   "pages": ["/", "/requests", "/requests/1", "/overdue", "/closed", "/places", "/places/1", "/workers", "/workers/1", "/requests?q=the"],
   "cells": 150,
   "held": 40,
-  "shows": [
+  "needs": [
    {"page": "/overdue", "patterns": ["in progress", "Northside Heating and Plumbing", "19 d"], "what": "the overdue page has no request that is in progress, held by a worker and 19 days overdue to measure"}
   ]
  }
