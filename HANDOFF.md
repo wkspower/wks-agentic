@@ -1,5 +1,33 @@
 # Handoff
 
+**Run 008 (2026-11-20) changed the scaffold, not the product.** `./check`
+passes: 37 lessons, 27 in force, 24 cases run, 67 wrong variants refused,
+in 41 s (87 s before); without `product/`, 13 in force and 8 cases run, in
+3 s. See `runs/008-growth.md`. Three things are different for every session
+from here on:
+
+- **The lessons are in two files.** `CLAUDE.md` holds the ones labelled
+  `always`. `LESSONS.md` holds the others and is not read whole:
+  `./check --lessons` prints the ones in force for the product in the tree,
+  and `./check --lessons LABEL` what a label brings (L0039). A line is the
+  number, the labels and the sentence; the lesson's file is
+  `lessons/NNNN-*.md`, and a case says in its first lines which lesson it is
+  a case of.
+- **The cases run once, in a copy of the tree without the product's
+  source** (L0038). The case of L0019 no longer runs the others; run by hand
+  from the root of a tree with a product, it fails, because the source is
+  there.
+- **The summary line says the lines of the product and of the cases in
+  force** (L0040): 800 and 2,217 with the library. No limit is set.
+
+Not known, and the first thing the next run shows: whether a fresh session
+runs `./check --lessons` before it works. Until run 008 every lesson was in
+front of every session with no step to take.
+
+The person has not seen run 008. Its instruction was written by the
+coordinating session; the person's own word was "growth". The run record
+lists 13 things the builder decided that were not asked.
+
 **Run 007 (2026-11-20) made two changes to the library and did not record
 the review they came with.** `./check` passes: 33 lessons, 23 in force, 21
 cases run, 67 wrong variants refused; without `product/`, 9 in force and 5
@@ -90,7 +118,8 @@ Not to be changed and not to be asked about until they bring it up:
 
 ## How to resume
 
-1. Read `CLAUDE.md`, then this file.
+1. Read `CLAUDE.md`, run `./check --lessons` and read what it prints, then
+   read this file.
 2. Run `./check`. If it fails, that is the first thing to fix.
 3. To test a prompt, follow `prompts/README.md`.
 4. To use the product on this branch, see the top of this file. The pet
@@ -103,7 +132,8 @@ The base is this branch without `product/`. Nothing else is removed: the
 pet shop's lessons and cases stay in it, not in force.
 
 1. Make a branch from the base and run `./check`. It passes with only
-   `always` in force and prints every label that exists with its count.
+   `always` in force. `./check --lessons` prints every label that exists
+   with its count, and `./check --lessons LABEL` the lessons it brings.
 2. Ask the person everything foreseeable in one round (L0004). What the
    product is and what it is built on are among the questions; offer the
    existing labels that seem to fit, and say which lessons each brings.
@@ -120,7 +150,7 @@ pet shop's lessons and cases stay in it, not in force.
 5. Lessons learned while building get the labels they deserve: the
    product's own name for its business rules, an existing label when the
    lesson would hold for the pet shop too, `always` only for how the work
-   is done.
+   is done. An `always` line goes in `CLAUDE.md`, every other in `LESSONS.md`.
 
 For a rebuild test of the pet shop, delete everything in `product/` except
 `LABELS`.
@@ -157,9 +187,14 @@ For a rebuild test of the pet shop, delete everything in `product/` except
   lost its only one in run 003.
 - Whether `product/` should be deleted between runs of the same prompt (the
   rebuild test) or kept.
-- A size limit for `CLAUDE.md`. The check prints its size and enforces none;
-  it grew from 6963 to 8465 bytes in run 005, mostly the labels and the
-  four cases of L0026.
+- A size limit for `CLAUDE.md`. The check prints its size and enforces none.
+  Run 008 took it from 11,931 bytes to 5,605 by moving out the lessons that
+  are not `always` and the links; it now grows only with `always` lessons.
+- Whether a library lesson that holds five rules should be five lessons.
+  Run 008 found that the library's cases are twice the pet shop's because
+  its lessons hold twice the rules, at the same 14 lines a wrong variant.
+- Whether the case of L0032 should send its 1,000 forms once and not ten
+  times. It is 10 s of the check's 41.
 
 ## Runs
 
@@ -171,4 +206,5 @@ Each run adds a file under `runs/` and a line here.
 - [004 pet shop, rebuilt with no history](runs/004-rebuild-no-history.md), 2026-11-19: 1 round of 3 questions, 3 lessons added (all with a case), 1 defect found by hand, no inherited case changed.
 - [005 labels](runs/005-labels.md), 2026-11-19: no questions, scaffold changed so lessons are switched on per product; 4 lessons added (3 with a case), 3 folded into one, the person's review of L0005 to L0022 recorded; lists became cards on a narrow screen, case first.
 - [007 library review](runs/007-library-review.md), 2026-11-20: no questions, no prompt; 1 lesson reversed and 1 added (both with a case, case first), 1 defect found writing a case, 1 addition refused by an inherited case; the review the run was to record is not recorded, and why.
+- [008 growth](runs/008-growth.md), 2026-11-20: no questions, no prompt, scaffold only; 3 lessons added (all with a case, case first), 3 amended; the check from 87 s to 41 s, `CLAUDE.md` from 11.9 KB to 5.6 KB, the sizes printed on every run; 1 defect found in the run's own case by its control.
 - [006 school library](runs/006-school-library.md), 2026-11-20: 1 round of 14 questions, 9 lessons added (8 with a case), the second product; 8 cases made general and kept passing on the pet shop; 1 defect found in the scaffold and 1 in the product by hand.
