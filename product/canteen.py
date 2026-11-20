@@ -336,7 +336,6 @@ table{border-collapse:collapse;width:100%}
 th,td{padding:.45rem .6rem;text-align:left;vertical-align:top;white-space:nowrap;border-bottom:1px solid #e6e9ee}
 th{background:#eef1f5;font-size:.85rem}
 td.text{white-space:normal;min-width:150px}
-td.wide{min-width:240px}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 td.act a,td.act form{display:inline-block;margin:0 .5rem 0 0}
 td.act button{padding:.2rem .6rem}
@@ -348,10 +347,11 @@ tr.off td{color:#7a828e}
   table,tbody,tr,td{display:block;width:auto}
   thead{display:none}
   tr{background:#fff;border:1px solid #cfd4dc;border-radius:6px;margin:0 0 .7rem;padding:.4rem .6rem}
-  td,td.text,td.wide{border:0;padding:.15rem 0;min-width:0;text-align:left;white-space:normal}
+  td,td.text{border:0;padding:.15rem 0;min-width:0;text-align:left;white-space:normal}
   td.num{text-align:left}
   td::before{content:attr(data-label) ": ";font-weight:600}
   td.act::before{content:none}
+  td:empty{display:none}
   td.num,td.act a,td.act button{white-space:nowrap}
   table.acts td:last-child{position:static;box-shadow:none;padding-top:.4rem}
   input,select{width:100%}
@@ -415,7 +415,7 @@ def choice(label, name, options, chosen=None):
 def table(heads, rows, acts=False):
     """A list: a table on a wide screen, stacked cards with the name of each column on a narrow one.
 
-    heads: (name, kind) with kind '' for a short text, 'text' or 'text wide' for words, 'num', 'act'.
+    heads: (name, kind) with kind '' for a short text, 'text' for words, 'num', 'act'.
     rows: (cells, off) where cells are HTML already escaped."""
     if not rows:
         return ""
@@ -520,7 +520,7 @@ def accounts_page(query):
     for account in matching[:SHOWN]:
         sell_link = '<a href="/?account=%d">Sell</a>' % account["id"] if account["active"] else ""
         rows.append(([esc(account["name"]), account["kind"], esc(account["class"]), esc(account["card"]), money(account["balance_cents"]),
-                      "at the school" if account["active"] else "has left",
+                      "" if account["active"] else "has left",
                       '<a href="/accounts/%d">Open</a>%s' % (account["id"], sell_link)], not account["active"]))
     body = "<h2>A new account</h2>" + account_form("/accounts")
     body += ('<h2>Find an account</h2><form class="card" method="get" action="/accounts"><div class="row">%s'
@@ -543,9 +543,8 @@ def sale_rows(sales, with_who=True):
         acts = '<a href="/sales/%d">Open</a>' % sale["id"]
         if not sale["voided"]:
             acts += '<a href="/sales/%d/void">Void</a>' % sale["id"]
-        cells = [str(sale["id"]), sale["day"], sale["time"], esc(items_text(sale["id"]))] + ([paid] if with_who else [])
-        rows.append((cells + [money(sale["total_cents"]), "voided on " + sale["voided_day"] if sale["voided"] else "stands", acts],
-                     sale["voided"]))
+        cells = [str(sale["id"]), "%s %s" % (sale["day"], sale["time"]), esc(items_text(sale["id"]))] + ([paid] if with_who else [])
+        rows.append((cells + [money(sale["total_cents"]), "voided" if sale["voided"] else "stands", acts], sale["voided"]))
     return rows
 
 
@@ -553,7 +552,7 @@ def sales_page():
     total = one("select count(*) from sales")[0]
     rows = sale_rows(every("select * from sales order by id desc limit ?", SHOWN))
     said = count(total, "sale") + (", the latest %d shown" % SHOWN if total > SHOWN else "")
-    body = "<h2>%s</h2>" % said + table([("Sale", ""), ("Day", ""), ("Time", ""), ("Items", "text wide"), ("Paid", "text"), ("Total", "num"),
+    body = "<h2>%s</h2>" % said + table([("Sale", ""), ("When", ""), ("Items", "text"), ("Paid", "text"), ("Total", "num"),
                                          ("State", ""), ("", "act")], rows, acts=True)
     return page("Sales", body, "Sales")
 
@@ -631,7 +630,7 @@ def account_page(account):
     total = one("select count(*) from sales where account_id = ?", ident)[0]
     rows = sale_rows(every("select * from sales where account_id = ? order by id desc limit ?", ident, SHOWN), with_who=False)
     body += "<h2>%s%s</h2>" % (count(total, "sale"), ", the latest %d shown" % SHOWN if total > SHOWN else "")
-    body += table([("Sale", ""), ("Day", ""), ("Time", ""), ("Items", "text wide"), ("Total", "num"), ("State", ""), ("", "act")], rows, acts=True)
+    body += table([("Sale", ""), ("When", ""), ("Items", "text"), ("Total", "num"), ("State", ""), ("", "act")], rows, acts=True)
     return page(who(account), body)
 
 
