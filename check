@@ -197,6 +197,10 @@ def run_case(tree, lesson, case_file, problems):
         print("  %s %s: %s (%.1f s)" % (lesson, case_file, said[-1], time.time() - started))
 
 
+def lines_of(path):
+    return len(read(path).splitlines())
+
+
 def record(tree):
     """What the tree says, before any case runs."""
     problems = []
@@ -251,7 +255,7 @@ def check(tree, only_list=False):
     work = tempfile.mkdtemp()
     try:
         copy, compiled, kept = without_source(tree, work, problems)
-        ran = not_run = prose = 0
+        ran = not_run = prose = case_lines = 0
         off = []
         for lesson, labels, why_prose, _ in lines:
             in_force = bool(on & set(labels))
@@ -274,6 +278,7 @@ def check(tree, only_list=False):
             for case_file in cases[lesson]:
                 if in_force:
                     ran += 1
+                    case_lines += lines_of(os.path.join(tree, case_file))
                     run_case(copy, lesson, case_file, problems)
                 else:
                     not_run += 1
@@ -289,10 +294,16 @@ def check(tree, only_list=False):
           % (compiled, "; left in product/ as they are: " + ", ".join(kept) if kept else ""))
     entry = len(read(os.path.join(tree, ENTRY)).encode("utf-8"))
     in_force = sum(len(line.encode("utf-8")) + 1 for _, labels, _, line in lines if on & set(labels) and ALWAYS not in labels)
+    product_lines = sum(lines_of(os.path.join(base, name)) for base, _, found in os.walk(os.path.join(tree, "product"))
+                        for name in found if os.path.join(base, name) != os.path.join(tree, DECLARED)
+                        and "__pycache__" not in base and not name.endswith((".pyc", ".db", ".db-journal")))
+    ratio = " (%.1f to 1)" % (case_lines / product_lines) if product_lines else ""
     print("lessons %d · in force %d · not in force %d · with a case %d · prose only %d · "
-          "cases run %d · cases not run %d · product: %s · %s %d bytes, and %d of lessons in force besides · %d s"
+          "cases run %d · cases not run %d · product: %s · product %d lines · cases in force %d lines%s · "
+          "%s %d bytes, and %d of lessons in force besides · %d s"
           % (len(lines), len(lines) - len(off), len(off), len(lines) - prose, prose, ran, not_run,
-             ", ".join(chosen) or "none", ENTRY, entry, in_force, round(time.time() - started)))
+             ", ".join(chosen) or "none", product_lines, case_lines, ratio,
+             ENTRY, entry, in_force, round(time.time() - started)))
     for problem in problems:
         print("FAIL " + problem)
     return not problems
