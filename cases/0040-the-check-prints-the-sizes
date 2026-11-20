@@ -1,0 +1,20 @@
+#!/bin/sh
+# Case of lesson L0040 (lessons/0040-the-check-prints-the-sizes.md).
+# Origin: run 008, 2026-11-20. The cases had grown to 3,007 lines against a product of
+# 800, and the two numbers were only ever counted by hand.
+# Plants a tree whose sizes are known: a product of 7 lines, a case of 3 lines that is
+# always in force and a case of 12 that the product switches on. Then takes the product
+# away, which switches the second case off. Run from the repository root.
+t=$(mktemp -d) || exit 1
+trap 'rm -rf "$t"' EXIT
+./check --plant "$t/tree" >/dev/null 2>&1 || { echo "./check --plant did not plant a tree"; exit 1; }
+for n in 1 2 3 4 5 6; do echo "print($n)" >> "$t/tree/product/app.py"; done
+for n in 1 2 3 4 5 6 7 8 9; do echo "# a line" >> "$t/tree/cases/0002-x"; done
+with=$(./check "$t/tree" 2>&1 | tail -1)
+rm -r "$t/tree/product"
+without=$(./check "$t/tree" 2>&1 | tail -1)
+case "$with" in *"· product 7 lines · cases in force 15 lines (2.1 to 1) ·"*) ;; *)
+  echo "a product of 7 lines with 15 lines of cases in force, and the summary says: $with"; exit 1;; esac
+case "$without" in *"· product 0 lines · cases in force 3 lines ·"*) ;; *)
+  echo "no product and 3 lines of cases in force, and the summary says: $without"; exit 1;; esac
+echo "2 planted trees: 7 lines of product and 15 of cases in force printed with their ratio; without the product, 0 and 3, the case that is off not counted"

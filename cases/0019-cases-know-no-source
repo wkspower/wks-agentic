@@ -1,109 +1,28 @@
-#!/usr/bin/env python3
-"""Case of lesson L0019 (lessons/0019-cases-know-no-source.md).
-Origin: run 002, 2026-11-19: the rebuilt product was written to hold the lines the
-old wrong variants named; the person's decision of the same day.
-Builds a scratch tree that has everything this one has except the product's
-source: its product/ holds compiled bytecode only. Every other case in force
-must pass there. Two planted cases show that the tree tells them apart: one
-that reads a product's source must fail there, one that only runs it must pass.
-The planted product makes this hold in a tree with no product too (run 005).
-Since run 006 the product is whichever one product/LABELS declares, and the
-case stops if any source is left in the scratch tree when the cases run.
-Run from the repository root."""
-import compileall
-import os
-import shutil
-import subprocess
-import sys
-import tempfile
-
-sys.path.insert(0, ".")
-import caselib
-
-ME = os.path.join("cases", os.path.basename(__file__))
-READS, RUNS = "9999-reads-the-source", "9998-runs-the-product"
-PLANTED = os.path.join("product", "planted_9999.py")
-
-
-def last_line(done):
-    said = done.stdout.strip().splitlines()
-    return said[-1] if said else done.stderr.strip()[-200:] or "no output"
-
-
-def plant(tree, name, text):
-    path = os.path.join(tree, name)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as handle:
-        handle.write(text)
-    os.chmod(path, 0o755)
-
-
-listed = subprocess.run(["./check", "--cases"], capture_output=True, text=True)
-in_force = [name for name in listed.stdout.split() if name != ME]
-if listed.returncode != 0 or ME not in listed.stdout.split():
-    print("./check --cases did not list the cases in force: %s" % last_line(listed))
-    sys.exit(1)
-# The product is the one product/LABELS declares, found through its surface (L0034).
-has_product = os.path.exists(os.path.join("product", "LABELS")) and os.path.exists(caselib.product()["main"])
-
-work = tempfile.mkdtemp()
-try:
-    tree = os.path.join(work, "tree")
-    shutil.copytree(".", tree, ignore=shutil.ignore_patterns(".git", "__pycache__", "node_modules", "*.db*"))
-    product = os.path.join(tree, "product")
-    compiled = removed = 0
-
-    def strip_source():
-        """Leave bytecode in product/, and what the product says it is; take the source away."""
-        global compiled, removed
-        compileall.compile_dir(product, legacy=True, quiet=2)
-        for base, _, names in os.walk(product):
-            for name in names:
-                if name.endswith(".py"):
-                    os.remove(os.path.join(base, name))
-                    removed += 1
-                    compiled += os.path.exists(os.path.join(base, name + "c"))
-
-    def attempt(name):
-        done = subprocess.run([name], cwd=tree, env=env, capture_output=True, text=True, timeout=250)
-        return done.returncode == 0 and bool(done.stdout.strip()), done
-
-    if has_product:
-        strip_source()
-    left = [name for base, _, names in os.walk(product) for name in names if name.endswith(".py")]
-    if left:  # run 006: the library's source stayed here, because this case only knew the pet shop's name (L0034)
-        print("the scratch tree still holds the product's source (%s): the cases would be run on a tree that is not "
-              "the one this case is about" % ", ".join(left))
-        sys.exit(1)
-    env = dict(os.environ, SHOP=caselib.MAIN + "c") if has_product else dict(os.environ)
-    passed, failed, verdict = 0, [], {}
-    for name in in_force:
-        fine, done = attempt(name)
-        if fine:
-            passed += 1
-        else:
-            failed.append("%s: %s" % (name, last_line(done)))
-    # Only now the planted product, so that the cases above ran in the tree as it would be.
-    plant(tree, PLANTED, "print('the planted product ran')\n")
-    strip_source()
-    plant(tree, os.path.join("cases", READS),
-          "#!/usr/bin/env python3\nprint('%d characters of the product read' % len(open('" + PLANTED + "').read()))\n")
-    plant(tree, os.path.join("cases", RUNS),
-          "#!/usr/bin/env python3\nimport subprocess, sys\n"
-          "sys.exit(subprocess.run([sys.executable, '" + PLANTED + "c']).returncode)\n")
-    for name in (READS, RUNS):
-        verdict[name] = attempt(os.path.join("cases", name))[0]
-finally:
-    shutil.rmtree(work, ignore_errors=True)
-for failure in failed:
-    print("without the product's source, " + failure)
-if verdict[READS]:
-    print("a planted case that reads a product's source passed in a tree that has none")
-if not verdict[RUNS]:
-    print("a planted case that only runs the product failed in a tree without its source: the tree proves nothing")
-print("%d of %d cases in force pass in a tree with no product source (%d source files compiled, %d removed, %s); "
-      "planted case that reads the source %s, planted case that only runs it %s"
-      % (passed, passed + len(failed), compiled, removed,
-         "the product and one planted" if has_product else "no product in this tree, one planted",
-         "ACCEPTED" if verdict[READS] else "refused", "accepted" if verdict[RUNS] else "REFUSED"))
-sys.exit(1 if failed or verdict[READS] or not verdict[RUNS] or not passed or compiled != removed else 0)
+#!/bin/sh
+# Case of lesson L0019 (lessons/0019-cases-know-no-source.md).
+# Origin: run 002, 2026-11-19: the rebuilt product was written to hold the lines the
+# old wrong variants named; the person's decision of the same day.
+# Until run 008 this case ran every other case again in a tree without the product's
+# source. Now ./check runs them there in the first place (L0038), this case with them,
+# so what is left to show is that such a tree tells cases apart. Two planted trees go
+# through ./check: in one a case reads a product's source and must fail, in the other
+# (the control) a case only runs the product and must pass. Then the case looks at the
+# tree it is itself run in: no source may be there. Run by ./check; by hand from the
+# root of a tree that has a product it fails, since that tree has its source.
+t=$(mktemp -d) || exit 1
+trap 'rm -rf "$t"' EXIT
+head='#!/bin/sh
+# Case of lesson L0002'
+for tree in reads runs; do
+  ./check --plant "$t/$tree" >/dev/null 2>&1 || { echo "./check --plant did not plant a tree"; exit 1; }
+done
+printf '%s\nread=$(wc -c < product/app.py) || exit 1\necho "$read characters of the product read"\n' "$head" > "$t/reads/cases/0002-x"
+printf '%s\npython3 product/app.pyc\n' "$head" > "$t/runs/cases/0002-x"
+reads=refused; runs=accepted
+out=$(./check "$t/reads" 2>&1) && reads=ACCEPTED
+echo "$out" | grep -q '^FAIL L0002: cases/0002-x fails' || reads="$reads, and not by that case failing"
+out=$(./check "$t/runs" 2>&1) || runs=REFUSED
+echo "$out" | grep -q '^  L0002 cases/0002-x: a product' || runs="$runs, and the product did not run"
+source=$(find product -name '*.py' 2>/dev/null | wc -l); compiled=$(find product -name '*.pyc' 2>/dev/null | wc -l)
+echo "planted case that reads a product's source $reads, planted case that only runs it $runs; the tree this case runs in holds $source source files of the product and $compiled compiled"
+[ "$reads" = refused ] && [ "$runs" = accepted ] && [ "$source" -eq 0 ]

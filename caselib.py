@@ -67,7 +67,10 @@ def product(name=None):
     if label(name) not in found:
         print("no surface/*.json is labelled '%s'" % name)
         sys.exit(1)
-    MAIN = os.environ.get("SHOP") or found[label(name)]["main"]
+    main = found[label(name)]["main"]
+    if not os.path.exists(main) and os.path.exists(main + "c"):
+        main += "c"  # ./check runs the cases where the product is bytecode with no source (L0019, L0038)
+    MAIN = os.environ.get("SHOP") or main
     return found[label(name)]
 # No site-packages and no environment: an import from outside the standard library stops the shop (L0006).
 FLAGS = ["-S", "-E", "-s"]
