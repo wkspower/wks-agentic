@@ -163,8 +163,14 @@ def search(query):
     return typed
 
 
+def fold(typed):
+    """Text for comparing without regard to capitals, of any letter and not only A to Z (L0036)."""
+    return typed.casefold()
+
+
 def like(typed):
-    """The search text as a pattern in which % and _ are ordinary characters."""
+    """The search text as a pattern in which % and _ are ordinary characters, to be met by fold(column)."""
+    typed = fold(typed)
     return "%" + typed.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
@@ -175,6 +181,7 @@ class Library:
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
+        self.db.create_function("fold", 1, fold, deterministic=True)
         self.db.executescript(SCHEMA)
         if "lost" not in [column["name"] for column in self.db.execute("PRAGMA table_info(loans)")]:
             self.db.execute("ALTER TABLE loans ADD COLUMN lost TEXT")
@@ -443,7 +450,8 @@ class Pages:
             acts = button("/loans/%d/return" % loan["id"], "Return", back)
             if loan["renewals"] < RENEWALS:
                 acts += button("/loans/%d/renew" % loan["id"], "Renew", back)
-            cells = [("num", str(loan["copy_id"])), ("", e(loan["title"]))]
+            # The title leads to its copies, where a book that will not come back is marked lost (L0031).
+            cells = [("num", str(loan["copy_id"])), ("", '<a href="/titles/%d">%s</a>' % (loan["title_id"], e(loan["title"])))]
             if borrower:
                 cells.append(("", e(loan["name"]) + (" (%s)" % e(loan["class"]) if loan["class"] else "")))
             cells += [("tag", self.due(loan)), ("act", acts)]
@@ -467,7 +475,7 @@ class Pages:
         lib, typed = self.lib, search(query)
         where, values = "", []
         if typed:
-            where = ("WHERE title LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\' OR shelf LIKE ? ESCAPE '\\' "
+            where = ("WHERE fold(title) LIKE ? ESCAPE '\\' OR fold(author) LIKE ? ESCAPE '\\' OR fold(shelf) LIKE ? ESCAPE '\\' "
                      "OR isbn LIKE ? ESCAPE '\\'")
             values = [like(typed)] * 3 + [like(typed.replace("-", ""))]
         total = lib.one("SELECT COUNT(*) AS n FROM titles " + where, *values)["n"]
@@ -527,7 +535,7 @@ class Pages:
         lib, typed = self.lib, search(query)
         where, values = "", []
         if typed:
-            where, values = "WHERE name LIKE ? ESCAPE '\\' OR class LIKE ? ESCAPE '\\'", [like(typed)] * 2
+            where, values = "WHERE fold(name) LIKE ? ESCAPE '\\' OR fold(class) LIKE ? ESCAPE '\\'", [like(typed)] * 2
         total = lib.one("SELECT COUNT(*) AS n FROM borrowers " + where, *values)["n"]
         found = lib.all("SELECT b.*, (SELECT COUNT(*) FROM loans l WHERE l.borrower_id = b.id AND l.returned IS NULL AND l.lost IS NULL) AS held, "
                         "(SELECT COUNT(*) FROM loans l WHERE l.borrower_id = b.id AND l.returned IS NULL AND l.lost IS NULL AND l.due < ?) AS late "
@@ -585,7 +593,7 @@ class Pages:
         if typed.isascii() and typed.isdigit():
             where, values = "AND l.copy_id = ? ", [int(typed) if len(typed) <= 18 else -1]
         elif typed:
-            where, values = "AND (t.title LIKE ? ESCAPE '\\' OR b.name LIKE ? ESCAPE '\\') ", [like(typed)] * 2
+            where, values = "AND (fold(t.title) LIKE ? ESCAPE '\\' OR fold(b.name) LIKE ? ESCAPE '\\') ", [like(typed)] * 2
         found = lib.all(OPEN_LOANS + "WHERE l.returned IS NULL AND l.lost IS NULL " + where + "ORDER BY l.due, l.id", *values)
         return "Loans", (
             "<h1>Books out</h1>" + search_form("/loans", "Search copy number, title or borrower", typed)
@@ -593,15 +601,20 @@ class Pages:
             + (table(["Copy", "Title", "Borrower", "Due", ""], self.loan_rows(found, "/loans")) if found else ""))
 
     def overdue(self, query):
+        """Overdue loans under their class. "7b" and "7B" are one class, headed by the spelling most borrowers
+        on record have and, where two are equally common, the one that sorts first: capitals first (L0036)."""
         lib = self.lib
-        found = lib.all(OPEN_LOANS + "WHERE l.returned IS NULL AND l.lost IS NULL AND l.due < ? "
-                        "ORDER BY b.class = '', b.class COLLATE NOCASE, b.name COLLATE NOCASE, l.due, l.id", lib.today())
+        found = lib.all(OPEN_LOANS + "WHERE l.returned IS NULL AND l.lost IS NULL AND l.due < ?", lib.today())
+        found.sort(key=lambda loan: (loan["class"] == "", fold(loan["class"]), fold(loan["name"]), loan["due"], loan["id"]))
+        shown = {}
+        for row in lib.all("SELECT class, COUNT(*) AS n FROM borrowers GROUP BY class ORDER BY n DESC, class"):
+            shown.setdefault(fold(row["class"]), row["class"])
         body = "<h1>Overdue</h1>" + counted(len(found), len(found), "book overdue", "books overdue", "")[:-5] + ", by class.</p>"
         groups = {}
         for loan in found:
-            groups.setdefault(loan["class"], []).append(loan)
+            groups.setdefault(fold(loan["class"]), []).append(loan)
         for name, loans in groups.items():
-            body += "<h2>%s</h2>" % ("Class " + e(name) if name else "No class")
+            body += "<h2>%s</h2>" % ("Class " + e(shown[name]) if name else "No class")
             body += table(["Copy", "Title", "Borrower", "Due", ""], self.loan_rows(loans, "/overdue"))
         return "Overdue", body
 
