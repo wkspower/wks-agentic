@@ -13,13 +13,15 @@ import html
 import json
 import re
 import sqlite3
+import threading
 import urllib.parse
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 FORM_BYTES = 65536
 SHOWN = 200  # the most rows a long list shows
 CEILING = 100000  # no top-up takes a balance above 1,000.00
 DB = None
+ONE_AT_A_TIME = threading.Lock()  # a browser may hold a second connection open; the requests still run one by one
 TODAY = None  # the day given with --today, or None for the machine's
 
 SCHEMA = """
@@ -724,7 +726,11 @@ class Handler(BaseHTTPRequestHandler):
             url = urllib.parse.urlsplit(self.path)
             query = Form(urllib.parse.parse_qsl(url.query, keep_blank_values=True))
             form = Form(urllib.parse.parse_qsl(raw.decode("utf-8", "replace"), keep_blank_values=True))
-            self.route(method, url.path, query, form)
+            with ONE_AT_A_TIME:
+                try:
+                    self.route(method, url.path, query, form)
+                except Refused as error:
+                    self.answer(error.status, refusal(error))
         except Refused as error:
             self.answer(error.status, refusal(error))
 
@@ -811,12 +817,13 @@ def main():
     parser.add_argument("--today", type=a_day_arg, help="start the till on another day, written YYYY-MM-DD")
     args = parser.parse_args()
     TODAY = args.today
-    DB = sqlite3.connect(args.db)
+    DB = sqlite3.connect(args.db, check_same_thread=False)
     DB.row_factory = sqlite3.Row
     DB.executescript(SCHEMA)
     if args.sample:
         sample()
-    server = HTTPServer(("127.0.0.1", args.port), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server.daemon_threads = True
     print("The canteen till is at http://127.0.0.1:%d/ (Ctrl+C stops it)" % args.port, flush=True)
     try:
         server.serve_forever()
