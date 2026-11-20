@@ -8,6 +8,8 @@
 // two where the lists are cards, 800 px where they are tables with little room, and a wide one.
 // Made general in run 006, 2026-11-20, when the school library chose the label: what fills the
 // product and which pages are measured are the product's, in its surface ("long").
+// A hidden field has no box to be outside of anything, so it is not measured: the library's lend
+// form carries one, and the case called it a control out of its form (run 006).
 // Run from the repository root.
 const { run, style, surface } = require('../caselib.js');
 
@@ -19,7 +21,7 @@ run(async (page, base, expect, fill) => {
       await page.goto(base + path);
       const [content, room] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
       expect(content <= room, path + ' at ' + width + ' px is ' + content + ' px wide and scrolls sideways');
-      const out = await page.$$eval('form.card input, form.card select, form.card button', (els) => els.filter((el) => {
+      const out = await page.$$eval('form.card input:not([type=hidden]), form.card select, form.card button', (els) => els.filter((el) => {
         const box = el.getBoundingClientRect(); const card = el.closest('form.card').getBoundingClientRect();
         return box.right > card.right + 1 || box.left < card.left - 1;
       }).length);

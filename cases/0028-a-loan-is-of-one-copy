@@ -45,10 +45,10 @@ def checks(shop):
 
     # A copy marked lost or withdrawn is not lent; marked back, it is.
     for status in ("lost", "withdrawn"):
-        shop.post(303, "/copies/%d/status" % second, status=status)
+        shop.post(303, "/copies/%d/status" % second, ("status", status))
         body = shop.post(400, "/loans", borrower_id=bo, copy=second)
         shop.expect(status in body, "lending a copy marked %s does not say why it was refused" % status)
-    shop.post(303, "/copies/%d/status" % second, status="available")
+    shop.post(303, "/copies/%d/status" % second, ("status", "available"))
     shop.add("loans", borrower_id=bo, copy=second)
 
     # A returned copy can go out again, to someone else.

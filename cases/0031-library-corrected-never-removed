@@ -57,11 +57,11 @@ def checks(shop):
     # A copy is marked lost, withdrawn, and back; not while it is out.
     mark = "/copies/%d/status"
     for status in ("lost", "withdrawn", "available"):
-        shop.post(303, mark % two, status=status)
+        shop.post(303, mark % two, ("status", status))
         shop.expect(shop.row("copies", two)["status"] == status, "a copy marked %s is %s" % (status, shop.row("copies", two)["status"]))
     for status in ("on loan", "gone", ""):
-        shop.post(400, mark % two, status=status)
-    body = shop.post(400, mark % one, status="lost")
+        shop.post(400, mark % two, ("status", status))
+    body = shop.post(400, mark % one, ("status", "lost"))
     shop.expect(shop.row("copies", one)["status"] == "on loan" and shop.row("loans", loan)["returned"] is None,
                 "marking a copy that is out as lost changed the copy or its loan")
     shop.expect("Ana Lima" in body, "the refusal to mark a copy that is out does not say who has it")

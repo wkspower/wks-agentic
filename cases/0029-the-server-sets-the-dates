@@ -53,12 +53,18 @@ def checks(shop):
     spots = [body.find(text) for text in ("7B</h2>", "Ana Lima", "9A</h2>", "Bo Li", "Ms Kay")]
     shop.expect(-1 not in spots and spots == sorted(spots),
                 "the overdue page does not show each borrower under the heading of their class, those with no class last")
-    status, page = shop.request("GET", "/loans")
-    shop.expect(status == 200 and "overdue" in page.lower(), "the loans page does not say that a loan is overdue")
+    def said_of(path, ident):
+        """What a page says in the row of one loan."""
+        status, page = shop.request("GET", path)
+        shop.expect(status == 200, "GET %s answered %d" % (path, status))
+        row = re.search(r'<tr[^>]*id="loan-%d".*?</tr>' % ident, page, re.S)
+        return row.group(0) if row else ""
+
+    shop.expect("1 day overdue" in said_of("/loans", loan), "the loans page does not say that a loan due yesterday is 1 day overdue")
 
     # Overdue does not stop a borrower; the page where the book is lent shows it.
-    status, page = shop.request("GET", "/borrowers/%d" % ana)
-    shop.expect(status == 200 and "overdue" in page.lower(), "the borrower's page does not show that she has a book overdue")
+    shop.expect("1 day overdue" in said_of("/borrowers/%d" % ana, loan),
+                "the page where a book is lent to her does not show that she has one overdue")
     extra = shop.add("loans", borrower_id=ana, copy=copies[3])
     shop.expect(shop.row("loans", extra)["due"] == "2026-03-31", "a loan made on 2026-03-17 is due %s" % shop.row("loans", extra)["due"])
 
@@ -71,6 +77,7 @@ def checks(shop):
     shop.expect((row["due"], row["renewals"], row["lent"]) == ("2026-03-31", 1, "2026-03-02"),
                 "renewed on 2026-03-17, a loan due 2026-03-16 is due %s after %s renewals" % (row["due"], row["renewals"]))
     shop.expect("Ana Lima" not in overdue(), "a renewed loan is still listed as overdue")
+    shop.expect("overdue" not in said_of("/loans", loan), "the loans page still calls a renewed loan overdue")
     shop.restart("--today", "2026-03-20")
     shop.post(303, renew)
     row = shop.row("loans", loan)
