@@ -7,6 +7,8 @@ source: its product/ holds compiled bytecode only. Every other case in force
 must pass there. Two planted cases show that the tree tells them apart: one
 that reads a product's source must fail there, one that only runs it must pass.
 The planted product makes this hold in a tree with no product too (run 005).
+Since run 006 the product is whichever one product/LABELS declares, and the
+case stops if any source is left in the scratch tree when the cases run.
 Run from the repository root."""
 import compileall
 import os
@@ -41,7 +43,8 @@ in_force = [name for name in listed.stdout.split() if name != ME]
 if listed.returncode != 0 or ME not in listed.stdout.split():
     print("./check --cases did not list the cases in force: %s" % last_line(listed))
     sys.exit(1)
-has_product = os.path.exists(caselib.MAIN)
+# The product is the one product/LABELS declares, found through its surface (L0034).
+has_product = os.path.exists(os.path.join("product", "LABELS")) and os.path.exists(caselib.product()["main"])
 
 work = tempfile.mkdtemp()
 try:

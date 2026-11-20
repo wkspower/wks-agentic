@@ -7,7 +7,10 @@ Run from the repository root."""
 import sys
 
 sys.path.insert(0, ".")
+import caselib
 from caselib import fault, run
+
+caselib.product("pet shop")  # this case was born in the pet shop and knows its pages (L0024, L0034)
 
 # 0.29 and 19.99 are prices that lose a cent when multiplied by 100 as floating point.
 PRICES = [("12.50", 1250), ("12.5", 1250), ("7", 700), ("0.29", 29), ("19.99", 1999), ("1.15", 115),

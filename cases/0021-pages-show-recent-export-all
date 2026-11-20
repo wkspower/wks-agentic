@@ -8,7 +8,10 @@ import re
 import sys
 
 sys.path.insert(0, ".")
+import caselib
 from caselib import fault, run
+
+caselib.product("pet shop")  # this case was born in the pet shop and knows its pages (L0024, L0034)
 
 SHOWN, MADE = 200, 201
 

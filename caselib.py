@@ -6,9 +6,10 @@ That makes the cases the contract a rebuilt product has to meet: the command
 line below, the form fields, /export.json. No case reads the product's
 source, and nothing here does either (L0019).
 
-A case that belongs to one product names its pages itself. A case under a
-general label names none: what it needs to know about the product in front
-of it is in surface/NAME.json, one file per product, read by product() (L0024).
+A case that belongs to one product names its pages itself and asks for that
+product by its label. A case under a general label names none: what it needs
+to know about the product in front of it is in surface/NAME.json, one file
+per product, read by product() (L0024, L0034).
 
 A wrong variant (L0002, L0019) is the same shop with one fault in front of
 it: a function that stands in for the shop on the requests it names, and may
@@ -30,8 +31,8 @@ import time
 import urllib.parse
 
 # The command line. SHOP lets the same cases be put to another build of the product.
-# Until product() is called this is the pet shop, which the pet shop's own cases never call.
-MAIN = os.environ.get("SHOP") or os.path.join("product", "petshop.py")
+# No product is known here until a case has asked for one with product() (L0034).
+MAIN = os.environ.get("SHOP")
 
 
 def label(text):
@@ -131,6 +132,8 @@ class Shop:
         self.log = open(os.path.join(self.dir, "log"), "w+")
 
     def start(self):
+        if MAIN is None:
+            raise Failure("the case started a product without asking for its surface with product()")
         command = [sys.executable] + FLAGS
         if self.wrapper:  # a program that does one wrong thing and then runs the shop as it is
             path = os.path.join(self.dir, "wrong.py")
