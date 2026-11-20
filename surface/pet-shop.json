@@ -171,5 +171,9 @@
   "forms": [
    {"page": "/products", "form": "form[action=\"/products\"]", "type": {"name": "Kibble 2 kg", "price": "19,90", "stock": "4", "low_at": "1"}, "says": "rice", "kept": ["name", "price", "stock", "low_at"], "emptied": []}
   ]
+ },
+ "money": {
+  "price": {"path": "/products", "faulted": "/products(/\\d+/edit)?", "table": "products", "named": "name", "field": "price", "cents": "price_cents", "most": "99999.99", "fields": {"stock": "50", "low_at": "0"}},
+  "sale": {"path": "/sales", "line": ["product_id", "qty"], "fields": {"method": "cash"}, "table": "sales", "total": "total_cents"}
  }
 }

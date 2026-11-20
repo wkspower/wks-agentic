@@ -22,6 +22,9 @@ A price kept as anything but integer cents, an amount that went through
 floating point on its way in, or an input added with no bound stated in a
 lesson of its product.
 
-The case is the pet shop's (L0024): it checks the cents half on the pet
-shop's product form and export. "Every input has a stated bound" is checked
-for the pet shop by the case of L0025; for another product, by nothing yet.
+The case was the pet shop's until run 012, 2026-11-20, when the school
+canteen chose `money` and the case failed on it for want of a pet shop: it
+was made general (L0024). The form that takes a price, the sale that adds
+prices up and where the cents are read come from the product's surface
+("money"). "Every input has a stated bound" is checked for the pet shop by
+the case of L0025 and for the canteen by the case of L1208.

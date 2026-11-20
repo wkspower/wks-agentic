@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Case of lesson L1203 (lessons/1203-a-balance-is-its-records.md).
+Origin: the person's "Accepted" to answers 4, 10 and 14 of run 012, 2026-11-20.
+Run from the repository root."""
+import json
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("school canteen")  # this case was born in the canteen and knows its pages (L0024, L0034)
+
+
+def money(cents):
+    return "%d.%02d" % divmod(cents, 100)
+
+
+def checks(shop):
+    roll = shop.add("items", name="Cheese roll", category="Food", price="2.35")
+    ana = shop.add("accounts", ("class", "7B"), name="Ana Lima", kind="pupil", card="1001")
+    bo = shop.add("accounts", ("class", ""), name="Mr Bo", kind="staff", card="")
+
+    def balance(who):
+        return shop.row("accounts", who)["balance_cents"]
+
+    def adds_up(when):
+        state = shop.export()
+        for row in state["accounts"]:
+            moved = [m for m in state["movements"] if m["account_id"] == row["id"] and not m["voided"]]
+            spent = sum(s["total_cents"] for s in state["sales"] if s["account_id"] == row["id"] and not s["voided"])
+            expected = (sum(m["amount_cents"] for m in moved if m["kind"] == "topup")
+                        - sum(m["amount_cents"] for m in moved if m["kind"] == "payout") - spent)
+            shop.expect(type(row["balance_cents"]) is int and row["balance_cents"] == expected >= 0,
+                        "%s, the balance of %s is %r and its records add up to %d" % (when, row["name"], row["balance_cents"], expected))
+
+    shop.expect(balance(ana) == 0, "a new account does not start at zero")
+    shop.post(303, "/accounts/%d/topup" % ana, amount="10.00")
+    last = shop.export()["movements"][-1]
+    shop.expect((last["account_id"], last["kind"], last["amount_cents"], last["voided"], last["day"])
+                == (ana, "topup", 1000, False, shop.export()["today"]), "a top-up of 10.00 is recorded as %s" % last)
+    adds_up("after one top-up")
+
+    # A pay-out returns up to what is there, and not a cent more.
+    shop.post(303, "/accounts/%d/payout" % ana, amount="4.00")
+    shop.expect(shop.export()["movements"][-1]["kind"] == "payout" and balance(ana) == 600, "10.00 less a pay-out of 4.00 is not 6.00")
+    shop.post(400, "/accounts/%d/payout" % ana, amount="6.01")
+    shop.expect(balance(ana) == 600 and len(shop.export()["movements"]) == 2, "a refused pay-out left something behind")
+
+    # No top-up takes a balance above 1,000.00.
+    shop.post(400, "/accounts/%d/topup" % ana, amount="400.01")
+    shop.post(303, "/accounts/%d/topup" % ana, amount="394.00", balance="5", balance_cents="5")
+    shop.post(400, "/accounts/%d/topup" % ana, amount="6.01")
+    shop.post(303, "/accounts/%d/topup" % ana, amount="6.00")
+    shop.expect(balance(ana) == 100000, "top-ups up to the ceiling do not leave 1,000.00")
+    adds_up("at the ceiling")
+
+    # Nothing but those records moves a balance: not the form that corrects the account, not an address opened.
+    shop.post(303, "/accounts/%d/edit" % ana, ("class", "7B"), name="Ana Lima", kind="pupil", card="1001", active="1",
+              balance="5.00", balance_cents="500")
+    before = len(shop.export()["movements"])
+    for path in ["/accounts/%d/topup?amount=5.00" % bo, "/accounts/%d/payout?amount=5.00" % ana, "/accounts/%d" % ana]:
+        shop.request("GET", path)
+    shop.expect(balance(ana) == 100000 and balance(bo) == 0 and len(shop.export()["movements"]) == before,
+                "a balance moved without a top-up, a pay-out or a sale")
+    for path in ["/movements/1/edit", "/movements/1"]:
+        status, _ = shop.request("POST", path, [("amount", "1.00")])
+        shop.expect(status in (404, 405), "POST %s answered %d: a top-up can be edited" % (path, status))
+    shop.expect(shop.export()["movements"][0]["amount_cents"] == 1000, "the first top-up changed after it was made")
+
+    # Sales and voids are records too.
+    shop.add("sales", ("item_id", roll), ("qty", "3"), account_id=ana)
+    adds_up("after a sale from the balance")
+    shop.post(303, "/sales/1/void")
+    adds_up("after the void of that sale")
+
+    # An account that has left takes no top-up, and is still paid out what it holds.
+    shop.post(303, "/accounts/%d/topup" % bo, amount="7.50")
+    shop.post(303, "/accounts/%d/edit" % bo, ("class", ""), name="Mr Bo", kind="staff", card="", active="0")
+    shop.post(400, "/accounts/%d/topup" % bo, amount="1.00")
+    shop.post(303, "/accounts/%d/payout" % bo, amount="7.50")
+    shop.expect(balance(bo) == 0, "an account that left was not paid out what it held")
+    shop.post(400, "/accounts/%d/payout" % bo, amount="0.01")
+    status, _ = shop.request("POST", "/accounts/999/topup", [("amount", "1.00")])
+    shop.expect(status == 404, "a top-up for an account that does not exist answered %d" % status)
+    adds_up("at the end")
+
+
+def of(shop, ident):
+    return [row for row in shop.state()["accounts"] if row["id"] == int(ident)]
+
+
+def cents(text):
+    whole, _, part = text.partition(".")
+    return int(whole) * 100 + int((part + "00")[:2]) if whole.isdigit() and (part.isdigit() or not part) else None
+
+
+@fault("POST", r"/accounts/(\d+)/payout")
+def overdrawn(shop, ask, ident):
+    """A pay-out of more than the balance is paid: the till lends the rest."""
+    who, asked = of(shop, ident), cents(ask.get("amount"))
+    if who and asked and asked > who[0]["balance_cents"] and who[0]["active"]:
+        shop.real("POST", "/accounts/%s/topup" % ident, [("amount", money(asked - who[0]["balance_cents"]))])
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", r"/accounts/(\d+)/topup")
+def over_the_ceiling(shop, ask, ident):
+    """A top-up that would pass 1,000.00 is taken, as much of it as fits."""
+    who, asked = of(shop, ident), cents(ask.get("amount"))
+    if who and asked and who[0]["balance_cents"] < 100000 < who[0]["balance_cents"] + asked:
+        ask.put("amount", money(100000 - who[0]["balance_cents"]))
+        shop.acted += 1
+    return ask.send()
+
+
+@fault("POST", r"/accounts/(\d+)/topup")
+def left_and_topped_up(shop, ask, ident):
+    """An account that has left is topped up all the same."""
+    who = of(shop, ident)
+    if not who or who[0]["active"]:
+        return ask.send()
+    same = [(name, who[0][name]) for name in ("name", "kind", "class", "card")]
+    shop.real("POST", "/accounts/%s/edit" % ident, same + [("active", "1")])
+    answer = ask.send()
+    shop.real("POST", "/accounts/%s/edit" % ident, same + [("active", "0")])
+    shop.acted += 1
+    return answer
+
+
+@fault("GET", "/export.json")
+def balance_kept_apart(shop, ask):
+    """The void of a sale marks the sale and forgets to return its money."""
+    status, body = ask.send()
+    state = json.loads(body)
+    for sale in state["sales"]:
+        if sale["voided"] and sale["account_id"]:
+            for row in state["accounts"]:
+                if row["id"] == sale["account_id"]:
+                    row["balance_cents"] -= sale["total_cents"]
+                    shop.acted += 1
+    return status, json.dumps(state)
+
+
+run(checks, wrong=[
+    ("a pay-out beyond the balance is paid", overdrawn),
+    ("a top-up passes the ceiling in part", over_the_ceiling),
+    ("an account that has left is topped up", left_and_topped_up),
+    ("a void does not return the money to the balance", balance_kept_apart),
+])
