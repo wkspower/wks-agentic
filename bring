@@ -18,6 +18,10 @@ and, where this tree has no product, anything both sides changed since they
 parted, because no case could prove the result. Where there is a product,
 such a file is merged by text and named, and ./check runs with the product.
 
+A branch begun with no history (a rebuild) parted at its own first commit when
+that holds a tree this branch once had; when it does not, `--from COMMIT` at
+the end of any of the first three commands says where they parted.
+
 Usage: ./bring OTHER                 bring OTHER into this checkout, run ./check, leave the commit to you
        ./bring --verify OURS THEIRS  is this tree what the rules give for those two? Changes nothing
        ./bring --try BRANCH          take this commit into a scratch copy of BRANCH, run its check, keep nothing
@@ -130,11 +134,34 @@ def lesson_of(path, *entries):
     return None
 
 
+def parted(ours, theirs, named=None):
+    """The commit where the two parted, and how it was found.
+
+    A rebuild is started from a first commit with no history, so that no earlier build can be read. Then git knows
+    no common commit, and the fork is that first commit when it holds a tree this side once had."""
+    if named:
+        return git("rev-parse", "--verify", named + "^{commit}"), "named with --from"
+    code, found = git("merge-base", ours, theirs, ok=(0, 1))
+    if code == 0:
+        return found, "by their history"
+    said = []
+    for mine, yours, whose in ((ours, theirs, "the other's"), (theirs, ours, "this side's")):
+        roots = git("rev-list", "--max-parents=0", yours).split()
+        first = tree(roots[0]) if len(roots) == 1 else None
+        for commit in git("rev-list", "--max-count=500", mine).split() if first else []:
+            if tree(commit) == first:
+                return roots[0], "%s first commit, which holds the tree of %s" % (whose, commit[:7])
+        said.append("%s first commit is %s (\"%s\")" % (whose, roots[0][:7], git("log", "-1", "--format=%s", roots[0])[:60]))
+    raise Stop("the two share no history, and neither began at a tree the other ever had: %s. Say where they parted: add "
+               "`--from COMMIT`, the commit that holds the tree the branch was started from, most likely the first "
+               "commit of the branch that has the product" % "; ".join(said))
+
+
 class Plan:
     """What the rules give for three trees: the files to hold, what is refused, what a reader must look at."""
 
-    def __init__(self, ours, theirs, strict, here="here", other="the other"):
-        self.fork_ref = git("merge-base", ours, theirs)
+    def __init__(self, ours, theirs, strict, here="here", other="the other", named=None):
+        self.fork_ref, self.fork_how = parted(ours, theirs, named)
         fork, mine, yours = tree(self.fork_ref), tree(ours), tree(theirs)
         self.files = {path: ("blob", entry) for path, entry in mine.items()}  # path -> ("blob", entry) or ("text", content)
         self.refused, self.by_text, self.marked, self.by_hand, self.together, self.reach = [], [], [], [], [], []
@@ -317,7 +344,7 @@ def report(plan, other):
                 print("  " + what)
 
 
-def bring(other):
+def bring(other, named=None):
     root = git("rev-parse", "--show-toplevel")
     os.chdir(root)
     if git("status", "--porcelain"):
@@ -332,14 +359,14 @@ def bring(other):
     here = git("rev-parse", "--abbrev-ref", "HEAD")
     other = other[:7] if re.fullmatch(r"[0-9a-f]{40}", other) else other
     here = "this checkout" if here == "HEAD" else here
-    plan = Plan("HEAD", theirs, strict, "on " + here if here != "this checkout" else "here", other)
+    plan = Plan("HEAD", theirs, strict, "on " + here if here != "this checkout" else "here", other, named)
     if plan.refused:
         print("REFUSED: %s is not brought into %s, and nothing was changed." % (other, here))
         for refusal in plan.refused:
             print("  " + refusal)
         return 1
     before = tree("HEAD")
-    git("merge", "-s", "ours", "--no-ff", "--no-commit", theirs)
+    git("merge", "-s", "ours", "--no-ff", "--no-commit", "--allow-unrelated-histories", theirs)
     for path in set(before) - set(plan.files):
         os.remove(path)
     for path in plan.files:
@@ -357,8 +384,8 @@ def bring(other):
                             ("To be read together", plan.together), ("Reaches other products", plan.reach)):
             handle.write("".join(["\n%s:\n" % name] + ["- %s\n" % what for what in found]) if found else "")
     wrong = differences(plan, root)
-    print("%s brought into %s: %d files changed, lessons brought: %s. %s"
-          % (other, here, len([path for path in changed if path]), ", ".join(plan.brought) or "none",
+    print("%s brought into %s, parted at %s (%s): %d files changed, lessons brought: %s. %s"
+          % (other, here, plan.fork_ref[:7], plan.fork_how, len([path for path in changed if path]), ", ".join(plan.brought) or "none",
              "No product here: only what one side changed was taken." if strict else
              "The product here was kept, and what both sides changed was merged by text."))
     report(plan, other)
@@ -380,10 +407,10 @@ def bring(other):
     return 0
 
 
-def verify(ours, theirs):
+def verify(ours, theirs, named=None):
     root = git("rev-parse", "--show-toplevel")
     os.chdir(root)
-    plan = Plan(ours, theirs, not os.path.isdir("product"), ours, theirs)
+    plan = Plan(ours, theirs, not os.path.isdir("product"), ours, theirs, named)
     wrong = ["the rules refuse to bring these two together: " + refusal for refusal in plan.refused] or differences(plan, root)
     if wrong:
         print("this tree is NOT what the rules give for %s and %s, parted at %s:" % (ours, theirs, plan.fork_ref[:7]))
@@ -395,7 +422,7 @@ def verify(ours, theirs):
     return 0
 
 
-def attempt(branch):
+def attempt(branch, named=None):
     """What a product on another branch says to this commit, in a scratch copy that is thrown away."""
     root = git("rev-parse", "--show-toplevel")
     here = git("rev-parse", "HEAD", cwd=root)
@@ -405,7 +432,8 @@ def attempt(branch):
     copy = os.path.join(work, "tree")
     try:
         git("worktree", "add", "--detach", copy, branch, cwd=root)
-        done = subprocess.run([sys.executable, os.path.abspath(__file__), here], cwd=copy, capture_output=True, text=True)
+        done = subprocess.run([sys.executable, os.path.abspath(__file__), here] + (["--from", named] if named else []),
+                              cwd=copy, capture_output=True, text=True)
         print("In a scratch copy of %s, taking in %s:" % (branch, here[:7]))
         print("\n".join("  " + line for line in done.stdout.strip().splitlines()))
         print("Nothing was kept: %s is as it was. %s" % (branch, "Its product meets what is here." if done.returncode == 0
@@ -439,16 +467,18 @@ def begin(slugs):
 
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
+    args, named = sys.argv[1:], None
+    if len(args) > 2 and args[-2] == "--from":
+        args, named = args[:-2], args[-1]
     try:
         if len(args) == 3 and args[0] == "--verify":
-            sys.exit(verify(args[1], args[2]))
+            sys.exit(verify(args[1], args[2], named))
         if len(args) == 2 and args[0] == "--try":
-            sys.exit(attempt(args[1]))
+            sys.exit(attempt(args[1], named))
         if len(args) >= 2 and args[0] == "--begin":
             sys.exit(begin(args[1:]))
         if len(args) == 1 and not args[0].startswith("-"):
-            sys.exit(bring(args[0]))
+            sys.exit(bring(args[0], named))
     except Stop as stop:
         print("REFUSED: %s" % stop)
         sys.exit(1)
