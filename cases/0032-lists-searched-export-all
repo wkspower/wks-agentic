@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Case of lesson L0032 (lessons/0032-lists-searched-export-all.md).
 Origin: the person's answer 12 in run 006, 2026-11-20.
+Run 007: capitals of any letter, not only A to Z (found with L0036).
 Fills the library past 200 titles, borrowers, open loans and returned loans
 and reads each page. Run from the repository root."""
 import json
@@ -30,10 +31,10 @@ def checks(shop):
 
     for count in range(1, 206):
         shop.post(303, "/titles", title="Book %03d" % count, author="Writer %d" % (count % 7), isbn="", shelf="", copies="1")
-    odd = shop.add("titles", title="100% Wolf", author="Jayne LYONS", isbn="978-0-340-93049-1", shelf="F LYO", copies="1")
+    odd = shop.add("titles", title="100% Wolf", author="Zoë LYONS", isbn="978-0-340-93049-1", shelf="F LYO", copies="1")
     for count in range(1, 206):
         shop.post(303, "/borrowers", name="Teacher %03d" % count, kind="staff", **{"class": "Staff room"})
-    pupil = shop.add("borrowers", name="Ana Lima", kind="pupil", **{"class": "7B"})
+    pupil = shop.add("borrowers", name="Åsa Lima", kind="pupil", **{"class": "7B"})
     state = shop.export()
     shop.expect((len(state["titles"]), len(state["copies"]), len(state["borrowers"])) == (206, 206, 206),
                 "206 titles of one copy and 206 borrowers were entered, and /export.json holds %d, %d and %d"
@@ -45,8 +46,9 @@ def checks(shop):
         shop.expect(len(rows(body, link)) == 200, "%s lists %d rows, expected the first 200" % (path, len(rows(body, link))))
         shop.expect(re.search(r"\b200 of %d\b" % total, body), "%s does not say that it shows 200 of %d" % (path, total))
 
-    # Search: title, author, ISBN and shelf mark; name and class; capitals do not matter; % is a character.
-    for query, expected in (("book 20", 6), ("writer 3", 29), ("lyons", 1), ("9780340930491", 1), ("f lyo", 1), ("%", 1),
+    # Search: title, author, ISBN and shelf mark; name and class; capitals do not matter, of any letter
+    # (run 007: "ZOË" did not find "Zoë", L0036); % is a character.
+    for query, expected in (("book 20", 6), ("writer 3", 29), ("lyons", 1), ("ZOË", 1), ("9780340930491", 1), ("f lyo", 1), ("%", 1),
                             ("_", 0), ("no such book", 0), ("Book", 205)):
         body = page("/titles", q=query)
         found = rows(body, title_link)
@@ -55,7 +57,7 @@ def checks(shop):
         shop.expect(re.search(r"\b%d\b" % expected, re.sub(r"<[^>]+>", " ", body)),
                     "searching the catalogue for '%s' does not say that %d match" % (query, expected))
     shop.expect(rows(page("/titles", q="%"), title_link) == [odd], "searching for '%' does not find the one title that has it")
-    for query, expected in (("ana", 1), ("7b", 1), ("teacher 2", 6), ("STAFF ROOM", 205), ("nobody", 0)):
+    for query, expected in (("ÅSA", 1), ("lima", 1), ("7b", 1), ("teacher 2", 6), ("STAFF ROOM", 205), ("nobody", 0)):
         found = rows(page("/borrowers", q=query), borrower_link)
         shop.expect(len(found) == min(expected, 200) and (expected != 1 or found == [pupil]),
                     "searching the borrowers for '%s' lists %d of them, expected %d" % (query, len(found), expected))
@@ -71,7 +73,7 @@ def checks(shop):
     shop.expect(re.search(r"\b206\b", re.sub(r"<[^>]+>", " ", body)), "/loans does not say that 206 books are out")
     shop.expect(rows(page("/loans", q=str(copies[205])), loan_row) == [mine], "searching the loans for a copy number does not find its loan")
     shop.expect(rows(page("/loans", q="wolf"), loan_row) == [mine], "searching the loans for a title does not find its loan")
-    shop.expect(rows(page("/loans", q="ana lima"), loan_row) == [mine], "searching the loans for a borrower does not find her loan")
+    shop.expect(rows(page("/loans", q="ÅSA LIMA"), loan_row) == [mine], "searching the loans for a borrower does not find her loan")
     shop.expect(len(rows(page("/loans", q="Teacher 001"), loan_row)) == 10, "searching the loans for a borrower with 10 books does not list 10")
 
     # Returned loans: the latest 200, and how many there are; overdue loans, all of them.
@@ -130,6 +132,16 @@ def search_finds_everything(shop, ask, table):
     return shop.real("GET", "/" + table)
 
 
+@fault("GET", r"/(titles|borrowers|loans)\?q=.*")
+def capitals_a_to_z_only(shop, ask, table):
+    """Capitals are ignored for A to Z and for no other letter (the library of run 006)."""
+    typed = urllib.parse.parse_qs(ask.path.split("?")[1]).get("q", [""])[0]
+    if any(not letter.isascii() and letter != letter.lower() for letter in typed):
+        shop.acted += 1
+        return shop.real("GET", "/%s?q=no+such+row+anywhere" % table)
+    return ask.send()
+
+
 @fault("GET", r"/titles\?q=.*")
 def percent_is_a_wildcard(shop, ask):
     """% and _ in the search text match anything."""
@@ -186,6 +198,7 @@ run(checks, wrong=[
     ("the page lists every row", lists_everything),
     ("the page is silent about the rows it does not show", silent_about_the_rest),
     ("a search returns the whole list", search_finds_everything),
+    ("capitals are ignored from A to Z only", capitals_a_to_z_only),
     ("% and _ match anything", percent_is_a_wildcard),
     ("loans out are cut at 200", loans_cut_at_200),
     ("returned loans show the oldest 200", returned_oldest_first),

@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Case of lesson L0036 (lessons/0036-classes-without-capitals.md).
+Origin: run 007, 2026-11-20: "7b" and "7B" are one class on the overdue list
+and in search. Run from the repository root."""
+import re
+import sys
+import urllib.parse
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("school library")
+
+# name, class as typed. Three spell 7B with a capital and one without; 9a and 9A are equally common;
+# two spell blue small and one with a capital; 5É is spelled twice so and once 5é; "7 B" is another class.
+PEOPLE = [("Ana Lima", "7B"), ("Bo Li", "7b"), ("Cy Roy", "7B"), ("Dee Ng", "7B"),
+          ("Eli Kay", "9a"), ("Fay Orr", "9A"),
+          ("Gus Hill", "blue"), ("Hal Ives", "Blue"), ("Ian Jay", "blue"),
+          ("Jo Kim", "5é"), ("Kit Low", "5É"), ("Lu May", "5É"),
+          ("Mo Nash", "7 B"), ("Ned Oak", "")]
+# Who has a book overdue. Of 7B only Bo, who spells it small, and Ana: the heading still follows the three.
+LATE = ["Ana Lima", "Bo Li", "Eli Kay", "Fay Orr", "Hal Ives", "Jo Kim", "Mo Nash", "Ned Oak"]
+
+
+def checks(shop):
+    shop.restart("--today", "2026-03-02")
+    title = shop.add("titles", title="Holes", author="", isbn="", shelf="", copies=str(len(LATE)))
+    copies = sorted(row["id"] for row in shop.export()["copies"] if row["title_id"] == title)
+    ids = {}
+    for name, group in PEOPLE:
+        ids[name] = shop.add("borrowers", name=name, kind="pupil", **{"class": group})
+    for name, copy in zip(LATE, copies):
+        shop.add("loans", borrower_id=ids[name], copy=copy)
+
+    # Nothing is rewritten: each borrower keeps the class as typed.
+    stored = {row["name"]: row["class"] for row in shop.export()["borrowers"]}
+    shop.expect(stored == dict(PEOPLE), "the classes are stored as %s, not as they were typed" % stored)
+
+    # The overdue list: one heading for a class however its capitals were typed.
+    shop.restart("--today", "2026-03-20")
+    status, body = shop.request("GET", "/overdue")
+    shop.expect(status == 200, "GET /overdue answered %d" % status)
+    plain = lambda text: " ".join(re.sub(r"<[^>]+>", " ", text).split())
+    parts = re.split(r"<h2[^>]*>(.*?)</h2>", body, flags=re.S)
+    groups = [(plain(head), plain(below)) for head, below in zip(parts[1::2], parts[2::2])]
+    heads = [head for head, _ in groups]
+    shop.expect(len(heads) == 6, "eight borrowers of classes 5é, 7 B, 7B/7b, 9a/9A, Blue and none are overdue under %d headings: %s"
+                % (len(heads), heads))
+    under = {}
+    for head, below in groups:
+        for name in LATE:
+            if name in below:
+                under[name] = head
+    for one, other in (("Ana Lima", "Bo Li"), ("Eli Kay", "Fay Orr")):
+        shop.expect(under.get(one) and under.get(one) == under.get(other),
+                    "%s and %s are in one class and stand under '%s' and '%s'" % (one, other, under.get(one), under.get(other)))
+    shop.expect(under["Mo Nash"] != under["Ana Lima"], "'7 B' and '7B' differ by more than capitals and are under one heading")
+
+    # The heading shows the spelling most borrowers have; equally common, capitals first.
+    for name, spelling, why in (("Bo Li", "7B", "three of the four spell it 7B"), ("Eli Kay", "9A", "9a and 9A are equally common"),
+                                ("Hal Ives", "blue", "two of the three spell it blue"), ("Jo Kim", "5É", "two of the three spell it 5É")):
+        words = under[name].split()
+        shop.expect(spelling in words and not [word for word in words if word != spelling and word.lower() == spelling.lower()],
+                    "the class of %s is headed '%s', expected %s: %s" % (name, under[name], spelling, why))
+    # In the order of the classes without capitals, no class last.
+    order = [under[name] for name in ("Jo Kim", "Mo Nash", "Ana Lima", "Eli Kay", "Hal Ives", "Ned Oak")]
+    shop.expect(heads == order, "the headings are in the order %s, expected %s" % (heads, order))
+
+    # Search by class finds every spelling, in any alphabet, and nobody else.
+    def found(query):
+        status, body = shop.request("GET", "/borrowers?" + urllib.parse.urlencode({"q": query}))
+        shop.expect(status == 200, "searching the borrowers for '%s' answered %d" % (query, status))
+        return sorted(int(ident) for ident in set(re.findall(r'href="/borrowers/(\d+)"', body)))
+
+    for query, names in (("7b", ["Ana Lima", "Bo Li", "Cy Roy", "Dee Ng"]), ("7B", ["Ana Lima", "Bo Li", "Cy Roy", "Dee Ng"]),
+                         ("9A", ["Eli Kay", "Fay Orr"]), ("BLUE", ["Gus Hill", "Hal Ives", "Ian Jay"]),
+                         ("5é", ["Jo Kim", "Kit Low", "Lu May"]), ("5É", ["Jo Kim", "Kit Low", "Lu May"]), ("7 b", ["Mo Nash"])):
+        shop.expect(found(query) == sorted(ids[name] for name in names),
+                    "searching the borrowers for '%s' lists %d of them, expected the %d of that class"
+                    % (query, len(found(query)), len(names)))
+
+
+def headings(body):
+    return re.findall(r"<h2[^>]*>.*?</h2>", body, re.S)
+
+
+@fault("GET", "/overdue")
+def grouped_as_typed(shop, ask):
+    """Each spelling of a class is a class of its own (the library of run 006)."""
+    status, body = ask.send()
+    names = {row["id"]: row for row in shop.state()["borrowers"]}
+    for head in headings(body):
+        spot = body.index(head)
+        end = body.find("<h2", spot + len(head))
+        below = body[spot + len(head):end if end != -1 else len(body)]
+        rows = re.findall(r"<tr[^>]*id=\"loan-\d+\".*?</tr>", below, re.S)
+        typed = []
+        for row in rows:
+            for who in names.values():
+                if who["name"] in row and who["class"] not in typed:
+                    typed.append(who["class"])
+        if len(typed) > 1:  # one heading stood for several spellings: give the second its own
+            moved = [row for row in rows if any(who["name"] in row and who["class"] == typed[1] for who in names.values())]
+            for row in moved:
+                body = body.replace(row, "")
+            body += "<h2>Class %s</h2><table><tbody>%s</tbody></table>" % (typed[1], "".join(moved))
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", "/overdue")
+def heading_as_first_typed(shop, ask):
+    """The heading shows the class in small letters, whatever most of its borrowers typed."""
+    status, body = ask.send()
+    for head in headings(body):
+        small = re.sub(r"(Class )(\S.*?)(</h2>)", lambda found: found.group(1) + found.group(2).lower() + found.group(3), head)
+        if small != head:
+            body = body.replace(head, small)
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", r"/borrowers\?q=.*")
+def search_minds_capitals(shop, ask):
+    """A search by class finds only the borrowers whose class was typed with the same capitals."""
+    typed = urllib.parse.parse_qs(ask.path.split("?")[1]).get("q", [""])[0]
+    status, body = ask.send()
+    for who in shop.state()["borrowers"]:
+        if who["class"].lower() == typed.lower() and who["class"] != typed:
+            body = body.replace('href="/borrowers/%d"' % who["id"], 'href="/nobody"')
+            shop.acted += 1
+    return status, body
+
+
+@fault("GET", r"/borrowers\?q=.*")
+def search_folds_a_to_z_only(shop, ask):
+    """Capitals are ignored for A to Z and for no other letter (the library of run 006)."""
+    typed = urllib.parse.parse_qs(ask.path.split("?")[1]).get("q", [""])[0]
+    status, body = ask.send()
+    ascii_only = lambda text: "".join(letter.lower() if letter.isascii() else letter for letter in text)
+    for who in shop.state()["borrowers"]:
+        if who["class"].lower() == typed.lower() and ascii_only(who["class"]) != ascii_only(typed):
+            body = body.replace('href="/borrowers/%d"' % who["id"], 'href="/nobody"')
+            shop.acted += 1
+    return status, body
+
+
+@fault(None, r"/borrowers|/export.json")
+def classes_rewritten(shop, ask):
+    """A class is stored in capitals, whatever was typed."""
+    if ask.method == "POST":
+        if ask.get("class") != ask.get("class").upper():
+            ask.put("class", ask.get("class").upper())
+            shop.acted += 1
+    return ask.send()
+
+
+run(checks, wrong=[
+    ("each spelling of a class has its own heading", grouped_as_typed),
+    ("the heading shows the class in small letters", heading_as_first_typed),
+    ("a search by class minds capitals", search_minds_capitals),
+    ("a search ignores capitals from A to Z only", search_folds_a_to_z_only),
+    ("a class is rewritten in capitals", classes_rewritten),
+])
