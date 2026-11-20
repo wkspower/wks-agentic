@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Case of lesson L1207 (lessons/1207-canteen-lists-latest-export-all.md).
+Origin: the person's "Accepted" to answer 13 of run 012, 2026-11-20.
+Run from the repository root."""
+import html
+import json
+import re
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("school canteen")  # this case was born in the canteen and knows its pages (L0024, L0034)
+
+MANY = 205
+
+
+def rows(body):
+    """Every table row of a page, as the texts of its cells."""
+    return [[html.unescape(re.sub(r"<[^>]+>", "", cell)).strip() for cell in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)]
+            for row in re.findall(r"<tr[^>]*>(.*?)</tr>", body, re.S) if "<td" in row]
+
+
+def checks(shop):
+    def page(path):
+        status, body = shop.request("GET", path)
+        shop.expect(status == 200, "GET %s answered %d" % (path, status))
+        return body
+
+    gum = shop.add("items", name="Gum", category="Sweets", price="0.01")
+    for number in range(1, MANY + 1):
+        shop.post(303, "/accounts", ("class", "%dB" % (7 + number % 3)), name="Pupil %03d" % number, kind="pupil", card="C-%03d" % number)
+    rich = 1
+    for _ in range(MANY - 5):
+        shop.post(303, "/accounts/%d/topup" % rich, amount="0.02")
+    for _ in range(5):
+        shop.post(303, "/accounts/%d/payout" % rich, amount="0.01")
+    for number in range(MANY):
+        shop.post(303, "/sales", ("item_id", gum), ("qty", "1"), account_id=rich)
+    for number in range(3):
+        shop.post(303, "/sales", ("item_id", gum), ("qty", "1"), given="1.00")
+
+    # The sales page: the latest 200, and how many there are.
+    body = page("/sales")
+    shown = [row[0] for row in rows(body)]
+    shop.expect(len(shown) == 200, "the sales page shows %d sales, expected 200" % len(shown))
+    shop.expect(shown[0] == str(MANY + 3) and str(9) in shown and str(8) not in shown, "the sales page does not show the latest 200, newest first")
+    shop.expect("%d sales" % (MANY + 3) in body, "the sales page does not say that there are %d sales" % (MANY + 3))
+
+    # An account's page: its latest 200 sales and its latest 200 top-ups and pay-outs, each with its count.
+    body = page("/accounts/%d" % rich)
+    shop.expect("%d sales" % MANY in body and "%d top-ups and pay-outs" % MANY in body,
+                "the page of an account does not say how many sales and how many top-ups and pay-outs it has")
+    shop.expect(len(rows(body)) == 400, "the page of an account with %d sales and %d movements shows %d rows, expected 400"
+                % (MANY, MANY, len(rows(body))))
+
+    # Accounts: the first 200 matches, how many match, and a search by name, class or card without regard to capitals.
+    body = page("/accounts")
+    shop.expect(len(rows(body)) == 200 and "%d accounts" % MANY in body, "the accounts page shows %d of %d and does not say so"
+                % (len(rows(body)), MANY))
+    for query, count in [("pupil 20", 6), ("PUPIL 00", 9), ("c-117", 1), ("9b", 68), ("nobody", 0), ("", MANY)]:
+        body = page("/accounts?q=" + query.replace(" ", "+"))
+        shop.expect(len(rows(body)) == min(count, 200), "a search for '%s' shows %d accounts, expected %d" % (query, len(rows(body)), count))
+        shop.expect("%d account" % count in body, "a search for '%s' does not say that %d match" % (query, count))
+    shop.expect("Pupil 117" in page("/accounts?q=c-117"), "a search by card does not find its account")
+
+    # The export holds everything.
+    state = shop.export()
+    shop.expect((len(state["sales"]), len(state["accounts"]), len(state["movements"]), len(state["items"])) == (MANY + 3, MANY, MANY, 1),
+                "the export holds %d sales, %d accounts, %d top-ups and pay-outs" % (len(state["sales"]), len(state["accounts"]), len(state["movements"])))
+    shop.expect(all(len(sale["lines"]) == 1 for sale in state["sales"]), "the export holds sales without their lines")
+
+
+@fault("GET", "/sales")
+def every_sale_listed(shop, ask):
+    """The sales page lists every sale there is."""
+    status, body = ask.send()
+    shown = {row[0] for row in rows(body)}
+    more = ["<tr><td>%d</td></tr>" % sale["id"] for sale in shop.state()["sales"] if str(sale["id"]) not in shown]
+    shop.acted += len(more)
+    return status, body + "".join(more)
+
+
+@fault("GET", r"/(sales|accounts)(\?.*)?")
+def no_count(shop, ask, *_):
+    """A list cut short does not say how many there are."""
+    status, body = ask.send()
+    cut = re.sub(r"\b\d+ (sales|accounts)\b", r"\1", body)
+    shop.acted += cut != body
+    return status, cut
+
+
+@fault("GET", "/export.json")
+def export_as_the_page(shop, ask):
+    """The export holds the latest 200 sales, like the page."""
+    status, body = ask.send()
+    state = json.loads(body)
+    if len(state["sales"]) > 200:
+        state["sales"] = state["sales"][-200:]
+        shop.acted += 1
+    return status, json.dumps(state)
+
+
+@fault("GET", r"/accounts\?q=(.*)")
+def capitals_matter(shop, ask, query):
+    """The search tells capitals from small letters."""
+    status, body = ask.send()
+    typed = query.replace("+", " ")
+    if not typed or any(typed in cell for row in rows(body) for cell in row):
+        return status, body
+    shop.acted += 1
+    return status, re.sub(r"<tr>(?:(?!</tr>).)*<td.*?</tr>", "", body, flags=re.S)
+
+
+run(checks, wrong=[
+    ("the sales page lists every sale", every_sale_listed),
+    ("a list cut short does not say how many there are", no_count),
+    ("the export holds only what the page shows", export_as_the_page),
+    ("the search tells capitals from small letters", capitals_matter),
+])

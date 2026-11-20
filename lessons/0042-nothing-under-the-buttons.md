@@ -1,4 +1,4 @@
-# L0042 — Where the library's lists are tables they fit their box with ordinary names: no text of a row is under the column of buttons held in sight
+# L0042 — Where a list is a table it fits its box with ordinary names: no text of a row is under the column of buttons held in sight
 
 ## Reason
 Where a list is a table, its last column, the one with the buttons, is held
@@ -49,9 +49,24 @@ asked what they were in front of.
 Which columns give way, and in what order, is the builder's choice. The
 person has not seen it.
 
+Made general in run 012, 2026-11-20 (L0024): the school canteen, a second
+product, had the same defect on its first build, found the same way. Read
+in a screenshot at 800 px, its list of sales showed no State column at all:
+"stands" and "voided on 2026-11-20" were under Open and Void, so a voided
+sale looked like any other. All 28 cases in force had passed; this lesson
+was the library's and not in force. The label went from `school library` to
+`web pages`, the line lost "the library's", and the case now takes what it
+enters and measures from the product's surface ("under"). It failed on the
+canteen before the fix (the list of accounts too, by 10 px). What the
+canteen gave up to fit: the list of sales says when in one column and
+"voided" without the day, which is on the sale's own page. The reasons
+above are the library's and stay as written. The person has not seen this
+change.
+
 ## What would be a regression
-At 1100 px or 800 px, with titles and names of several words, a class of a
-few letters and a loan both overdue and renewed: a cell of a list whose text
+At 1100 px or 800 px, with names of several words and rows that say the
+most they can (in the library a loan both overdue and renewed, in the
+canteen a voided sale paid from a balance): a cell of a list whose text
 runs under the column held in sight, or past the edge of the box the list
 is in.
 

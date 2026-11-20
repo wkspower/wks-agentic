@@ -171,5 +171,162 @@
   "forms": [
    {"page": "/products", "form": "form[action=\"/products\"]", "type": {"name": "Kibble 2 kg", "price": "19,90", "stock": "4", "low_at": "1"}, "says": "rice", "kept": ["name", "price", "stock", "low_at"], "emptied": []}
   ]
+ },
+ "money": {
+  "price": {"path": "/products", "faulted": "/products(/\\d+/edit)?", "table": "products", "named": "name", "field": "price", "cents": "price_cents", "most": "99999.99", "fields": {"stock": "50", "low_at": "0"}},
+  "sale": {"path": "/sales", "line": ["product_id", "qty"], "fields": {"method": "cash"}, "table": "sales", "total": "total_cents"}
+ },
+ "under": {
+  "posts": [
+   [
+    "/products",
+    {
+     "name": "Cat litter 10 L",
+     "price": "8.90",
+     "stock": "3",
+     "low_at": "5"
+    }
+   ],
+   [
+    "/products",
+    {
+     "name": "Flea collar, small",
+     "price": "19.99",
+     "stock": "6",
+     "low_at": "2"
+    }
+   ],
+   [
+    "/products",
+    {
+     "name": "Hypoallergenic grain-free salmon and sweet potato dry food 12 kg",
+     "price": "18.90",
+     "stock": "12",
+     "low_at": "20"
+    }
+   ],
+   [
+    "/customers",
+    {
+     "name": "Maria Aparecida de Souza Albuquerque",
+     "phone": "+55 11 5550 0101"
+    }
+   ],
+   [
+    "/customers",
+    {
+     "name": "Bo Li",
+     "phone": ""
+    }
+   ],
+   [
+    "/pets",
+    {
+     "customer_id": "1",
+     "name": "Sir Barks a Lot",
+     "species": "golden retriever"
+    }
+   ],
+   [
+    "/pets",
+    {
+     "customer_id": "2",
+     "name": "Mia",
+     "species": "cat"
+    }
+   ],
+   [
+    "/sales",
+    [
+     [
+      "method",
+      "card"
+     ],
+     [
+      "customer_id",
+      "1"
+     ],
+     [
+      "product_id",
+      "1"
+     ],
+     [
+      "qty",
+      "2"
+     ],
+     [
+      "product_id",
+      "2"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "product_id",
+      "3"
+     ],
+     [
+      "qty",
+      "1"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "method",
+      "cash"
+     ],
+     [
+      "product_id",
+      "1"
+     ],
+     [
+      "qty",
+      "1"
+     ]
+    ]
+   ],
+   [
+    "/sales/2/void",
+    {}
+   ],
+   [
+    "/appointments",
+    {
+     "pet_id": "1",
+     "date": "{today}",
+     "time": "17:00"
+    }
+   ],
+   [
+    "/appointments",
+    {
+     "pet_id": "2",
+     "date": "{today}",
+     "time": "16:00"
+    }
+   ]
+  ],
+  "pages": [
+   "/products",
+   "/customers",
+   "/sales",
+   "/appointments"
+  ],
+  "cells": 60,
+  "held": 15,
+  "needs": [
+   {
+    "page": "/sales",
+    "patterns": [
+     "voided",
+     "Maria Aparecida de Souza Albuquerque"
+    ],
+    "what": "the list of sales has no voided sale and no sale to a customer to measure"
+   }
+  ]
  }
 }

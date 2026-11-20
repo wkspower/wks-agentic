@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Case of lesson L1209 (lessons/1209-a-silent-connection-holds-nobody-up.md).
+Origin: run 012, 2026-11-20. With one connection open and silent, as a browser
+keeps a spare one, the canteen's first build answered nobody for 5 seconds.
+Born general: it asks any product for its first page and its export, and knows
+no page of the canteen's. Run from the repository root."""
+import socket
+import sys
+import time
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product()
+LIMIT = 2.0  # seconds a request may take beside a silent connection
+SILENT = []
+
+
+def checks(shop):
+    shop.real = timed(shop.real)
+    for path in ["/", "/export.json"]:
+        status, _ = shop.request("GET", path)
+        shop.expect(status == 200, "GET %s answered %d with no other connection open" % (path, status))
+    SILENT.append(socket.create_connection(("127.0.0.1", shop.port), timeout=2))
+    shop.closing.append(lambda: SILENT.pop().close())
+    for path in ["/", "/export.json", "/"]:
+        started = time.time()
+        status, _ = shop.request("GET", path)
+        took = time.time() - started
+        shop.expect(status == 200 and took < LIMIT,
+                    "beside a connection that is open and silent, GET %s answered %d after %.1f s" % (path, status, took))
+
+
+def timed(real):
+    """The shop's own answer, or none: a request that gets no answer in time is a failure the case can say."""
+    def ask(method, path, pairs=(), headers=None):
+        try:
+            return real(method, path, pairs, headers)
+        except caselib.Failure:
+            return 0, ""
+    return ask
+
+
+@fault("GET", ".*")
+def one_at_a_time(shop, ask):
+    """The shop waits for the silent connection to speak before it answers anyone."""
+    if SILENT:
+        time.sleep(LIMIT + 0.2)
+        shop.acted += 1
+    return ask.send()
+
+
+run(checks, wrong=[
+    ("connections are served one at a time", one_at_a_time),
+])

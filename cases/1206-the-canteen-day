@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Case of lesson L1206 (lessons/1206-the-canteen-day.md).
+Origin: the person's "Accepted" to answer 12 of run 012, 2026-11-20.
+Two days are lived by starting the till again with --today. Run from the repository root."""
+import html
+import json
+import re
+import sys
+
+sys.path.insert(0, ".")
+import caselib
+from caselib import fault, run
+
+caselib.product("school canteen")  # this case was born in the canteen and knows its pages (L0024, L0034)
+
+ONE, TWO = "2099-06-01", "2099-06-02"
+EXPECTED = "Cash expected in the drawer"
+
+
+def rows(body):
+    """Every table row of a page, as the texts of its cells."""
+    return [[html.unescape(re.sub(r"<[^>]+>", "", cell)).strip() for cell in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)]
+            for row in re.findall(r"<tr[^>]*>(.*?)</tr>", body, re.S)]
+
+
+def checks(shop):
+    shop.restart("--today", ONE)
+
+    def day(date=None):
+        status, body = shop.request("GET", "/day" + ("?date=" + date if date else ""))
+        shop.expect(status == 200, "the page of the day %s answered %d" % (date or "", status))
+        return {row[0]: row[1:] for row in rows(body) if row}, body
+
+    def has(page, what, *cells):
+        shop.expect(page.get(what) == list(cells), "the day says %s for '%s', expected %s" % (page.get(what), what, list(cells)))
+
+    roll = shop.add("items", name="Cheese roll", category="Food", price="2.35")
+    juice = shop.add("items", name="Apple juice", category="Drinks", price="1.10")
+    ana = shop.add("accounts", ("class", "7B"), name="Ana Lima", kind="pupil", card="1001")
+    bo = shop.add("accounts", ("class", "9A"), name="Bo Li", kind="pupil", card="1002")
+    shop.post(303, "/accounts/%d/topup" % ana, amount="20.00", day="2000-01-01", date="2000-01-01")
+    shop.post(303, "/accounts/%d/topup" % bo, amount="5.00")
+    a = shop.add("sales", ("item_id", roll), ("qty", "2"), ("item_id", juice), ("qty", "3"), given="10.00", day="2000-01-01", date="2000-01-01")
+    b = shop.add("sales", ("item_id", roll), ("qty", "1"), given="2.35")
+    c = shop.add("sales", ("item_id", roll), ("qty", "2"), card="1001")
+    shop.post(303, "/accounts/%d/payout" % bo, amount="2.00")
+    shop.post(303, "/sales/%d/void" % b, day="2000-01-01")
+
+    state = shop.export()
+    shop.expect(state["today"] == ONE and {row["day"] for row in state["sales"] + state["movements"]} == {ONE},
+                "a sale or a top-up carries a day that is not the server's: %s" % sorted({row["day"] for row in state["sales"] + state["movements"]}))
+    shop.expect(shop.row("sales", b)["voided_day"] == ONE, "the void of a sale carries a day that is not the server's")
+    status, body = shop.request("GET", "/")
+    shop.expect("--today" in body and ONE in body, "the till does not say that it was started on another day")
+
+    page, body = day()
+    shop.expect(ONE in body, "the page of the day does not say which day it is")
+    has(page, "Cash sales", "2", "10.35")
+    has(page, "Sales from a balance", "1", "4.70")
+    has(page, "Top-ups", "2", "25.00")
+    has(page, "Pay-outs", "1", "2.00")
+    has(page, "Cash sales voided", "1", "2.35")
+    has(page, "Top-ups voided", "0", "0.00")
+    has(page, EXPECTED, "", "31.00")
+    has(page, "Cheese roll", "4", "9.40")
+    has(page, "Apple juice", "3", "3.30")
+
+    # The next day: a sale of yesterday is voided, a top-up is made and voided, one sale is made.
+    shop.restart("--today", TWO)
+    shop.post(303, "/sales/%d/void" % a)
+    shop.post(303, "/accounts/%d/topup" % ana, amount="1.00")
+    shop.post(303, "/movements/%d/void" % shop.export()["movements"][-1]["id"])
+    d = shop.add("sales", ("item_id", juice), ("qty", "1"), given="2.00")
+    shop.expect((shop.row("sales", a)["day"], shop.row("sales", a)["voided_day"], shop.row("sales", d)["day"]) == (ONE, TWO, TWO),
+                "the days of a sale of yesterday voided today, and of a sale of today, are wrong")
+
+    page, body = day()
+    shop.expect(TWO in body, "the page of the day does not show today")
+    has(page, "Cash sales", "1", "1.10")
+    has(page, "Sales from a balance", "0", "0.00")
+    has(page, "Top-ups", "1", "1.00")
+    has(page, "Cash sales voided", "1", "8.00")
+    has(page, "Top-ups voided", "1", "1.00")
+    has(page, EXPECTED, "", "-6.90")
+    has(page, "Apple juice", "1", "1.10")
+
+    # Yesterday's drawer was counted: its cash does not change. Its items sold are those that still stand.
+    page, body = day(ONE)
+    has(page, "Cash sales", "2", "10.35")
+    has(page, "Cash sales voided", "1", "2.35")
+    has(page, EXPECTED, "", "31.00")
+    has(page, "Cheese roll", "2", "4.70")
+    shop.expect("Apple juice" not in page, "a voided sale is still among the items sold")
+
+    for date in ["yesterday", "2099-02-30", "2099-6-1", "20990601"]:
+        status, _ = shop.request("GET", "/day?date=" + date)
+        shop.expect(status == 400, "the day '%s' answered %d, expected 400" % (date, status))
+    page, _ = day("2098-01-01")
+    has(page, EXPECTED, "", "0.00")
+
+
+def shifted(shop, ask, wrong):
+    """The page of a day with its cash expected moved by what the wrong till gets wrong."""
+    status, body = ask.send()
+    state = shop.state()
+    asked = re.search(r"date=(\d{4}-\d\d-\d\d)", ask.path)
+    off = wrong(state, asked.group(1) if asked else state["today"])
+    found = re.search(re.escape(EXPECTED) + r".*?(-?\d+\.\d\d)", body, re.S)
+    if not off or not found:
+        return status, body
+    cents = int(found.group(1).replace(".", "")) + off
+    shop.acted += 1
+    return status, body[:found.start(1)] + "%s%d.%02d" % ("-" if cents < 0 else "", abs(cents) // 100, abs(cents) % 100) + body[found.end(1):]
+
+
+@fault("GET", r"/day(\?.*)?")
+def later_void_rewrites(shop, ask, _):
+    """A sale voided on a later day is taken out of the cash of the day it was made."""
+    return shifted(shop, ask, lambda state, day: -sum(
+        sale["total_cents"] for sale in state["sales"]
+        if sale["method"] == "cash" and sale["day"] == day and sale["voided"] and sale["voided_day"] != day))
+
+
+@fault("GET", r"/day(\?.*)?")
+def voids_stay_in_the_drawer(shop, ask, _):
+    """The cash handed back for a void is not taken out of the drawer."""
+    return shifted(shop, ask, lambda state, day: sum(
+        sale["total_cents"] for sale in state["sales"] if sale["method"] == "cash" and sale["voided_day"] == day))
+
+
+@fault("GET", r"/day(\?.*)?")
+def payouts_forgotten(shop, ask, _):
+    """Pay-outs are not taken out of the drawer."""
+    return shifted(shop, ask, lambda state, day: sum(
+        move["amount_cents"] for move in state["movements"] if move["kind"] == "payout" and move["day"] == day))
+
+
+@fault("GET", r"/day(\?.*)?")
+def balance_sales_in_the_drawer(shop, ask, _):
+    """Sales paid from a balance are counted as cash in the drawer."""
+    return shifted(shop, ask, lambda state, day: sum(
+        sale["total_cents"] for sale in state["sales"] if sale["method"] == "account" and sale["day"] == day))
+
+
+DATES = {}
+
+
+@fault(None, ".*")
+def day_from_the_form(shop, ask):
+    """The day of a sale is the one its form carries."""
+    if ask.method == "POST" and ask.path == "/sales" and ask.get("day"):
+        answer = ask.send()
+        DATES[max(sale["id"] for sale in shop.state()["sales"])] = ask.get("day")
+        return answer
+    status, body = ask.send()
+    if ask.path == "/export.json":
+        state = json.loads(body)
+        for sale in state["sales"]:
+            if sale["id"] in DATES:
+                sale["day"] = DATES[sale["id"]]
+                shop.acted += 1
+        body = json.dumps(state)
+    return status, body
+
+
+run(checks, wrong=[
+    ("a later void changes the cash of the day of the sale", later_void_rewrites),
+    ("a void is not taken out of the drawer", voids_stay_in_the_drawer),
+    ("pay-outs are not taken out of the drawer", payouts_forgotten),
+    ("sales from a balance are counted as cash", balance_sales_in_the_drawer),
+    ("the day of a sale comes from its form", day_from_the_form),
+])
