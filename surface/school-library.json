@@ -167,5 +167,14 @@
   "pages": ["/titles", "/titles/1", "/borrowers", "/borrowers/1", "/loans", "/overdue", "/returned"],
   "rows": 45,
   "fields": 150
+ },
+ "back": {
+  "posts": [
+   ["/borrowers", {"name": "Ana Lima", "kind": "pupil", "class": "7B"}]
+  ],
+  "forms": [
+   {"page": "/titles", "form": "form[method=post][action=\"/titles\"]", "type": {"title": "Teh Giver", "author": "Lois Lowry", "isbn": "12", "shelf": "F LOW", "copies": "2"}, "says": "The ISBN", "kept": ["title", "author", "isbn", "shelf", "copies"], "emptied": []},
+   {"page": "/borrowers/1", "form": "form[action=\"/loans\"]", "type": {"copy": "999"}, "says": "There is no copy 999", "never": "what you typed", "kept": [], "emptied": ["copy"]}
+  ]
  }
 }

@@ -165,5 +165,11 @@
   "pages": ["/", "/products", "/customers", "/sales", "/sales/1/void", "/appointments"],
   "rows": 45,
   "fields": 150
+ },
+ "back": {
+  "posts": [],
+  "forms": [
+   {"page": "/products", "form": "form[action=\"/products\"]", "type": {"name": "Kibble 2 kg", "price": "19,90", "stock": "4", "low_at": "1"}, "says": "rice", "kept": ["name", "price", "stock", "low_at"], "emptied": []}
+  ]
  }
 }
