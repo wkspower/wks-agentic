@@ -246,17 +246,33 @@ Added to the handoff, under "How a run comes back to the base": after a settling
 
 ## The other three products against this tree (`./bring --try`)
 
-TRY_RESULTS
+Run on `bc479d2`, which is the final tree but for these results written into this record. Each
+ran this tree's whole check with that branch's product in a scratch copy and kept nothing.
+
+| Branch | Product | Result | Cases run | In force | Time |
+|---|---|---|---|---|---|
+| `run/005-labels` | pet shop | meets what is here | 32 | 35 lessons | 69 s |
+| `run/010-library-rebuild` | school library | meets what is here | 30 | 33 lessons | 94 s |
+| `run/012-canteen-pos` | school canteen | meets what is here | 31 | 34 lessons | 83 s |
+
+So the one case of L0042, with `under` in every surface, passes on four products, and the pet
+shop passes with its desk measured and run 012's stronger requirement together, which neither run
+had tried. The pet shop also met `money` as run 012 made it general, and all three met L1209.
+
+A first round was run on `27b78d2`, the settled merge alone: the pet shop met it (31 cases run,
+63 s) and the library met it (29, 87 s). The canteen's try of that round started after `f6fd6a1`
+was committed and so tried that commit, where L1310's case fails on purpose; it failed there on
+that case and on no other. No product was changed.
 
 ## Check at the end
 
-CHECK_LINE
+    lessons 60 · in force 34 · not in force 26 · with a case 51 · prose only 9 · cases run 31 · cases not run 23 · product: maintenance requests, web pages, local web server, python stdlib and sqlite on localhost · product 758 lines · cases in force 3127 lines (4.1 to 1) · at the start of a session CLAUDE.md 7143 bytes and 3822 characters from the hook (8861 with no product) · 95 s
 
 `./check --selftest` was not run: the check was not changed.
 
 ## Time and agents
 
-TIME_LINE No sub-agents.
+About 20 minutes by the clock, from the first command at 22:20 to the last commit: 7 to the settled merge (`27b78d2`, 22:26), 4 for L1310 and its fix (22:30), the rest the check, run four times at about 90 s, and two rounds of three tries at 4 minutes a round. No sub-agents.
 
 ## Not verified, and decided by the session
 
