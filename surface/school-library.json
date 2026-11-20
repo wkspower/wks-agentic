@@ -176,5 +176,30 @@
    {"page": "/titles", "form": "form[method=post][action=\"/titles\"]", "type": {"title": "Teh Giver", "author": "Lois Lowry", "isbn": "12", "shelf": "F LOW", "copies": "2"}, "says": "The ISBN", "kept": ["title", "author", "isbn", "shelf", "copies"], "emptied": []},
    {"page": "/borrowers/1", "form": "form[action=\"/loans\"]", "type": {"copy": "999"}, "says": "There is no copy 999", "never": "what you typed", "kept": [], "emptied": ["copy"]}
   ]
+ },
+ "fits": {
+  "posts": [
+   ["/titles", {"title": "Noughts & Crosses", "author": "Malorie Blackman", "isbn": "9780552555708", "shelf": "F BLA", "copies": "3"}],
+   ["/titles", {"title": "A Short History of Nearly Everything", "author": "Bill Bryson", "isbn": "9780552997041", "shelf": "500 BRY", "copies": "2"}],
+   ["/borrowers", {"name": "Maria Aparecida de Souza", "kind": "pupil", "class": "7B"}],
+   ["/borrowers", {"name": "Bo Li", "kind": "pupil", "class": "Year 9 A"}],
+   ["/borrowers", {"name": "Ms Kay", "kind": "staff", "class": ""}],
+   ["/loans", {"borrower_id": "1", "copy": "1"}],
+   ["/loans", {"borrower_id": "1", "copy": "4"}],
+   ["/loans", {"borrower_id": "2", "copy": "2"}],
+   ["/loans", {"borrower_id": "3", "copy": "5"}],
+   ["/loans/1/renew", {}],
+   ["/loans/3/renew", {}],
+   ["/loans/3/renew", {}],
+   {"restart": ["--today", "{today+20}"]},
+   ["/loans", {"borrower_id": "2", "copy": "3"}],
+   ["/copies/5/status", {"status": "lost"}]
+  ],
+  "pages": ["/titles", "/titles/1", "/borrowers", "/borrowers/1", "/loans", "/overdue", "/returned"],
+  "cells": 150,
+  "held": 30,
+  "shows": [
+   {"page": "/overdue", "patterns": ["\\d+ days overdue, renewed once", "renewed twice"], "what": "the overdue page has no loan that is both overdue and renewed to measure"}
+  ]
  }
 }

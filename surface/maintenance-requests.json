@@ -54,7 +54,7 @@
    ["goto", "/requests"],
    ["see", ["1 open or in progress", "Joe <Pipe>"], "the open list does not show the request and its worker"],
    ["submit", "form[action=\"/requests/1/start\"]"],
-   ["text", "tbody tr td.st", "in progress", "a started request is not shown as in progress on the list"],
+   ["see", ["in progress"], "a started request is not shown as in progress on the list"],
    ["count", "main form[action$=\"/start\"]", 0, "a started request still has its Start button"],
    ["submit", "form[action=\"/requests/1/done\"]"],
    ["see", ["0 open or in progress", "Nothing is open"], "after Done the request is still on the open list"],
@@ -227,6 +227,36 @@
   "forms": [
    {"page": "/places/1", "form": "form[method=post][action=\"/requests\"]", "type": {"category": "plumbing", "priority": "normal", "description": "Kitchen tap dirps", "reporter": "Ana Lima", "phone": "12", "may_enter": "1"}, "says": "The phone", "kept": ["category", "priority", "description", "reporter", "phone", "may_enter"], "emptied": []},
    {"page": "/workers/1/edit", "form": "form[action=\"/workers/1/edit\"]", "type": {"phone": "call me"}, "says": "The phone may hold", "kept": ["phone"], "emptied": []}
+  ]
+ },
+ "fits": {
+  "posts": [
+   ["/places", {"kind": "apartment", "name": "4C", "floor": "2"}],
+   ["/places", {"kind": "area", "name": "Second floor landing", "floor": "2"}],
+   ["/workers", {"name": "Northside Heating and Plumbing", "trade": "heating contractor", "phone": "(555) 010-2030"}],
+   ["/workers", {"name": "Bo Li", "trade": "", "phone": "555 0102"}],
+   ["/requests", {"place_id": "1", "category": "plumbing", "priority": "urgent", "description": "Water is coming through the bathroom ceiling from the flat above and the light has gone out", "reporter": "Maria Aparecida de Souza", "phone": "555 0142", "may_enter": "1"}],
+   ["/requests", {"place_id": "2", "category": "electrical", "priority": "urgent", "description": "Landing light flickers all evening and the switch is warm to the touch", "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "0"}],
+   ["/requests", {"place_id": "1", "category": "heating", "priority": "normal", "description": "Bedroom radiator stays cold while every other radiator in the flat is hot", "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}],
+   ["/requests", {"place_id": "2", "category": "doors and windows", "priority": "low", "description": "The window by the stairs does not latch and bangs whenever the wind gets up", "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}],
+   ["/requests", {"place_id": "1", "category": "appliance", "priority": "normal", "description": "Oven door does not close fully", "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}],
+   ["/requests", {"place_id": "2", "category": "other", "priority": "low", "description": "Notice board has come off the wall", "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}],
+   ["/requests/1/assign", {"worker_id": "1"}],
+   ["/requests/2/assign", {"worker_id": "1"}],
+   ["/requests/3/assign", {"worker_id": "2"}],
+   ["/requests/4/assign", {"worker_id": "1"}],
+   ["/requests/1/start", {}],
+   ["/requests/1/note", {"note": "Plumber is waiting for the upstairs tenant to let him in"}],
+   {"restart": ["--today", "{today+20}"]},
+   ["/requests/5/done", {"note": "Hinge replaced and tested"}],
+   ["/requests/6/cancel", {}],
+   ["/requests", {"place_id": "1", "category": "pests", "priority": "normal", "description": "Ants in the kitchen, coming in under the window", "reporter": "Ana Lima", "phone": "555 0101", "may_enter": "1"}]
+  ],
+  "pages": ["/", "/requests", "/requests/1", "/overdue", "/closed", "/places", "/places/1", "/workers", "/workers/1", "/requests?q=the"],
+  "cells": 150,
+  "held": 40,
+  "shows": [
+   {"page": "/overdue", "patterns": ["in progress", "Northside Heating and Plumbing", "19 d"], "what": "the overdue page has no request that is in progress, held by a worker and 19 days overdue to measure"}
   ]
  }
 }

@@ -48,7 +48,7 @@ nav a{color:#fff;text-decoration:none;white-space:nowrap;padding:2px 0}
 nav a.here{font-weight:700;border-bottom:2px solid #fff}
 .day{margin:0;padding:6px 16px;background:#b3261e;color:#fff}
 main{padding:16px;max-width:1160px;margin:0 auto}
-h1{font-size:24px;margin:4px 0 12px;overflow-wrap:anywhere} h2{font-size:18px;margin:22px 0 8px}
+h1,h2{overflow-wrap:anywhere} h1{font-size:24px;margin:4px 0 12px} h2{font-size:18px;margin:22px 0 8px}
 p,dd,dt,li{overflow-wrap:anywhere} a{color:#1a56a8}
 .count{color:#4a5361} .late{color:#b3261e;font-weight:700}
 .tag{display:inline-block;padding:0 7px;border-radius:9px;font-size:13px;background:#e3e7ee;white-space:nowrap}

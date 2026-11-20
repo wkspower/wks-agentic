@@ -44,8 +44,9 @@ exports.surface = surface;
 const main = !fs.existsSync(surface.main) && fs.existsSync(surface.main + 'c') ? surface.main + 'c' : surface.main;
 const COMMAND = ['-S', '-E', '-s', process.env.SHOP || main];
 
-// A value in a surface file may say {today} for today's date and {80*W} for a letter repeated.
+// A value in a surface file may say {today} for today's date, {today+20} for a day after it, and {80*W} for a letter repeated.
 const value = (text) => String(text).replace(/\{today\}/g, new Date().toLocaleDateString('en-CA'))
+  .replace(/\{today\+(\d+)\}/g, (_, days) => new Date(Date.now() + Number(days) * 864e5).toLocaleDateString('en-CA'))
   .replace(/\{(\d+)\*(.)\}/g, (_, times, letter) => letter.repeat(Number(times)));
 
 function freePort() {
@@ -80,7 +81,7 @@ async function attempt(browser, checks, fault) {
   // must accept, and between them the product started again with other arguments.
   const fill = async (posts) => {
     for (const post of posts) {
-      if (!Array.isArray(post)) { await start(post.restart); continue; }
+      if (!Array.isArray(post)) { await start(post.restart.map(value)); continue; }
       const [where, fields] = post;
       const pairs = (Array.isArray(fields) ? fields : Object.entries(fields)).map(([name, text]) => [name, value(text)]);
       const answer = await fetch(base + where, { method: 'POST', body: new URLSearchParams(pairs), redirect: 'manual' });

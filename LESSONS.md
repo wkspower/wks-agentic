@@ -29,7 +29,7 @@ the product in `product/`, or with no product every label and its lines
 - **L0033** [school library] The school library's inputs are refused outside the table of bounds in the lesson.
 - **L0035** [web pages] After a refusal, going back shows the form with what was typed, except a field that is scanned into, which comes back empty; the refusal page promises only what holds.
 - **L0036** [school library] Classes are compared without regard to capitals: "7b" and "7B" are one class on the overdue list and in search, shown under the spelling most of its borrowers have.
-- **L0042** [school library] Where the library's lists are tables they fit their box with ordinary names: no text of a row is under the column of buttons held in sight.
+- **L0042** [web pages] Where a list is a table it fits its box with ordinary names: no text of a row is under the column of buttons held in sight.
 - **L1301** [maintenance requests] The maintenance tracker is for the staff of one apartment building at one desk: places, requests and their history, the workers who take them, and the overdue list. · prose: whether a feature is inside the scope is a reader's judgement
 - **L1302** [maintenance requests] A request is of one active place, an apartment or a common area, and says its category, priority, description, reporter and whether staff may enter; a second request for the place is taken, and the place's page shows its open ones above the form.
 - **L1303** [maintenance requests] A request is open, in progress, done or cancelled; done and cancelled can be reopened; every change is kept with its day and its note, and none is removed.
