@@ -4,6 +4,8 @@
 // "what you typed is still there", and the field was empty after Back.
 // For each form the product's surface names ("back"): types what the form refuses, reads the
 // refusal, goes back as a person would, and looks at every field. A missing browser fails.
+// Run 013, 2026-11-20: a field that is a select is chosen, not typed into; the maintenance tracker's
+// form for a request has three, and nothing can be sent from it without them.
 // Run from the repository root.
 const { run, surface, value } = require('../caselib.js');
 
@@ -15,7 +17,10 @@ run(async (page, base, expect, fill) => {
   let fields = 0;
   for (const form of forms) {
     await page.goto(base + form.page);
-    for (const [name, text] of Object.entries(form.type)) await page.fill(form.form + ' [name=' + name + ']', value(text));
+    for (const [name, text] of Object.entries(form.type)) {
+      const field = form.form + ' [name=' + name + ']';
+      if (await page.$eval(field, (el) => el.tagName === 'SELECT')) await page.selectOption(field, value(text)); else await page.fill(field, value(text));
+    }
     const [answer] = await Promise.all([page.waitForNavigation(), page.click(form.form + ' button[type=submit]')]);
     expect(answer.status() === 400, 'the form on ' + form.page + ' was sent something it should refuse and answered ' + answer.status());
     const said = await page.textContent('main');

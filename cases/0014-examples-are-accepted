@@ -5,6 +5,8 @@ as its example and refused "+10".
 Made general in run 006, 2026-11-20, when the school library chose the label:
 the pages, the rows they need and what fills the other fields are the
 product's, from its surface; a form that sends with GET is asked with GET.
+Run 013, 2026-11-20: a textarea is a field like any other; the maintenance
+tracker's form for a request has one, and the case sent that form without it.
 Reads every placeholder on every page as examples separated by " or ", and
 sends each one in its own form. Run from the repository root."""
 import re
@@ -29,7 +31,7 @@ class Forms(HTMLParser):
         attrs = dict(attrs)
         if tag == "form":
             self.forms.append((attrs.get("action"), (attrs.get("method") or "get").lower(), []))
-        elif tag in ("input", "select") and attrs.get("name") and self.forms:
+        elif tag in ("input", "select", "textarea") and attrs.get("name") and self.forms:
             self.forms[-1][2].append((attrs["name"], attrs.get("placeholder")))
 
 

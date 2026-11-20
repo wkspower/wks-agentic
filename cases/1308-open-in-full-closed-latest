@@ -79,8 +79,11 @@ def checks(shop):
     shop.expect(len(listed(body)) == 200 and set(listed(body)) <= set(latest), "the closed list shows %d rows, %d of them not among the latest closed"
                 % (len(listed(body)), len(set(listed(body)) - set(latest))))
     shop.expect(says(body, MANY - 5, "closed"), "the closed list does not say '%d closed'" % (MANY - 5))
-    shop.expect(len(listed(page("/requests"))) == 5 and len(listed(page("/requests?state=done"))) == 200
-                and says(page("/requests?state=done"), (MANY - 5) // 2, "match"), "the open list or the search by state is wrong after closing")
+    done = sorted((row["id"] for row in shop.export()["requests"] if row["state"] == "done"), reverse=True)
+    shop.expect(sorted(listed(page("/requests"))) == [row["id"] for row in rows[-5:]],
+                "after closing all but 5 the open list shows %d" % len(listed(page("/requests"))))
+    shop.expect(listed(page("/requests?state=done")) == done and says(page("/requests?state=done"), len(done), "match"),
+                "the search for done requests shows %d of %d" % (len(listed(page("/requests?state=done"))), len(done)))
 
     # Everything is in the export.
     state = shop.export()

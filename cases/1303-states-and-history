@@ -51,7 +51,7 @@ def checks(shop):
     shop.post(303, at + "reopen")
     shop.post(303, at + "note", note="Waiting for a part")
     shop.post(400, at + "note", note="   ")
-    shop.post(400, "/requests/999/start")
+    shop.post(404, "/requests/999/start")
 
     # The next day it is done straight from open; what was written before stays as it was.
     before = history()
