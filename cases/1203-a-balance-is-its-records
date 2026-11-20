@@ -48,10 +48,10 @@ def checks(shop):
     shop.expect(balance(ana) == 600 and len(shop.export()["movements"]) == 2, "a refused pay-out left something behind")
 
     # No top-up takes a balance above 1,000.00.
-    shop.post(400, "/accounts/%d/topup" % ana, amount="400.01")
-    shop.post(303, "/accounts/%d/topup" % ana, amount="394.00", balance="5", balance_cents="5")
-    shop.post(400, "/accounts/%d/topup" % ana, amount="6.01")
-    shop.post(303, "/accounts/%d/topup" % ana, amount="6.00")
+    shop.post(303, "/accounts/%d/topup" % ana, amount="500.00", balance="5", balance_cents="5")
+    shop.post(400, "/accounts/%d/topup" % ana, amount="494.01")
+    shop.post(303, "/accounts/%d/topup" % ana, amount="494.00")
+    shop.post(400, "/accounts/%d/topup" % ana, amount="0.01")
     shop.expect(balance(ana) == 100000, "top-ups up to the ceiling do not leave 1,000.00")
     adds_up("at the ceiling")
 

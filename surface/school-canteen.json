@@ -1,0 +1,1585 @@
+{
+ "label": "school canteen",
+ "main": "product/canteen.py",
+ "one": {
+  "table": "accounts",
+  "fields": {
+   "name": "Ana Lima",
+   "kind": "pupil",
+   "class": "7B",
+   "card": ""
+  },
+  "shows": "name"
+ },
+ "money": {
+  "price": {
+   "path": "/items",
+   "faulted": "/items(/\\d+/edit)?",
+   "table": "items",
+   "named": "name",
+   "field": "price",
+   "cents": "price_cents",
+   "most": "999.99",
+   "fields": {
+    "category": "Food"
+   }
+  },
+  "sale": {
+   "path": "/sales",
+   "line": [
+    "item_id",
+    "qty"
+   ],
+   "fields": {
+    "given": "200.00"
+   },
+   "table": "sales",
+   "total": "total_cents"
+  }
+ },
+ "examples": {
+  "seed": [
+   [
+    "/items",
+    {
+     "name": "Roll",
+     "category": "Food",
+     "price": "2.00"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Ana Lima",
+     "kind": "pupil",
+     "class": "7B",
+     "card": "1001"
+    }
+   ],
+   [
+    "/accounts/1/topup",
+    {
+     "amount": "500.00"
+    }
+   ],
+   [
+    "/sales",
+    {
+     "item_id": "1",
+     "qty": "1",
+     "given": "5.00"
+    }
+   ]
+  ],
+  "pages": [
+   "/",
+   "/?account=1",
+   "/items",
+   "/items/1/edit",
+   "/accounts",
+   "/accounts/1",
+   "/accounts/1/edit",
+   "/sales",
+   "/sales/1",
+   "/sales/1/void",
+   "/day"
+  ],
+  "filler": {
+   "name": "Thing",
+   "category": "Food",
+   "price": "1.00",
+   "kind": "pupil",
+   "class": "",
+   "card": "",
+   "active": "1",
+   "q": "",
+   "amount": "1.00",
+   "item_id": "1",
+   "qty": "1",
+   "given": "",
+   "account_id": "1",
+   "available": "1",
+   "date": "2099-06-01"
+  },
+  "least": 10,
+  "refused": {
+   "name": "a price written with its cents is refused",
+   "path": "/items(/\\d+/edit)?",
+   "field": "price",
+   "pattern": "\\.\\d\\d$"
+  }
+ },
+ "walk": {
+  "nav": [
+   "Till",
+   "Menu",
+   "Accounts",
+   "Sales",
+   "Day"
+  ],
+  "steps": [
+   [
+    "goto",
+    "/items"
+   ],
+   [
+    "fill",
+    "form[action=\"/items\"] input[name=name]",
+    "Cheese <roll>"
+   ],
+   [
+    "fill",
+    "form[action=\"/items\"] input[name=category]",
+    "Food"
+   ],
+   [
+    "fill",
+    "form[action=\"/items\"] input[name=price]",
+    "2.35"
+   ],
+   [
+    "submit",
+    "form[action=\"/items\"]"
+   ],
+   [
+    "see",
+    [
+     "Cheese <roll>",
+     "2.35",
+     "1 item on the menu"
+    ],
+    "the new item is not on the menu with its price, or its name was not escaped"
+   ],
+   [
+    "fill",
+    "form[action=\"/items\"] input[name=name]",
+    "Apple juice"
+   ],
+   [
+    "fill",
+    "form[action=\"/items\"] input[name=category]",
+    "Drinks"
+   ],
+   [
+    "fill",
+    "form[action=\"/items\"] input[name=price]",
+    "1.10"
+   ],
+   [
+    "submit",
+    "form[action=\"/items\"]"
+   ],
+   [
+    "goto",
+    "/accounts"
+   ],
+   [
+    "unchosen",
+    "form[method=post][action=\"/accounts\"] select[name=kind]",
+    1,
+    "pupil or staff is chosen in advance on the form for a new account"
+   ],
+   [
+    "fill",
+    "form[method=post][action=\"/accounts\"] input[name=name]",
+    "Ana <Lima>"
+   ],
+   [
+    "select",
+    "form[method=post][action=\"/accounts\"] select[name=kind]",
+    "pupil"
+   ],
+   [
+    "fill",
+    "form[method=post][action=\"/accounts\"] input[name=class]",
+    "7B"
+   ],
+   [
+    "fill",
+    "form[method=post][action=\"/accounts\"] input[name=card]",
+    "1001"
+   ],
+   [
+    "submit",
+    "form[method=post][action=\"/accounts\"]"
+   ],
+   [
+    "see",
+    [
+     "Ana <Lima> (7B)",
+     "0.00"
+    ],
+    "the new account is not shown with a balance of zero, or its name was not escaped"
+   ],
+   [
+    "fill",
+    "form[action=\"/accounts/1/topup\"] input[name=amount]",
+    "10.00"
+   ],
+   [
+    "submit",
+    "form[action=\"/accounts/1/topup\"]"
+   ],
+   [
+    "see",
+    [
+     "10.00",
+     "1 top-up or pay-out"
+    ],
+    "the top-up is not shown on the account's page"
+   ],
+   [
+    "goto",
+    "/"
+   ],
+   [
+    "fill",
+    "#till label:has-text(\"Cheese\") input[name=qty]",
+    "2"
+   ],
+   [
+    "fill",
+    "#till label:has-text(\"Apple juice\") input[name=qty]",
+    "3"
+   ],
+   [
+    "text",
+    "#sum",
+    "8.00",
+    "the till does not show 8.00 for 2 rolls and 3 juices before the sale is sent"
+   ],
+   [
+    "fill",
+    "#till input[name=given]",
+    "10.00"
+   ],
+   [
+    "submit",
+    "#till"
+   ],
+   [
+    "see",
+    [
+     "Sale 1",
+     "2 × Cheese <roll>",
+     "Total 8.00, given 10.00, change 2.00"
+    ],
+    "after a cash sale the till does not show its total and the change"
+   ],
+   [
+    "value",
+    "#till label:has-text(\"Cheese\") input[name=qty]",
+    "",
+    "after a sale the till is not empty for the next one"
+   ],
+   [
+    "fill",
+    "#till label:has-text(\"Cheese\") input[name=qty]",
+    "1"
+   ],
+   [
+    "fill",
+    "#till input[name=card]",
+    "1001"
+   ],
+   [
+    "submit",
+    "#till"
+   ],
+   [
+    "see",
+    [
+     "Sale 2",
+     "from the balance of Ana <Lima> (7B), which is now 7.65"
+    ],
+    "after a sale by card the till does not show whose balance paid and what is left"
+   ],
+   [
+    "fill",
+    "#till label:has-text(\"Cheese\") input[name=qty]",
+    "9"
+   ],
+   [
+    "fill",
+    "#till input[name=card]",
+    "1001"
+   ],
+   [
+    "submit",
+    "#till"
+   ],
+   [
+    "see",
+    [
+     "The balance of Ana <Lima> is 7.65 and the total is 21.15",
+     "Nothing was sold"
+    ],
+    "a sale beyond the balance does not say the balance and the total"
+   ],
+   [
+    "goto",
+    "/sales"
+   ],
+   [
+    "see",
+    [
+     "2 sales",
+     "balance of Ana <Lima>",
+     "3 × Apple juice, 2 × Cheese <roll>"
+    ],
+    "the list of sales does not show the two sales"
+   ],
+   [
+    "count",
+    "main a[href$=\"/void\"]",
+    2,
+    "two sales stand and the list does not offer two voids"
+   ],
+   [
+    "follow",
+    "main a[href=\"/sales/1/void\"]"
+   ],
+   [
+    "see",
+    [
+     "Hand back the 8.00 in cash",
+     "Cheese <roll>"
+    ],
+    "the question before a void does not show the sale"
+   ],
+   [
+    "submit",
+    "form[action=\"/sales/1/void\"]"
+   ],
+   [
+    "see",
+    [
+     "voided on"
+    ],
+    "a voided sale is not shown as voided"
+   ],
+   [
+    "goto",
+    "/sales"
+   ],
+   [
+    "count",
+    "main a[href$=\"/void\"]",
+    1,
+    "a voided sale is still offered for voiding"
+   ],
+   [
+    "goto",
+    "/items"
+   ],
+   [
+    "submit",
+    "form[action=\"/items/1/available\"]"
+   ],
+   [
+    "see",
+    [
+     "sold out",
+     "Back on sale"
+    ],
+    "an item marked sold out is not shown as sold out"
+   ],
+   [
+    "goto",
+    "/"
+   ],
+   [
+    "count",
+    "#till input[name=qty]",
+    1,
+    "a sold-out item is still on the till"
+   ],
+   [
+    "goto",
+    "/accounts"
+   ],
+   [
+    "fill",
+    "form[method=get][action=\"/accounts\"] input[name=q]",
+    "lima"
+   ],
+   [
+    "submit",
+    "form[method=get][action=\"/accounts\"]"
+   ],
+   [
+    "see",
+    [
+     "1 account matching",
+     "Ana <Lima>"
+    ],
+    "searching the accounts for a name does not show the account"
+   ],
+   [
+    "follow",
+    "main a[href=\"/accounts/1\"]"
+   ],
+   [
+    "follow",
+    "main a[href=\"/accounts/1/edit\"]"
+   ],
+   [
+    "value",
+    "form[action=\"/accounts/1/edit\"] input[name=name]",
+    "Ana <Lima>",
+    "the form to correct an account does not hold its name"
+   ],
+   [
+    "fill",
+    "form[action=\"/accounts/1/edit\"] input[name=name]",
+    "Ana Lima"
+   ],
+   [
+    "select",
+    "form[action=\"/accounts/1/edit\"] select[name=active]",
+    "0"
+   ],
+   [
+    "submit",
+    "form[action=\"/accounts/1/edit\"]"
+   ],
+   [
+    "see",
+    [
+     "Ana Lima (7B)",
+     "has left the school"
+    ],
+    "the corrected account is not shown as corrected and as having left"
+   ],
+   [
+    "count",
+    "form[action=\"/accounts/1/topup\"]",
+    0,
+    "an account that has left is still offered a top-up"
+   ],
+   [
+    "fill",
+    "form[action=\"/accounts/1/payout\"] input[name=amount]",
+    "7.65"
+   ],
+   [
+    "submit",
+    "form[action=\"/accounts/1/payout\"]"
+   ],
+   [
+    "count",
+    "form[action=\"/accounts/1/payout\"]",
+    0,
+    "an account paid out in full is still offered a pay-out"
+   ],
+   [
+    "goto",
+    "/day"
+   ],
+   [
+    "see",
+    [
+     "Cash expected in the drawer",
+     "2.35"
+    ],
+    "the day does not show 2.35 expected in the drawer: a sale of 8.00 made and voided, 10.00 topped up, 7.65 paid out"
+   ]
+  ],
+  "chosen": [
+   {
+    "name": "pupil is chosen in advance on the form for a new account",
+    "select": "form[method=post][action=\"/accounts\"] select[name=kind]"
+   }
+  ]
+ },
+ "long": {
+  "posts": [
+   [
+    "/items",
+    {
+     "name": "Cheese & tomato roll",
+     "category": "Food",
+     "price": "2.35"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "A warm bowl of the soup of the day with a buttered wholemeal roll and a piece of",
+     "category": "Meals of the day and their sides",
+     "price": "4.20"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "Apple juice",
+     "category": "Drinks",
+     "price": "1.10"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Maria Aparecida de Souza Albuquerque",
+     "kind": "pupil",
+     "class": "Year 7 Blue",
+     "card": "LIB-2026-000001-7B"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Bo Li",
+     "kind": "pupil",
+     "class": "9A",
+     "card": "1002"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Ms Kay",
+     "kind": "staff",
+     "class": "",
+     "card": ""
+    }
+   ],
+   [
+    "/accounts/1/topup",
+    {
+     "amount": "500.00"
+    }
+   ],
+   [
+    "/accounts/1/topup",
+    {
+     "amount": "20.00"
+    }
+   ],
+   [
+    "/accounts/2/topup",
+    {
+     "amount": "5.00"
+    }
+   ],
+   [
+    "/accounts/2/topup",
+    {
+     "amount": "3.00"
+    }
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "2"
+     ],
+     [
+      "item_id",
+      "2"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "item_id",
+      "3"
+     ],
+     [
+      "qty",
+      "3"
+     ],
+     [
+      "given",
+      "20.00"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "2"
+     ],
+     [
+      "qty",
+      "12"
+     ],
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "10"
+     ],
+     [
+      "account_id",
+      "1"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "3"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "LIB-2026-000001-7B"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "1002"
+     ]
+    ]
+   ],
+   [
+    "/sales/1/void",
+    {}
+   ],
+   [
+    "/movements/2/void",
+    {}
+   ],
+   [
+    "/accounts/2/payout",
+    {
+     "amount": "1.00"
+    }
+   ],
+   [
+    "/items/3/available",
+    {
+     "available": "0"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "{80*W}",
+     "category": "{40*W}",
+     "price": "999.99"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "{80*M}",
+     "kind": "staff",
+     "class": "{20*W}",
+     "card": "{20*W}"
+    }
+   ],
+   [
+    "/accounts/4/topup",
+    {
+     "amount": "500.00"
+    }
+   ],
+   [
+    "/accounts/4/topup",
+    {
+     "amount": "500.00"
+    }
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "4"
+     ],
+     [
+      "qty",
+      "9"
+     ],
+     [
+      "given",
+      "9999.99"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "4"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "{20*W}"
+     ]
+    ]
+   ]
+  ],
+  "pages": [
+   "/",
+   "/?account=4",
+   "/?sold=5",
+   "/?sold=6",
+   "/items",
+   "/items/4/edit",
+   "/accounts",
+   "/accounts?q=W",
+   "/accounts?q={101*q}",
+   "/accounts/4",
+   "/accounts/4/edit",
+   "/accounts/1",
+   "/accounts/2",
+   "/sales",
+   "/sales/5",
+   "/sales/6",
+   "/sales/6/void",
+   "/sales/1/void",
+   "/movements/1/void",
+   "/day",
+   "/nowhere"
+  ]
+ },
+ "words": {
+  "posts": [
+   [
+    "/items",
+    {
+     "name": "Cheese & tomato roll",
+     "category": "Food",
+     "price": "2.35"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "A warm bowl of the soup of the day with a buttered wholemeal roll and a piece of",
+     "category": "Meals of the day and their sides",
+     "price": "4.20"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "Apple juice",
+     "category": "Drinks",
+     "price": "1.10"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Maria Aparecida de Souza Albuquerque",
+     "kind": "pupil",
+     "class": "Year 7 Blue",
+     "card": "LIB-2026-000001-7B"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Bo Li",
+     "kind": "pupil",
+     "class": "9A",
+     "card": "1002"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Ms Kay",
+     "kind": "staff",
+     "class": "",
+     "card": ""
+    }
+   ],
+   [
+    "/accounts/1/topup",
+    {
+     "amount": "500.00"
+    }
+   ],
+   [
+    "/accounts/1/topup",
+    {
+     "amount": "20.00"
+    }
+   ],
+   [
+    "/accounts/2/topup",
+    {
+     "amount": "5.00"
+    }
+   ],
+   [
+    "/accounts/2/topup",
+    {
+     "amount": "3.00"
+    }
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "2"
+     ],
+     [
+      "item_id",
+      "2"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "item_id",
+      "3"
+     ],
+     [
+      "qty",
+      "3"
+     ],
+     [
+      "given",
+      "20.00"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "2"
+     ],
+     [
+      "qty",
+      "12"
+     ],
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "10"
+     ],
+     [
+      "account_id",
+      "1"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "3"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "LIB-2026-000001-7B"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "1002"
+     ]
+    ]
+   ],
+   [
+    "/sales/1/void",
+    {}
+   ],
+   [
+    "/movements/2/void",
+    {}
+   ],
+   [
+    "/accounts/2/payout",
+    {
+     "amount": "1.00"
+    }
+   ],
+   [
+    "/items/3/available",
+    {
+     "available": "0"
+    }
+   ]
+  ],
+  "pages": [
+   "/items",
+   "/accounts",
+   "/accounts/1",
+   "/accounts/2",
+   "/sales",
+   "/sales/1",
+   "/sales/2",
+   "/day"
+  ],
+  "cells": 300
+ },
+ "actions": {
+  "posts": [
+   [
+    "/items",
+    {
+     "name": "Cheese & tomato roll",
+     "category": "Food",
+     "price": "2.35"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "A warm bowl of the soup of the day with a buttered wholemeal roll and a piece of",
+     "category": "Meals of the day and their sides",
+     "price": "4.20"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "Apple juice",
+     "category": "Drinks",
+     "price": "1.10"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Maria Aparecida de Souza Albuquerque",
+     "kind": "pupil",
+     "class": "Year 7 Blue",
+     "card": "LIB-2026-000001-7B"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Bo Li",
+     "kind": "pupil",
+     "class": "9A",
+     "card": "1002"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Ms Kay",
+     "kind": "staff",
+     "class": "",
+     "card": ""
+    }
+   ],
+   [
+    "/accounts/1/topup",
+    {
+     "amount": "500.00"
+    }
+   ],
+   [
+    "/accounts/1/topup",
+    {
+     "amount": "20.00"
+    }
+   ],
+   [
+    "/accounts/2/topup",
+    {
+     "amount": "5.00"
+    }
+   ],
+   [
+    "/accounts/2/topup",
+    {
+     "amount": "3.00"
+    }
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "2"
+     ],
+     [
+      "item_id",
+      "2"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "item_id",
+      "3"
+     ],
+     [
+      "qty",
+      "3"
+     ],
+     [
+      "given",
+      "20.00"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "2"
+     ],
+     [
+      "qty",
+      "12"
+     ],
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "10"
+     ],
+     [
+      "account_id",
+      "1"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "3"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "LIB-2026-000001-7B"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "1002"
+     ]
+    ]
+   ],
+   [
+    "/sales/1/void",
+    {}
+   ],
+   [
+    "/movements/2/void",
+    {}
+   ],
+   [
+    "/accounts/2/payout",
+    {
+     "amount": "1.00"
+    }
+   ],
+   [
+    "/items/3/available",
+    {
+     "available": "0"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "{80*W}",
+     "category": "{40*W}",
+     "price": "999.99"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "{80*M}",
+     "kind": "staff",
+     "class": "{20*W}",
+     "card": "{20*W}"
+    }
+   ],
+   [
+    "/accounts/4/topup",
+    {
+     "amount": "500.00"
+    }
+   ],
+   [
+    "/accounts/4/topup",
+    {
+     "amount": "500.00"
+    }
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "4"
+     ],
+     [
+      "qty",
+      "9"
+     ],
+     [
+      "given",
+      "9999.99"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "4"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "{20*W}"
+     ]
+    ]
+   ]
+  ],
+  "pages": [
+   "/items",
+   "/accounts",
+   "/accounts/1",
+   "/accounts/2",
+   "/sales"
+  ],
+  "rows": 60,
+  "also": [
+   {
+    "page": "/accounts/2",
+    "selector": "form[action=\"/accounts/2/topup\"] input[name=amount]",
+    "what": "the page an account's Open link opens does not show one field for a top-up"
+   },
+   {
+    "page": "/sales/2",
+    "selector": "main a[href=\"/sales/2/void\"]",
+    "what": "the page a sale's Open link opens does not show one link to void it"
+   }
+  ]
+ },
+ "cards": {
+  "posts": [
+   [
+    "/items",
+    {
+     "name": "Cheese & tomato roll",
+     "category": "Food",
+     "price": "2.35"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "A warm bowl of the soup of the day with a buttered wholemeal roll and a piece of",
+     "category": "Meals of the day and their sides",
+     "price": "4.20"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "Apple juice",
+     "category": "Drinks",
+     "price": "1.10"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Maria Aparecida de Souza Albuquerque",
+     "kind": "pupil",
+     "class": "Year 7 Blue",
+     "card": "LIB-2026-000001-7B"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Bo Li",
+     "kind": "pupil",
+     "class": "9A",
+     "card": "1002"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Ms Kay",
+     "kind": "staff",
+     "class": "",
+     "card": ""
+    }
+   ],
+   [
+    "/accounts/1/topup",
+    {
+     "amount": "500.00"
+    }
+   ],
+   [
+    "/accounts/1/topup",
+    {
+     "amount": "20.00"
+    }
+   ],
+   [
+    "/accounts/2/topup",
+    {
+     "amount": "5.00"
+    }
+   ],
+   [
+    "/accounts/2/topup",
+    {
+     "amount": "3.00"
+    }
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "2"
+     ],
+     [
+      "item_id",
+      "2"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "item_id",
+      "3"
+     ],
+     [
+      "qty",
+      "3"
+     ],
+     [
+      "given",
+      "20.00"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "2"
+     ],
+     [
+      "qty",
+      "12"
+     ],
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "10"
+     ],
+     [
+      "account_id",
+      "1"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "3"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "LIB-2026-000001-7B"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "1"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "1002"
+     ]
+    ]
+   ],
+   [
+    "/sales/1/void",
+    {}
+   ],
+   [
+    "/movements/2/void",
+    {}
+   ],
+   [
+    "/accounts/2/payout",
+    {
+     "amount": "1.00"
+    }
+   ],
+   [
+    "/items/3/available",
+    {
+     "available": "0"
+    }
+   ],
+   [
+    "/items",
+    {
+     "name": "{80*W}",
+     "category": "{40*W}",
+     "price": "999.99"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "{80*M}",
+     "kind": "staff",
+     "class": "{20*W}",
+     "card": "{20*W}"
+    }
+   ],
+   [
+    "/accounts/4/topup",
+    {
+     "amount": "500.00"
+    }
+   ],
+   [
+    "/accounts/4/topup",
+    {
+     "amount": "500.00"
+    }
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "4"
+     ],
+     [
+      "qty",
+      "9"
+     ],
+     [
+      "given",
+      "9999.99"
+     ]
+    ]
+   ],
+   [
+    "/sales",
+    [
+     [
+      "item_id",
+      "4"
+     ],
+     [
+      "qty",
+      "1"
+     ],
+     [
+      "card",
+      "{20*W}"
+     ]
+    ]
+   ]
+  ],
+  "pages": [
+   "/items",
+   "/accounts",
+   "/accounts/1",
+   "/accounts/2",
+   "/sales",
+   "/sales/2",
+   "/day"
+  ],
+  "rows": 100,
+  "fields": 500
+ },
+ "back": {
+  "posts": [
+   [
+    "/items",
+    {
+     "name": "Cheese roll",
+     "category": "Food",
+     "price": "2.35"
+    }
+   ],
+   [
+    "/accounts",
+    {
+     "name": "Ana Lima",
+     "kind": "pupil",
+     "class": "7B",
+     "card": "1001"
+    }
+   ]
+  ],
+  "forms": [
+   {
+    "page": "/items",
+    "form": "form[action=\"/items\"]",
+    "type": {
+     "name": "Hma roll",
+     "category": "Food",
+     "price": "2,60"
+    },
+    "says": "The price",
+    "kept": [
+     "name",
+     "category",
+     "price"
+    ],
+    "emptied": []
+   },
+   {
+    "page": "/accounts",
+    "form": "form[method=post][action=\"/accounts\"]",
+    "type": {
+     "name": "Bo Li",
+     "class": "9A",
+     "card": "1001"
+    },
+    "says": "The kind of account",
+    "kept": [
+     "name",
+     "class",
+     "card"
+    ],
+    "emptied": []
+   },
+   {
+    "page": "/",
+    "form": "#till",
+    "type": {
+     "qty": "2",
+     "given": "",
+     "card": "999"
+    },
+    "says": "There is no account with card 999",
+    "never": "what you typed",
+    "kept": [
+     "qty"
+    ],
+    "emptied": [
+     "card"
+    ]
+   }
+  ]
+ }
+}
